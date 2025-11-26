@@ -1,23 +1,12 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { useSimulationStore } from '@/stores/simulationStore'
 import { useToolStore } from '@/stores/toolStore'
-import { 
-  WasmParticleEngine, 
-  isWasmAvailable,
-  WorkerParticleEngine, 
-  isSharedArrayBufferAvailable, 
-  ParticleEngine 
-} from '@/lib/engine'
-
-// Type for any engine
-type EngineType = WasmParticleEngine | WorkerParticleEngine | ParticleEngine
-
-// Engine mode
-type EngineMode = 'wasm' | 'worker' | 'single'
+import { WasmParticleEngine } from '@/lib/engine'
+import { FpsCounter } from '@/lib/FpsCounter'
 
 // Global engine instance for external access (reset, etc.)
-let globalEngine: EngineType | null = null
-export function getEngine(): EngineType | null { return globalEngine }
+let globalEngine: WasmParticleEngine | null = null
+export function getEngine(): WasmParticleEngine | null { return globalEngine }
 
 // Camera reset callback (set by Canvas component)
 let resetCameraCallback: (() => void) | null = null
@@ -26,7 +15,7 @@ export function resetCamera(): void { resetCameraCallback?.() }
 export function Canvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const engineRef = useRef<EngineType | null>(null)
+  const engineRef = useRef<WasmParticleEngine | null>(null)
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
   const isDrawing = useRef(false)
   const isDragging = useRef(false)
@@ -34,12 +23,11 @@ export function Canvas() {
   const lastMousePos = useRef({ x: 0, y: 0 })
   const animationRef = useRef<number>(0)
   const lastTimeRef = useRef<number>(0)
-  const fpsAccum = useRef<number[]>([])
-  const engineModeRef = useRef<EngineMode>('single')  // Track engine type
+  // Phase 4: Zero-allocation FPS counter
+  const fpsCounter = useRef(new FpsCounter(20))
   
-  // Loading state for WASM
+  // Loading state
   const [isLoading, setIsLoading] = useState(true)
-  const [engineType, setEngineType] = useState<string>('')
   
   // Camera state (refs to avoid re-renders)
   const cameraRef = useRef({ x: 0, y: 0, zoom: 1 })
@@ -69,19 +57,6 @@ export function Canvas() {
       engine.setSettings({ gravity, ambientTemperature })
     }
   }, [gravity, ambientTemperature])
-  
-  // Handle play/pause for worker engine
-  useEffect(() => {
-    const engine = engineRef.current
-    if (!engine || engineModeRef.current !== 'worker') return
-    
-    const workerEngine = engine as WorkerParticleEngine
-    if (isPlaying) {
-      workerEngine.start()
-    } else {
-      workerEngine.stop()
-    }
-  }, [isPlaying])
 
   // Initialize engine and start render loop
   useEffect(() => {
@@ -99,67 +74,6 @@ export function Canvas() {
     canvas.width = width
     canvas.height = height
     
-    // Async engine initialization
-    const initEngine = async () => {
-      let engine: EngineType
-      
-      // Priority: WASM > Worker > Single-threaded
-      if (isWasmAvailable()) {
-        try {
-          console.log('🦀 Loading WASM engine...')
-          const wasmEngine = await WasmParticleEngine.create(width, height)
-          wasmEngine.attachRenderer(ctx)
-          engineModeRef.current = 'wasm'
-          engine = wasmEngine
-          setEngineType('🦀 WASM')
-          console.log('🦀 Using WasmParticleEngine (Rust)')
-        } catch (err) {
-          console.error('WASM failed, falling back:', err)
-          // Fallback to worker
-          if (isSharedArrayBufferAvailable()) {
-            const workerEngine = new WorkerParticleEngine(width, height)
-            workerEngine.attachRenderer(ctx)
-            engineModeRef.current = 'worker'
-            engine = workerEngine
-            setEngineType('🚀 Worker')
-            workerEngine.onReady(() => {
-              if (isPlayingRef.current) workerEngine.start()
-            })
-          } else {
-            const singleEngine = new ParticleEngine(width, height)
-            singleEngine.attachRenderer(ctx)
-            engineModeRef.current = 'single'
-            engine = singleEngine
-            setEngineType('⚙️ Single')
-          }
-        }
-      } else if (isSharedArrayBufferAvailable()) {
-        console.log('🚀 Using WorkerParticleEngine (multi-threaded)')
-        const workerEngine = new WorkerParticleEngine(width, height)
-        workerEngine.attachRenderer(ctx)
-        engineModeRef.current = 'worker'
-        engine = workerEngine
-        setEngineType('🚀 Worker')
-        workerEngine.onReady(() => {
-          if (isPlayingRef.current) workerEngine.start()
-        })
-      } else {
-        console.log('⚠️ Using single-threaded engine')
-        const singleEngine = new ParticleEngine(width, height)
-        singleEngine.attachRenderer(ctx)
-        engineModeRef.current = 'single'
-        engine = singleEngine
-        setEngineType('⚙️ Single')
-      }
-      
-      engineRef.current = engine
-      globalEngine = engine
-      setIsLoading(false)
-      
-      // Start render loop
-      startRenderLoop()
-    }
-    
     // Throttle state updates
     let lastStatsUpdate = 0
     const STATS_UPDATE_INTERVAL = 200
@@ -170,38 +84,35 @@ export function Canvas() {
         const eng = engineRef.current
         if (!eng) return
 
-        // Calculate smoothed FPS
+        // Calculate smoothed FPS (Phase 4: Zero-allocation)
         const delta = time - lastTimeRef.current
         if (delta > 0) {
-          fpsAccum.current.push(1000 / delta)
-          if (fpsAccum.current.length > 10) fpsAccum.current.shift()
+          fpsCounter.current.add(1000 / delta)
         }
         lastTimeRef.current = time
 
-        // Step simulation based on engine type
-        const mode = engineModeRef.current
-        if (mode === 'wasm' && isPlayingRef.current) {
-          // WASM: step in main thread (fast!)
+        // Step simulation
+        if (isPlayingRef.current) {
           const steps = speedRef.current >= 1 ? Math.floor(speedRef.current) : 1
           for (let i = 0; i < steps; i++) {
-            (eng as WasmParticleEngine).step()
-          }
-        } else if (mode === 'single' && isPlayingRef.current) {
-          // Single-threaded JS
-          const steps = speedRef.current >= 1 ? Math.floor(speedRef.current) : 1
-          for (let i = 0; i < steps; i++) {
-            (eng as ParticleEngine).step()
+            eng.step()
           }
         }
-        // Worker mode: simulation runs in worker thread
 
-        // Render
-        eng.render()
+        // Render using Smart Rendering (Phase 3: Dirty Rectangles)
+        const renderer = eng.getRenderer()
+        const memory = eng.memory
+        if (renderer && memory) {
+          renderer.renderSmart(eng, memory)
+        } else {
+          // Fallback to full render
+          eng.render()
+        }
 
         // Throttle React state updates
         if (time - lastStatsUpdate > STATS_UPDATE_INTERVAL) {
-          const avgFps = fpsAccum.current.reduce((a, b) => a + b, 0) / fpsAccum.current.length
-          setFps(Math.round(avgFps))
+          const avgFps = fpsCounter.current.getAverage() // Zero allocations!
+          setFps(avgFps)
           setParticleCount(eng.particleCount)
           lastStatsUpdate = time
         }
@@ -212,16 +123,32 @@ export function Canvas() {
       animationRef.current = requestAnimationFrame(render)
     }
     
+    // Initialize WASM engine
+    const initEngine = async () => {
+      try {
+        console.log('🦀 Loading WASM engine...')
+        const engine = await WasmParticleEngine.create(width, height)
+        engine.attachRenderer(ctx)
+        
+        engineRef.current = engine
+        globalEngine = engine
+        setIsLoading(false)
+        console.log('🦀 WasmParticleEngine ready!')
+        
+        // Start render loop
+        startRenderLoop()
+      } catch (err) {
+        console.error('Failed to load WASM engine:', err)
+        setIsLoading(false)
+      }
+    }
+    
     initEngine()
 
     return () => {
       cancelAnimationFrame(animationRef.current)
-      // Cleanup
-      const mode = engineModeRef.current
-      if (mode === 'worker' && engineRef.current) {
-        (engineRef.current as WorkerParticleEngine).destroy()
-      } else if (mode === 'wasm' && engineRef.current) {
-        (engineRef.current as WasmParticleEngine).destroy()
+      if (engineRef.current) {
+        engineRef.current.destroy()
       }
       globalEngine = null
     }
@@ -398,14 +325,7 @@ export function Canvas() {
       {/* Loading overlay */}
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-[#0a0a0a] z-10">
-          <div className="text-white text-lg">Loading engine...</div>
-        </div>
-      )}
-      
-      {/* Engine type badge */}
-      {engineType && (
-        <div className="absolute top-2 right-2 px-2 py-1 bg-black/50 rounded text-xs text-white/70 z-10">
-          {engineType}
+          <div className="text-white text-lg">🦀 Loading WASM engine...</div>
         </div>
       )}
       

@@ -49,6 +49,10 @@ pub struct World {
     particle_count: u32,
     frame: u64,
     rng_state: u32,
+    
+    // Phase 3: Smart Rendering buffers
+    dirty_list: Vec<u32>,           // List of dirty chunk indices for rendering
+    chunk_transfer_buffer: Vec<u32>, // 32x32 pixel buffer for chunk extraction
 }
 
 #[wasm_bindgen]
@@ -66,6 +70,9 @@ impl World {
             particle_count: 0,
             frame: 0,
             rng_state: 12345,
+            // Phase 3: Smart Rendering
+            dirty_list: Vec::with_capacity(1000),
+            chunk_transfer_buffer: vec![0u32; (CHUNK_SIZE * CHUNK_SIZE) as usize],
         }
     }
 
@@ -187,6 +194,11 @@ impl World {
     /// Step the simulation forward
     /// Phase 4: Only process active chunks!
     pub fn step(&mut self) {
+        // === LAZY HYDRATION: Process waking chunks ===
+        // When a chunk transitions Sleep -> Active, we need to fill its air cells
+        // with the current virtual_temp (which has been smoothly animating)
+        self.hydrate_waking_chunks();
+        
         // Reset updated flags and clear move tracking
         self.grid.reset_updated();
         self.grid.clear_moves();
@@ -212,11 +224,11 @@ impl World {
         self.apply_pending_moves();
         
         // Temperature pass - run every other frame for performance
-        // Phase 4: Only process active chunks for temperature
+        // Lazy Hydration: now updates virtual_temp for sleeping chunks!
         if self.frame % 2 == 0 {
             process_temperature_grid_chunked(
                 &mut self.grid,
-                &self.chunks,
+                &mut self.chunks,  // Now mutable for virtual_temp updates
                 self.ambient_temperature,
                 self.frame,
                 &mut self.rng_state
@@ -226,10 +238,40 @@ impl World {
         self.frame += 1;
     }
     
+    /// Lazy Hydration: Fill waking chunks with their virtual temperature
+    /// This ensures particles entering a previously-sleeping chunk
+    /// encounter the correct (smoothly animated) air temperature
+    fn hydrate_waking_chunks(&mut self) {
+        let (chunks_x, _) = self.chunks.dimensions();
+        
+        for (idx, &woke) in self.chunks.just_woke_up.iter().enumerate() {
+            if woke {
+                let cx = (idx as u32) % chunks_x;
+                let cy = (idx as u32) / chunks_x;
+                let v_temp = self.chunks.virtual_temp[idx];
+                
+                // Fill all air cells in this chunk with the virtual temperature
+                self.grid.hydrate_chunk(cx, cy, v_temp);
+            }
+        }
+        
+        // Clear wake flags after processing
+        self.chunks.clear_wake_flags();
+    }
+    
     /// Phase 4.1: Apply all recorded moves to chunk tracking
+    /// Zero-allocation: uses raw pointer iteration instead of drain()
     fn apply_pending_moves(&mut self) {
-        for (from_x, from_y, to_x, to_y) in self.grid.drain_moves() {
-            self.chunks.move_particle(from_x, from_y, to_x, to_y);
+        let count = self.grid.pending_moves.count;
+        let moves_ptr = self.grid.pending_moves.as_ptr();
+        
+        // SAFETY: We iterate only over valid data (0..count)
+        // ParticleMove is Copy, so we can read directly
+        unsafe {
+            for i in 0..count {
+                let (from_x, from_y, to_x, to_y) = *moves_ptr.add(i);
+                self.chunks.move_particle(from_x, from_y, to_x, to_y);
+            }
         }
     }
     
@@ -271,6 +313,87 @@ impl World {
     /// Get temperature array length
     pub fn temperature_len(&self) -> usize {
         self.grid.size()
+    }
+    
+    // === PHASE 3: SMART RENDERING API ===
+    
+    /// Collect list of dirty chunks that need rendering
+    /// Uses visual_dirty (separate from physics dirty) to avoid state desync!
+    /// Returns the count of dirty chunks
+    pub fn collect_dirty_chunks(&mut self) -> usize {
+        self.dirty_list.clear();
+        let total = self.chunks.total_chunks();
+        
+        for i in 0..total {
+            // Check VISUAL dirty, not physics dirty!
+            if self.chunks.visual_dirty[i] {
+                self.dirty_list.push(i as u32);
+                
+                // Clear flag immediately - we're sending this to JS
+                self.chunks.clear_visual_dirty(i);
+            }
+        }
+        
+        self.dirty_list.len()
+    }
+    
+    /// Get pointer to dirty chunk list
+    pub fn get_dirty_list_ptr(&self) -> *const u32 {
+        self.dirty_list.as_ptr()
+    }
+    
+    /// Extract pixels from a chunk into transfer buffer (strided -> linear)
+    /// Returns pointer to the transfer buffer
+    pub fn extract_chunk_pixels(&mut self, chunk_idx: u32) -> *const u32 {
+        let (cx_count, _) = self.chunks.dimensions();
+        let cx = chunk_idx % cx_count;
+        let cy = chunk_idx / cx_count;
+        
+        let start_x = cx * CHUNK_SIZE;
+        let start_y = cy * CHUNK_SIZE;
+        let end_x = (start_x + CHUNK_SIZE).min(self.grid.width());
+        let end_y = (start_y + CHUNK_SIZE).min(self.grid.height());
+        
+        let grid_width = self.grid.width() as usize;
+        let colors_ptr = self.grid.colors.as_ptr();
+        let buffer_ptr = self.chunk_transfer_buffer.as_mut_ptr();
+        
+        let mut buf_idx = 0usize;
+        
+        unsafe {
+            for y in start_y..end_y {
+                let row_offset = (y as usize) * grid_width;
+                let src_start = row_offset + (start_x as usize);
+                let row_len = (end_x - start_x) as usize;
+                
+                // Fast memcpy for each row
+                std::ptr::copy_nonoverlapping(
+                    colors_ptr.add(src_start),
+                    buffer_ptr.add(buf_idx),
+                    row_len
+                );
+                
+                // Move to next row in 32x32 buffer
+                buf_idx += CHUNK_SIZE as usize;
+            }
+        }
+        
+        self.chunk_transfer_buffer.as_ptr()
+    }
+    
+    /// Get chunk transfer buffer size (32*32 = 1024 pixels * 4 bytes = 4096 bytes)
+    pub fn chunk_buffer_byte_size(&self) -> usize {
+        (CHUNK_SIZE * CHUNK_SIZE * 4) as usize
+    }
+    
+    /// Get chunks X count (for JS coordinate calculation)
+    pub fn chunks_x(&self) -> u32 {
+        self.chunks.dimensions().0
+    }
+    
+    /// Get chunks Y count
+    pub fn chunks_y(&self) -> u32 {
+        self.chunks.dimensions().1
     }
 }
 
@@ -344,74 +467,80 @@ impl World {
     }
     
     /// Update particle and return true if it moved
+    /// PHASE 1: Optimized with unsafe access - coordinates are guaranteed valid by process_chunk bounds
     fn update_particle_chunked(&mut self, x: u32, y: u32) -> bool {
-        let xi = x as i32;
-        let yi = y as i32;
-        
-        let element = self.grid.get_type(xi, yi);
-        if element == EL_EMPTY { return false; }
-        
-        // Bounds check for element ID
-        if (element as usize) >= ELEMENT_COUNT {
-            self.grid.clear_cell(x, y);
-            return false;
-        }
-        
-        if self.grid.is_updated(x, y) { return false; }
-        
-        self.grid.set_updated(x, y, true);
-        
-        // Handle lifetime
-        let life = self.grid.get_life(x, y);
-        if life > 0 {
-            self.grid.set_life(x, y, life - 1);
-            if life - 1 == 0 {
-                self.grid.clear_cell(x, y);
-                self.chunks.remove_particle(x, y);
-                if self.particle_count > 0 {
-                    self.particle_count -= 1;
-                }
-                return true; // Particle disappeared = activity
+        // SAFETY: x,y are bounded by process_chunk's min() calls
+        unsafe {
+            // Fast type read without bounds check
+            let element = self.grid.get_type_unchecked(x, y);
+            if element == EL_EMPTY { return false; }
+            
+            // Element ID bounds check (data could be corrupted)
+            if (element as usize) >= ELEMENT_COUNT {
+                self.grid.clear_cell_unchecked(x, y);
+                return false;
             }
+            
+            let idx = self.grid.index_unchecked(x, y);
+            
+            // Fast updated check
+            if self.grid.is_updated_unchecked(idx) { return false; }
+            
+            // Fast set updated
+            self.grid.set_updated_unchecked(idx, true);
+            
+            // Handle lifetime with fast access
+            let life = self.grid.get_life_unchecked(idx);
+            if life > 0 {
+                self.grid.set_life_unchecked(idx, life - 1);
+                if life - 1 == 0 {
+                    self.grid.clear_cell_unchecked(x, y);
+                    self.chunks.remove_particle(x, y);
+                    if self.particle_count > 0 {
+                        self.particle_count -= 1;
+                    }
+                    return true; // Particle disappeared = activity
+                }
+            }
+            
+            // Get category and dispatch to behavior
+            let category = ELEMENT_DATA[element as usize].category;
+            
+            // Remember position before update
+            let old_type = element;
+            
+            // Create update context
+            let mut ctx = UpdateContext {
+                grid: &mut self.grid,
+                x,
+                y,
+                frame: self.frame,
+                gravity_x: self.gravity_x,
+                gravity_y: self.gravity_y,
+                ambient_temp: self.ambient_temperature,
+                rng: &mut self.rng_state,
+            };
+            
+            // Delegate to behavior registry
+            self.behaviors.update(category, &mut ctx);
+            
+            // Check if particle moved (cell is now empty or different)
+            let new_type = self.grid.get_type_unchecked(x, y);
+            let moved = new_type != old_type || new_type == EL_EMPTY;
+            
+            if moved {
+                // Wake neighbors if particle moved
+                self.chunks.wake_neighbors(x, y);
+            }
+            
+            // Process chemical reactions AFTER movement (EXACT TypeScript)
+            let current_type = self.grid.get_type_unchecked(x, y);
+            if current_type != EL_EMPTY {
+                self.process_reactions(x, y, current_type);
+            }
+            
+            moved
         }
-        
-        // Get category and dispatch to behavior
-        let category = ELEMENT_DATA[element as usize].category;
-        
-        // Remember position before update
-        let old_type = element;
-        
-        // Create update context
-        let mut ctx = UpdateContext {
-            grid: &mut self.grid,
-            x,
-            y,
-            frame: self.frame,
-            gravity_x: self.gravity_x,
-            gravity_y: self.gravity_y,
-            ambient_temp: self.ambient_temperature,
-            rng: &mut self.rng_state,
-        };
-        
-        // Delegate to behavior registry
-        self.behaviors.update(category, &mut ctx);
-        
-        // Check if particle moved (cell is now empty or different)
-        let new_type = self.grid.get_type(xi, yi);
-        let moved = new_type != old_type || new_type == EL_EMPTY;
-        
-        if moved {
-            // Wake neighbors if particle moved
-            self.chunks.wake_neighbors(x, y);
-        }
-        
-        // Process chemical reactions AFTER movement (EXACT TypeScript)
-        let current_type = self.grid.get_type(x as i32, y as i32);
-        if current_type != EL_EMPTY {
-            self.process_reactions(x, y, current_type);
-        }
-        
-        moved
     }
     
     // Legacy method for compatibility

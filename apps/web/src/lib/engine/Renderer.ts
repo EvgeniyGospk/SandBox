@@ -41,6 +41,10 @@ export class CanvasRenderer {
   private readonly BG_R = 10
   private readonly BG_G = 10
   private readonly BG_B = 10
+  
+  // Phase 3: Smart Rendering (Dirty Rectangles)
+  private static readonly CHUNK_SIZE = 32
+  private chunkImageData: ImageData
 
   constructor(ctx: CanvasRenderingContext2D, width: number, height: number) {
     this.ctx = ctx
@@ -70,6 +74,9 @@ export class CanvasRenderer {
     
     // Pixel-art rendering (no smoothing on zoom)
     this.ctx.imageSmoothingEnabled = false
+    
+    // Phase 3: Create chunk ImageData once (32x32)
+    this.chunkImageData = new ImageData(CanvasRenderer.CHUNK_SIZE, CanvasRenderer.CHUNK_SIZE)
     
     this.clearPixels()
   }
@@ -267,5 +274,96 @@ export class CanvasRenderer {
     // Extreme: Red to White (500-1000+)
     const ratio = Math.min(1, (t - 500) / 500)
     return [255, Math.floor(255 * ratio), Math.floor(255 * ratio)]
+  }
+  
+  // === PHASE 3: SMART RENDERING (Dirty Rectangles) ===
+  
+  /**
+   * Smart render - only update dirty chunks
+   * Massive performance improvement when most of the screen is static
+   */
+  renderSmart(
+    engine: { 
+      getDirtyChunksCount: () => number
+      getDirtyListPtr: () => number
+      extractChunkPixels: (idx: number) => number
+      getChunksX: () => number
+      render: () => void
+    },
+    memory: WebAssembly.Memory
+  ): void {
+    // 1. Ask Rust: how many chunks changed?
+    const count = engine.getDirtyChunksCount()
+    
+    // Heuristic: If >70% of chunks changed, full render is faster
+    const totalChunks = Math.ceil(this.width / CanvasRenderer.CHUNK_SIZE) * 
+                        Math.ceil(this.height / CanvasRenderer.CHUNK_SIZE)
+    
+    if (count > totalChunks * 0.7) {
+      // Fallback to full render
+      engine.render()
+      return
+    }
+    
+    if (count === 0) {
+      // Nothing changed, just redraw buffer to screen (for zoom/pan)
+      this.drawBufferToScreen()
+      return
+    }
+    
+    // 2. Get dirty chunk list (zero-copy view into WASM memory)
+    const listPtr = engine.getDirtyListPtr()
+    const dirtyIds = new Uint32Array(memory.buffer, listPtr, count)
+    
+    const chunksX = engine.getChunksX()
+    const CHUNK_SIZE = CanvasRenderer.CHUNK_SIZE
+    
+    // 3. Process each dirty chunk
+    for (let i = 0; i < count; i++) {
+      const chunkIdx = dirtyIds[i]
+      
+      // Ask Rust to copy chunk pixels to transfer buffer
+      const pixelsPtr = engine.extractChunkPixels(chunkIdx)
+      
+      // Create view into chunk pixels (4096 bytes = 32*32*4)
+      const chunkPixels = new Uint8ClampedArray(memory.buffer, pixelsPtr, 4096)
+      
+      // Copy to ImageData
+      this.chunkImageData.data.set(chunkPixels)
+      
+      // Calculate screen position
+      const cx = chunkIdx % chunksX
+      const cy = Math.floor(chunkIdx / chunksX)
+      const x = cx * CHUNK_SIZE
+      const y = cy * CHUNK_SIZE
+      
+      // Stamp chunk to buffer
+      this.bufferCtx.putImageData(this.chunkImageData, x, y)
+    }
+    
+    // 4. Draw buffer to screen with camera transform
+    this.drawBufferToScreen()
+  }
+  
+  /**
+   * Draw buffer canvas to screen with camera transform
+   */
+  private drawBufferToScreen(): void {
+    // Clear screen with background
+    this.ctx.fillStyle = `rgb(${this.BG_R}, ${this.BG_G}, ${this.BG_B})`
+    this.ctx.fillRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
+    
+    this.ctx.save()
+    // Apply Pan then Zoom
+    this.ctx.translate(this.panX, this.panY)
+    this.ctx.scale(this.zoom, this.zoom)
+    
+    // Draw buffer image
+    this.ctx.drawImage(this.bufferCanvas, 0, 0)
+    
+    // Draw world border
+    this.drawWorldBorder()
+    
+    this.ctx.restore()
   }
 }

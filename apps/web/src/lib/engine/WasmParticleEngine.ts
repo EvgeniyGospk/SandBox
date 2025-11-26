@@ -63,6 +63,12 @@ interface WasmWorld {
   colors_len: () => number
   temperature_ptr: () => number
   temperature_len: () => number
+  // Phase 3: Smart Rendering
+  collect_dirty_chunks: () => number
+  get_dirty_list_ptr: () => number
+  extract_chunk_pixels: (chunkIdx: number) => number
+  chunks_x: () => number
+  chunks_y: () => number
 }
 
 let wasmModule: WasmModule | null = null
@@ -224,6 +230,48 @@ export class WasmParticleEngine {
     // Render directly from WASM memory - zero copy!
     // Pass temperature for thermal view mode
     this.renderer.render(this.typesView, this.colorsView, this.temperatureView ?? undefined)
+  }
+  
+  // === Phase 3: Smart Rendering API ===
+  
+  /** Get WASM memory for zero-copy access */
+  get memory(): WebAssembly.Memory | null {
+    return wasmMemory
+  }
+  
+  /** Get the renderer instance */
+  getRenderer(): CanvasRenderer | null {
+    return this.renderer
+  }
+  
+  /** Collect dirty chunks and return count */
+  getDirtyChunksCount(): number {
+    return this.world.collect_dirty_chunks()
+  }
+  
+  /** Get pointer to dirty chunk list */
+  getDirtyListPtr(): number {
+    return this.world.get_dirty_list_ptr()
+  }
+  
+  /** Extract chunk pixels to transfer buffer, returns pointer */
+  extractChunkPixels(chunkIdx: number): number {
+    return this.world.extract_chunk_pixels(chunkIdx)
+  }
+  
+  /** Get chunks X count */
+  getChunksX(): number {
+    return this.world.chunks_x()
+  }
+  
+  /** Get chunks Y count */
+  getChunksY(): number {
+    return this.world.chunks_y()
+  }
+  
+  /** Get total chunks count */
+  getTotalChunks(): number {
+    return this.world.chunks_x() * this.world.chunks_y()
   }
   
   setRenderMode(mode: RenderMode): void {

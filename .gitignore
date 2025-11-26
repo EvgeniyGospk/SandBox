@@ -43,3 +43,6 @@ coverage/
 
 # Misc
 *.log
+
+# Legacy fallback engines (not needed - WASM is primary)
+apps/web/src/lib/engine/_LEGACY/

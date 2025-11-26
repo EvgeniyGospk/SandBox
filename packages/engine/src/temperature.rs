@@ -166,26 +166,55 @@ fn xorshift32(state: &mut u32) -> u32 {
     x
 }
 
-use crate::chunks::ChunkGrid;
+use crate::chunks::{ChunkGrid, CHUNK_SIZE};
 
-/// Phase 4: Process temperature for the whole grid
-/// Temperature/heat transfer must work globally for proper thermodynamics
-/// (chunking doesn't help here - heat flows across boundaries)
+/// Lazy Hydration: Process temperature with chunk-aware optimization
+/// 
+/// - Sleeping chunks: Only update virtual_temp (O(1) per chunk)
+/// - Active chunks: Process pixels + sync virtual_temp back
+/// 
+/// This reduces O(W*H) to O(active_pixels + all_chunks)
 pub fn process_temperature_grid_chunked(
     grid: &mut Grid,
-    _chunks: &ChunkGrid,  // Kept for API compatibility
+    chunks: &mut ChunkGrid,  // Now mutable for virtual_temp updates!
     ambient_temp: f32,
     frame: u64,
     rng: &mut u32
 ) {
-    // Process ALL cells - temperature must flow across chunk boundaries
-    // Otherwise you get visible "squares" in thermal view
-    let h = grid.height();
-    let w = grid.width();
+    let (cx_count, cy_count) = chunks.dimensions();
     
-    for y in 0..h {
-        for x in 0..w {
-            update_temperature(grid, x, y, ambient_temp, frame, rng);
+    // Air conductivity speed (same as in update_temperature: 0.02)
+    const AIR_LERP_SPEED: f32 = 0.02;
+    
+    for cy in 0..cy_count {
+        for cx in 0..cx_count {
+            if chunks.is_sleeping(cx, cy) {
+                // === PATH 1: CHUNK IS SLEEPING (Fast O(1)) ===
+                // Just smoothly animate virtual_temp towards ambient
+                // This is the SAME math as update_temperature for air, but for ONE number
+                chunks.update_virtual_temp(cx, cy, ambient_temp, AIR_LERP_SPEED);
+            } else {
+                // === PATH 2: CHUNK IS ACTIVE (Slow, pixel-by-pixel) ===
+                // Process all pixels in this chunk
+                let start_x = cx * CHUNK_SIZE;
+                let start_y = cy * CHUNK_SIZE;
+                let end_x = (start_x + CHUNK_SIZE).min(grid.width());
+                let end_y = (start_y + CHUNK_SIZE).min(grid.height());
+                
+                for y in start_y..end_y {
+                    for x in start_x..end_x {
+                        update_temperature(grid, x, y, ambient_temp, frame, rng);
+                    }
+                }
+                
+                // Sync virtual_temp with actual air temperature in chunk
+                // (so when chunk goes to sleep, it continues from correct value)
+                // Do this every 4th frame to save CPU
+                if frame % 4 == 0 {
+                    let avg = grid.get_average_air_temp(cx, cy);
+                    chunks.set_virtual_temp(cx, cy, avg);
+                }
+            }
         }
     }
 }

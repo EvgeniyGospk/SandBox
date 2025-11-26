@@ -1,7 +1,7 @@
 //! LiquidBehavior - Pure dispersion-based liquid physics
 //! 
 //! Port from: apps/web/src/lib/engine/behaviors/LiquidBehavior.ts
-//! EXACT 1:1 port of the TypeScript algorithm
+//! PHASE 1: Optimized with unsafe access after bounds check
 //! 
 //! Philosophy:
 //! - No mass, no pressure formulas - just discrete particle movement
@@ -27,14 +27,18 @@ impl LiquidBehavior {
     }
     
     /// Try to move liquid to target cell (mirrors TypeScript tryMove)
+    /// PHASE 1: Uses unsafe after bounds check
+    #[inline]
     fn try_move(&self, ctx: &mut UpdateContext, from_x: u32, from_y: u32, to_x: i32, to_y: i32, my_density: f32) -> bool {
         if !ctx.grid.in_bounds(to_x, to_y) { return false; }
         
-        let target_type = ctx.grid.get_type(to_x, to_y);
+        // SAFETY: We just checked in_bounds above
+        let target_type = unsafe { ctx.grid.get_type_unchecked(to_x as u32, to_y as u32) };
         
         // Empty cell - just move
         if target_type == EL_EMPTY {
-            ctx.grid.swap(from_x, from_y, to_x as u32, to_y as u32);
+            // SAFETY: Both coords verified (from_x/from_y from caller, to_x/to_y from in_bounds)
+            unsafe { ctx.grid.swap_unchecked(from_x, from_y, to_x as u32, to_y as u32); }
             return true;
         }
         
@@ -45,7 +49,7 @@ impl LiquidBehavior {
         let t_cat = ELEMENT_DATA[target_type as usize].category;
         if t_cat == CAT_LIQUID || t_cat == CAT_GAS {
             if my_density > ELEMENT_DATA[target_type as usize].density {
-                ctx.grid.swap(from_x, from_y, to_x as u32, to_y as u32);
+                unsafe { ctx.grid.swap_unchecked(from_x, from_y, to_x as u32, to_y as u32); }
                 return true;
             }
         }
@@ -54,6 +58,8 @@ impl LiquidBehavior {
     }
     
     /// Scan horizontally for empty cells or cliffs (mirrors TypeScript scanLine)
+    /// PHASE 1: Uses unsafe after bounds check
+    #[inline]
     fn scan_line(&self, ctx: &UpdateContext, start_x: i32, y: i32, dir: i32, range: i32, my_density: f32) -> ScanResult {
         let mut best_x = start_x;
         let mut found = false;
@@ -64,7 +70,8 @@ impl LiquidBehavior {
             
             if !ctx.grid.in_bounds(tx, y) { break; }
             
-            let target_type = ctx.grid.get_type(tx, y);
+            // SAFETY: We just checked in_bounds above
+            let target_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, y as u32) };
             
             // CASE 1: Empty cell
             if target_type == EL_EMPTY {
@@ -72,9 +79,14 @@ impl LiquidBehavior {
                 found = true;
                 
                 // Check for cliff below (waterfall effect)
-                if ctx.grid.in_bounds(tx, y + 1) && ctx.grid.is_empty(tx, y + 1) {
-                    has_cliff = true;
-                    break;
+                let below_y = y + 1;
+                if ctx.grid.in_bounds(tx, below_y) {
+                    // SAFETY: We just checked in_bounds above
+                    let below_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, below_y as u32) };
+                    if below_type == EL_EMPTY {
+                        has_cliff = true;
+                        break;
+                    }
                 }
                 continue;
             }
@@ -110,8 +122,8 @@ impl Behavior for LiquidBehavior {
         let xi = x as i32;
         let yi = y as i32;
         
-        // Get element type
-        let element = ctx.grid.get_type(xi, yi);
+        // SAFETY: x,y come from update_particle_chunked which guarantees valid coords
+        let element = unsafe { ctx.grid.get_type_unchecked(x, y) };
         if element == EL_EMPTY { return; }
         if (element as usize) >= ELEMENT_DATA.len() { return; }
         
@@ -153,7 +165,8 @@ impl Behavior for LiquidBehavior {
         };
         
         if target_x != xi {
-            ctx.grid.swap(x, y, target_x as u32, y);
+            // SAFETY: target_x comes from scan_line which verified bounds
+            unsafe { ctx.grid.swap_unchecked(x, y, target_x as u32, y); }
         }
     }
 }

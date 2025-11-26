@@ -38,6 +38,17 @@ pub struct ChunkGrid {
     idle_frames: Vec<u32>,
     /// Number of non-empty cells in chunk (for quick empty check)
     particle_count: Vec<u32>,
+    
+    // === Lazy Hydration System ===
+    /// Virtual temperature of air in each chunk (updated every frame, even sleeping)
+    pub virtual_temp: Vec<f32>,
+    /// Flag: chunk just woke up from sleep, needs temperature hydration
+    pub just_woke_up: Vec<bool>,
+    
+    // === Visual Dirty (Phase 3 Fix: State Desync) ===
+    /// Visual dirty flag - chunk needs RENDERING (separate from physics dirty)
+    /// Cleared only when JS fetches the dirty list, not during physics!
+    pub visual_dirty: Vec<bool>,
 }
 
 impl ChunkGrid {
@@ -55,6 +66,11 @@ impl ChunkGrid {
             dirty: vec![true; chunk_count],                 // All dirty initially
             idle_frames: vec![0; chunk_count],
             particle_count: vec![0; chunk_count],
+            // Lazy Hydration: init with room temperature
+            virtual_temp: vec![20.0; chunk_count],
+            just_woke_up: vec![false; chunk_count],
+            // Visual dirty: TRUE initially so first frame draws everything
+            visual_dirty: vec![true; chunk_count],
         }
     }
     
@@ -89,19 +105,31 @@ impl ChunkGrid {
     // === Dirty flag management ===
     
     /// Mark chunk as dirty (needs processing)
+    /// Lazy Hydration: detects Sleep -> Active transition
     #[inline]
     pub fn mark_dirty(&mut self, x: u32, y: u32) {
         let idx = self.chunk_index(x, y);
+        // Catch the wake-up moment for temperature hydration!
+        if self.state[idx] == ChunkState::Sleeping {
+            self.just_woke_up[idx] = true;
+        }
         self.dirty[idx] = true;
         self.idle_frames[idx] = 0;
         self.state[idx] = ChunkState::Active;
     }
     
     /// Mark chunk as dirty by chunk index
+    /// Lazy Hydration: detects Sleep -> Active transition
+    /// Also marks visual_dirty for renderer!
     #[inline]
     pub fn mark_dirty_idx(&mut self, idx: usize) {
         if idx < self.chunk_count {
+            // Catch the wake-up moment for temperature hydration!
+            if self.state[idx] == ChunkState::Sleeping {
+                self.just_woke_up[idx] = true;
+            }
             self.dirty[idx] = true;
+            self.visual_dirty[idx] = true; // IMPORTANT: Mark for rendering too!
             self.idle_frames[idx] = 0;
             self.state[idx] = ChunkState::Active;
         }
@@ -225,18 +253,21 @@ impl ChunkGrid {
     }
     
     /// Called after processing a chunk
+    /// Sets visual_dirty if movement occurred (for renderer to pick up)
     pub fn end_chunk_update(&mut self, cx: u32, cy: u32, had_movement: bool) {
         let idx = self.chunk_idx_from_coords(cx, cy);
         
         if had_movement {
             self.idle_frames[idx] = 0;
             self.state[idx] = ChunkState::Active;
+            self.visual_dirty[idx] = true; // CRITICAL: Mark for render!
             
             // CRITICAL: Wake chunk BELOW us (particles fall down!)
             let cyi = cy as i32;
             if self.chunk_in_bounds(cx as i32, cyi + 1) {
                 let below_idx = self.chunk_idx_from_coords(cx, cy + 1);
                 self.dirty[below_idx] = true;
+                self.visual_dirty[below_idx] = true; // Also mark below for render
                 self.state[below_idx] = ChunkState::Active;
                 self.idle_frames[below_idx] = 0;
             }
@@ -248,16 +279,62 @@ impl ChunkGrid {
             }
         }
         
-        // Clear dirty flag after processing
+        // Clear PHYSICS dirty flag after processing
+        // NOTE: visual_dirty is NOT cleared here - it waits for JS to fetch it!
         self.dirty[idx] = false;
+    }
+    
+    /// Clear visual dirty flag (called by World when JS fetches dirty list)
+    #[inline]
+    pub fn clear_visual_dirty(&mut self, idx: usize) {
+        if idx < self.chunk_count {
+            self.visual_dirty[idx] = false;
+        }
     }
     
     /// Reset all chunks to active (e.g., after clear)
     pub fn reset(&mut self) {
         self.state.fill(ChunkState::Active);
         self.dirty.fill(true);
+        self.visual_dirty.fill(true); // Reset visual dirty for full redraw
         self.idle_frames.fill(0);
         self.particle_count.fill(0);
+        self.virtual_temp.fill(20.0);
+        self.just_woke_up.fill(false);
+    }
+    
+    // === Lazy Hydration Methods ===
+    
+    /// Get virtual temperature for chunk
+    #[inline]
+    pub fn get_virtual_temp(&self, cx: u32, cy: u32) -> f32 {
+        let idx = self.chunk_idx_from_coords(cx, cy);
+        self.virtual_temp[idx]
+    }
+    
+    /// Update virtual temperature smoothly (lerp towards target)
+    #[inline]
+    pub fn update_virtual_temp(&mut self, cx: u32, cy: u32, target_temp: f32, speed: f32) {
+        let idx = self.chunk_idx_from_coords(cx, cy);
+        let current = self.virtual_temp[idx];
+        let diff = target_temp - current;
+        if diff.abs() > 0.01 {
+            self.virtual_temp[idx] += diff * speed;
+        } else {
+            self.virtual_temp[idx] = target_temp;
+        }
+    }
+    
+    /// Set virtual temperature directly (for sync after active processing)
+    #[inline]
+    pub fn set_virtual_temp(&mut self, cx: u32, cy: u32, temp: f32) {
+        let idx = self.chunk_idx_from_coords(cx, cy);
+        self.virtual_temp[idx] = temp;
+    }
+    
+    /// Clear wake-up flags after processing hydration
+    pub fn clear_wake_flags(&mut self) {
+        self.just_woke_up.fill(false);
     }
     
     // === Statistics ===

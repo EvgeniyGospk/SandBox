@@ -1,7 +1,7 @@
 //! GasBehavior - Pure dispersion-based gas physics
 //! 
 //! Port from: apps/web/src/lib/engine/behaviors/GasBehavior.ts
-//! EXACT 1:1 port of the TypeScript algorithm
+//! PHASE 1: Optimized with unsafe access after bounds check
 //! 
 //! Philosophy:
 //! - Gases are "inverted liquids" - they rise instead of fall
@@ -26,14 +26,17 @@ impl GasBehavior {
     }
     
     /// Try to rise to target cell (mirrors TypeScript tryRise)
+    /// PHASE 1: Uses unsafe after bounds check
+    #[inline]
     fn try_rise(&self, ctx: &mut UpdateContext, from_x: u32, from_y: u32, to_x: i32, to_y: i32, my_density: f32) -> bool {
         if !ctx.grid.in_bounds(to_x, to_y) { return false; }
         
-        let target_type = ctx.grid.get_type(to_x, to_y);
+        // SAFETY: We just checked in_bounds above
+        let target_type = unsafe { ctx.grid.get_type_unchecked(to_x as u32, to_y as u32) };
         
         // Empty cell - just rise
         if target_type == EL_EMPTY {
-            ctx.grid.swap(from_x, from_y, to_x as u32, to_y as u32);
+            unsafe { ctx.grid.swap_unchecked(from_x, from_y, to_x as u32, to_y as u32); }
             return true;
         }
         
@@ -46,7 +49,7 @@ impl GasBehavior {
         if t_cat != CAT_SOLID {
             let t_density = ELEMENT_DATA[target_type as usize].density;
             if t_density > my_density {
-                ctx.grid.swap(from_x, from_y, to_x as u32, to_y as u32);
+                unsafe { ctx.grid.swap_unchecked(from_x, from_y, to_x as u32, to_y as u32); }
                 return true;
             }
         }
@@ -55,6 +58,8 @@ impl GasBehavior {
     }
     
     /// Scan ceiling for chimneys (mirrors TypeScript scanCeiling)
+    /// PHASE 1: Uses unsafe after bounds check
+    #[inline]
     fn scan_ceiling(&self, ctx: &UpdateContext, start_x: i32, y: i32, dir: i32, range: i32, my_density: f32) -> ScanResult {
         let mut best_x = start_x;
         let mut found = false;
@@ -65,7 +70,8 @@ impl GasBehavior {
             
             if !ctx.grid.in_bounds(tx, y) { break; }
             
-            let target_type = ctx.grid.get_type(tx, y);
+            // SAFETY: We just checked in_bounds above
+            let target_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, y as u32) };
             
             // CASE 1: Empty cell
             if target_type == EL_EMPTY {
@@ -73,8 +79,10 @@ impl GasBehavior {
                 found = true;
                 
                 // Check for chimney above
-                if ctx.grid.in_bounds(tx, y - 1) {
-                    let above_type = ctx.grid.get_type(tx, y - 1);
+                let above_y = y - 1;
+                if ctx.grid.in_bounds(tx, above_y) {
+                    // SAFETY: We just checked in_bounds above
+                    let above_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, above_y as u32) };
                     if above_type == EL_EMPTY {
                         has_chimney = true;
                         break;
@@ -119,8 +127,8 @@ impl Behavior for GasBehavior {
         let xi = x as i32;
         let yi = y as i32;
         
-        // Get element type
-        let element = ctx.grid.get_type(xi, yi);
+        // SAFETY: x,y come from update_particle_chunked which guarantees valid coords
+        let element = unsafe { ctx.grid.get_type_unchecked(x, y) };
         if element == EL_EMPTY { return; }
         if (element as usize) >= ELEMENT_DATA.len() { return; }
         
@@ -161,7 +169,8 @@ impl Behavior for GasBehavior {
         };
         
         if target_x != xi {
-            ctx.grid.swap(x, y, target_x as u32, y);
+            // SAFETY: target_x comes from scan_ceiling which verified bounds
+            unsafe { ctx.grid.swap_unchecked(x, y, target_x as u32, y); }
         }
     }
 }

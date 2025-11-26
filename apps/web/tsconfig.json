@@ -22,5 +22,9 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": [
+    "src/lib/engine/_LEGACY",
+    "src/lib/engine/__tests__"
+  ]
 }
