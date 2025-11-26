@@ -1,13 +1,15 @@
 //! Grid - Structure of Arrays (SoA) for cache-friendly particle storage
 //! 
-//! Phase 4: Added move tracking for chunk optimization
+//! Phase 5: ABGR color format for direct Canvas copy
 //! 
 //! Instead of: Vec<Option<Particle>>  // Bad: many allocations, poor cache
 //! We have:    types[], colors[], temps[]  // Good: linear memory, SIMD-friendly
 
 use crate::elements::{ElementId, EL_EMPTY};
 
-const BG_COLOR: u32 = 0xFF0A0A0A;
+// Background color in ABGR format (little-endian: 0xAABBGGRR -> bytes [RR,GG,BB,AA])
+// RGB(10,10,10) with alpha=255 -> 0xFF0A0A0A in ABGR
+const BG_COLOR: u32 = 0xFF0A0A0A; // Same value since R=G=B
 
 /// Recorded particle movement (from_x, from_y, to_x, to_y)
 pub type ParticleMove = (u32, u32, u32, u32);

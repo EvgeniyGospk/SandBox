@@ -104,19 +104,22 @@ pub fn get_props(id: ElementId) -> &'static ElementProps {
 }
 
 /// Get color with variation - EXACT TypeScript algorithm
-/// TS: variation = (i - 16) * 2, range -32 to +30, 32 variants
+/// Phase 5: Returns ABGR format for direct copy to Canvas ImageData!
+/// On little-endian: u32 0xAABBGGRR -> bytes [RR, GG, BB, AA] = RGBA in ImageData
 pub fn get_color_with_variation(id: ElementId, seed: u8) -> u32 {
     let base = ELEMENT_DATA[id as usize].color;
     // Match TypeScript: (seed & 31) gives 0-31, then (i - 16) * 2 gives -32 to +30
     let i = (seed & 31) as i32;
     let variation = (i - 16) * 2;
     
+    // Extract ARGB from base color
     let a = (base >> 24) & 0xFF;
     let r = (((base >> 16) & 0xFF) as i32 + variation).clamp(0, 255) as u32;
     let g = (((base >> 8) & 0xFF) as i32 + variation).clamp(0, 255) as u32;
     let b = ((base & 0xFF) as i32 + variation).clamp(0, 255) as u32;
     
-    (a << 24) | (r << 16) | (g << 8) | b
+    // Return ABGR format for Canvas ImageData (little-endian)
+    (a << 24) | (b << 16) | (g << 8) | r
 }
 
 // Legacy enum for JS compatibility

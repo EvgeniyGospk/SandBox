@@ -1,0 +1,5 @@
+# Phase 5: Enable WASM SIMD for maximum performance
+# SIMD128 provides 128-bit SIMD operations (4x f32, 16x u8, etc.)
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
