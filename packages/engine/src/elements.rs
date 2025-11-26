@@ -1,0 +1,160 @@
+use wasm_bindgen::prelude::*;
+
+/// Element ID as u8 for compact storage
+pub type ElementId = u8;
+
+// Element constants matching TypeScript
+pub const EL_EMPTY: ElementId = 0;
+pub const EL_STONE: ElementId = 1;
+pub const EL_SAND: ElementId = 2;
+pub const EL_WOOD: ElementId = 3;
+pub const EL_METAL: ElementId = 4;
+pub const EL_ICE: ElementId = 5;
+pub const EL_WATER: ElementId = 6;
+pub const EL_OIL: ElementId = 7;
+pub const EL_LAVA: ElementId = 8;
+pub const EL_ACID: ElementId = 9;
+pub const EL_STEAM: ElementId = 10;
+pub const EL_SMOKE: ElementId = 11;
+pub const EL_FIRE: ElementId = 12;
+pub const EL_SPARK: ElementId = 13;
+pub const EL_ELECTRICITY: ElementId = 14;
+pub const EL_GUNPOWDER: ElementId = 15;
+pub const EL_CLONE: ElementId = 16;
+pub const EL_VOID: ElementId = 17;
+pub const EL_DIRT: ElementId = 18;
+pub const EL_SEED: ElementId = 19;
+pub const EL_PLANT: ElementId = 20;
+pub const ELEMENT_COUNT: usize = 21;
+
+// Category IDs
+pub type CategoryId = u8;
+pub const CAT_SOLID: CategoryId = 0;
+pub const CAT_POWDER: CategoryId = 1;
+pub const CAT_LIQUID: CategoryId = 2;
+pub const CAT_GAS: CategoryId = 3;
+pub const CAT_ENERGY: CategoryId = 4;
+pub const CAT_UTILITY: CategoryId = 5;
+pub const CAT_BIO: CategoryId = 6;
+
+/// Element properties struct
+#[derive(Clone, Copy)]
+pub struct ElementProps {
+    pub color: u32,
+    pub density: f32,
+    pub category: CategoryId,
+    pub dispersion: u8,
+    pub lifetime: u16,
+    pub default_temp: f32,
+    pub heat_conductivity: u8,
+    pub flammable: bool,
+    pub conductive: bool,
+}
+
+/// Static element data - indexed by ElementId
+pub static ELEMENT_DATA: [ElementProps; ELEMENT_COUNT] = [
+    // 0: Empty
+    ElementProps { color: 0xFF0A0A0A, density: 0.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 5, flammable: false, conductive: false },
+    // 1: Stone
+    ElementProps { color: 0xFF808080, density: 2500.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 10, flammable: false, conductive: false },
+    // 2: Sand
+    ElementProps { color: 0xFFC2B280, density: 1600.0, category: CAT_POWDER, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 15, flammable: false, conductive: false },
+    // 3: Wood
+    ElementProps { color: 0xFF8B4513, density: 600.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 5, flammable: true, conductive: false },
+    // 4: Metal
+    ElementProps { color: 0xFFA9A9A9, density: 7800.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 90, flammable: false, conductive: true },
+    // 5: Ice
+    ElementProps { color: 0xFFA5F2F3, density: 916.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: -10.0, heat_conductivity: 20, flammable: false, conductive: false },
+    // 6: Water
+    ElementProps { color: 0xFF4169E1, density: 1000.0, category: CAT_LIQUID, dispersion: 8, lifetime: 0, default_temp: 20.0, heat_conductivity: 40, flammable: false, conductive: true },
+    // 7: Oil
+    ElementProps { color: 0xFF4A4A2A, density: 800.0, category: CAT_LIQUID, dispersion: 5, lifetime: 0, default_temp: 20.0, heat_conductivity: 15, flammable: true, conductive: false },
+    // 8: Lava
+    ElementProps { color: 0xFFFF4500, density: 2500.0, category: CAT_LIQUID, dispersion: 2, lifetime: 0, default_temp: 1000.0, heat_conductivity: 30, flammable: false, conductive: false },
+    // 9: Acid
+    ElementProps { color: 0xFF39FF14, density: 1050.0, category: CAT_LIQUID, dispersion: 5, lifetime: 0, default_temp: 20.0, heat_conductivity: 35, flammable: false, conductive: true },
+    // 10: Steam
+    ElementProps { color: 0xB4E0E0E0, density: 0.6, category: CAT_GAS, dispersion: 6, lifetime: 0, default_temp: 100.0, heat_conductivity: 10, flammable: false, conductive: false },
+    // 11: Smoke
+    ElementProps { color: 0xC83F3F3F, density: 1.1, category: CAT_GAS, dispersion: 4, lifetime: 0, default_temp: 50.0, heat_conductivity: 5, flammable: false, conductive: false },
+    // 12: Fire
+    ElementProps { color: 0xFFFF6600, density: 0.3, category: CAT_ENERGY, dispersion: 0, lifetime: 60, default_temp: 800.0, heat_conductivity: 50, flammable: false, conductive: false },
+    // 13: Spark
+    ElementProps { color: 0xFFFFFF00, density: 0.1, category: CAT_ENERGY, dispersion: 0, lifetime: 10, default_temp: 500.0, heat_conductivity: 50, flammable: false, conductive: false },
+    // 14: Electricity
+    ElementProps { color: 0xFF00FFFF, density: 0.0, category: CAT_ENERGY, dispersion: 0, lifetime: 3, default_temp: 200.0, heat_conductivity: 80, flammable: false, conductive: false },
+    // 15: Gunpowder
+    ElementProps { color: 0xFF404040, density: 1400.0, category: CAT_POWDER, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 10, flammable: true, conductive: false },
+    // 16: Clone
+    ElementProps { color: 0xFF00FF00, density: f32::INFINITY, category: CAT_UTILITY, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 0, flammable: false, conductive: false },
+    // 17: Void
+    ElementProps { color: 0xFF000000, density: f32::INFINITY, category: CAT_UTILITY, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 0, flammable: false, conductive: false },
+    // 18: Dirt
+    ElementProps { color: 0xFF5C4033, density: 1200.0, category: CAT_POWDER, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 10, flammable: false, conductive: false },
+    // 19: Seed
+    ElementProps { color: 0xFFE2C489, density: 1100.0, category: CAT_BIO, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 5, flammable: true, conductive: false },
+    // 20: Plant
+    ElementProps { color: 0xFF228B22, density: 900.0, category: CAT_BIO, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 10, flammable: true, conductive: false },
+];
+
+/// Get element properties by ID
+#[inline]
+pub fn get_props(id: ElementId) -> &'static ElementProps {
+    &ELEMENT_DATA[id as usize]
+}
+
+/// Get color with variation - EXACT TypeScript algorithm
+/// TS: variation = (i - 16) * 2, range -32 to +30, 32 variants
+pub fn get_color_with_variation(id: ElementId, seed: u8) -> u32 {
+    let base = ELEMENT_DATA[id as usize].color;
+    // Match TypeScript: (seed & 31) gives 0-31, then (i - 16) * 2 gives -32 to +30
+    let i = (seed & 31) as i32;
+    let variation = (i - 16) * 2;
+    
+    let a = (base >> 24) & 0xFF;
+    let r = (((base >> 16) & 0xFF) as i32 + variation).clamp(0, 255) as u32;
+    let g = (((base >> 8) & 0xFF) as i32 + variation).clamp(0, 255) as u32;
+    let b = ((base & 0xFF) as i32 + variation).clamp(0, 255) as u32;
+    
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
+// Legacy enum for JS compatibility
+#[wasm_bindgen]
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ElementType {
+    Empty = 0,
+    Stone = 1,
+    Sand = 2,
+    Wood = 3,
+    Metal = 4,
+    Ice = 5,
+    Water = 6,
+    Oil = 7,
+    Lava = 8,
+    Acid = 9,
+    Steam = 10,
+    Smoke = 11,
+    Fire = 12,
+    Spark = 13,
+    Electricity = 14,
+    Gunpowder = 15,
+    Clone = 16,
+    Void = 17,
+    Dirt = 18,
+    Seed = 19,
+    Plant = 20,
+}
+
+impl ElementType {
+    /// Convert enum to ElementId
+    pub fn to_id(self) -> ElementId {
+        self as ElementId
+    }
+    
+    /// Get properties for this element type
+    pub fn props(self) -> &'static ElementProps {
+        get_props(self as ElementId)
+    }
+}

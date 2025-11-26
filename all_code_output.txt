@@ -1,0 +1,6435 @@
+--- File: apps/web/src/App.tsx ---
+
+import { useEffect, useState } from 'react'
+import { Canvas } from '@/components/Canvas'
+import { LeftPanel } from '@/components/panels/LeftPanel'
+import { TopToolbar } from '@/components/panels/TopToolbar'
+import { BottomBar } from '@/components/panels/BottomBar'
+import { RightPanel } from '@/components/panels/RightPanel'
+
+function App() {
+  const [isEngineReady, setIsEngineReady] = useState(false)
+
+  useEffect(() => {
+    // TODO: Initialize WASM engine here
+    // For now, just mark as ready
+    setIsEngineReady(true)
+  }, [])
+
+  if (!isEngineReady) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-[#0D0D0D]">
+        <div className="text-white text-xl">Loading Particula...</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col h-screen bg-[#0D0D0D] text-white overflow-hidden">
+      {/* Top Toolbar */}
+      <TopToolbar />
+
+      {/* Main Content */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left Panel - Elements */}
+        <LeftPanel />
+
+        {/* Canvas - Center */}
+        <main className="flex-1 relative">
+          <Canvas />
+        </main>
+
+        {/* Right Panel - Settings */}
+        <RightPanel />
+      </div>
+
+      {/* Bottom Bar */}
+      <BottomBar />
+    </div>
+  )
+}
+
+export default App
+
+--- End of File: apps/web/src/App.tsx ---
+
+
+--- File: apps/web/src/components/Canvas.tsx ---
+
+import { useRef, useEffect, useCallback } from 'react'
+import { useSimulationStore } from '@/stores/simulationStore'
+import { useToolStore } from '@/stores/toolStore'
+import { WorkerParticleEngine, isSharedArrayBufferAvailable, ParticleEngine } from '@/lib/engine'
+
+// Type for either engine (Worker or fallback)
+type EngineType = WorkerParticleEngine | ParticleEngine
+
+// Global engine instance for external access (reset, etc.)
+let globalEngine: EngineType | null = null
+export function getEngine(): EngineType | null { return globalEngine }
+
+// Camera reset callback (set by Canvas component)
+let resetCameraCallback: (() => void) | null = null
+export function resetCamera(): void { resetCameraCallback?.() }
+
+export function Canvas() {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const engineRef = useRef<EngineType | null>(null)
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
+  const isDrawing = useRef(false)
+  const isDragging = useRef(false)
+  const lastPos = useRef<{ x: number; y: number } | null>(null)
+  const lastMousePos = useRef({ x: 0, y: 0 })
+  const animationRef = useRef<number>(0)
+  const lastTimeRef = useRef<number>(0)
+  const fpsAccum = useRef<number[]>([])
+  const useWorkerRef = useRef(false)  // Track if using worker engine
+  
+  // Camera state (refs to avoid re-renders)
+  const cameraRef = useRef({ x: 0, y: 0, zoom: 1 })
+  
+  const { isPlaying, speed, gravity, ambientTemperature, setFps, setParticleCount } = useSimulationStore()
+  const { selectedElement, brushSize, selectedTool } = useToolStore()
+
+  // Use refs for values accessed in render loop to avoid recreating the loop
+  const isPlayingRef = useRef(isPlaying)
+  const speedRef = useRef(speed)
+  isPlayingRef.current = isPlaying
+  speedRef.current = speed
+
+  // Register camera reset callback
+  useEffect(() => {
+    resetCameraCallback = () => {
+      cameraRef.current = { x: 0, y: 0, zoom: 1 }
+      engineRef.current?.setTransform(1, 0, 0)
+    }
+    return () => { resetCameraCallback = null }
+  }, [])
+
+  // Sync physics settings with engine
+  useEffect(() => {
+    const engine = engineRef.current
+    if (engine) {
+      engine.setSettings({ gravity, ambientTemperature })
+    }
+  }, [gravity, ambientTemperature])
+  
+  // Handle play/pause for worker engine
+  useEffect(() => {
+    const engine = engineRef.current
+    if (!engine || !useWorkerRef.current) return
+    
+    const workerEngine = engine as WorkerParticleEngine
+    if (isPlaying) {
+      workerEngine.start()
+    } else {
+      workerEngine.stop()
+    }
+  }, [isPlaying])
+
+  // Initialize engine and start render loop
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const container = containerRef.current
+    if (!canvas || !container) return
+
+    const ctx = canvas.getContext('2d', { alpha: false })
+    if (!ctx) return
+    ctxRef.current = ctx
+
+    const { width, height } = container.getBoundingClientRect()
+    if (width <= 0 || height <= 0) return
+    
+    canvas.width = width
+    canvas.height = height
+    
+    // Try to use WorkerParticleEngine (multi-threaded), fallback to single-threaded
+    let engine: EngineType
+    
+    if (isSharedArrayBufferAvailable()) {
+      console.log('🚀 Using WorkerParticleEngine (multi-threaded)')
+      const workerEngine = new WorkerParticleEngine(width, height)
+      workerEngine.attachRenderer(ctx)
+      useWorkerRef.current = true
+      engine = workerEngine
+      
+      // Start simulation when worker is ready
+      workerEngine.onReady(() => {
+        if (isPlayingRef.current) {
+          workerEngine.start()
+        }
+      })
+    } else {
+      console.log('⚠️ SharedArrayBuffer not available, using single-threaded engine')
+      const singleEngine = new ParticleEngine(width, height)
+      singleEngine.attachRenderer(ctx)
+      useWorkerRef.current = false
+      engine = singleEngine
+    }
+    
+    engineRef.current = engine
+    globalEngine = engine
+
+    // Throttle state updates to avoid React re-renders
+    let lastStatsUpdate = 0
+    const STATS_UPDATE_INTERVAL = 200
+
+    // Render loop with FPS smoothing
+    const render = (time: number) => {
+      const eng = engineRef.current
+      if (!eng) return
+
+      // Calculate smoothed FPS
+      const delta = time - lastTimeRef.current
+      if (delta > 0) {
+        fpsAccum.current.push(1000 / delta)
+        if (fpsAccum.current.length > 10) fpsAccum.current.shift()
+      }
+      lastTimeRef.current = time
+
+      // For single-threaded engine, step simulation here
+      // For worker engine, simulation runs in the worker
+      if (!useWorkerRef.current && isPlayingRef.current) {
+        const steps = speedRef.current >= 1 ? Math.floor(speedRef.current) : 1
+        for (let i = 0; i < steps; i++) {
+          (eng as ParticleEngine).step()
+        }
+      }
+
+      // Render (reads from SharedArrayBuffer for worker engine)
+      eng.render()
+
+      // Throttle React state updates
+      if (time - lastStatsUpdate > STATS_UPDATE_INTERVAL) {
+        const avgFps = fpsAccum.current.reduce((a, b) => a + b, 0) / fpsAccum.current.length
+        setFps(Math.round(avgFps))
+        setParticleCount(eng.particleCount)
+        lastStatsUpdate = time
+      }
+
+      animationRef.current = requestAnimationFrame(render)
+    }
+
+    animationRef.current = requestAnimationFrame(render)
+
+    return () => {
+      cancelAnimationFrame(animationRef.current)
+      // Cleanup worker engine
+      if (useWorkerRef.current && engineRef.current) {
+        (engineRef.current as WorkerParticleEngine).destroy()
+      }
+      globalEngine = null
+    }
+  }, [setFps, setParticleCount])
+
+  // Handle resize
+  useEffect(() => {
+    const handleResize = () => {
+      const canvas = canvasRef.current
+      const container = containerRef.current
+      if (!canvas || !container) return
+
+      const { width, height } = container.getBoundingClientRect()
+      canvas.width = width
+      canvas.height = height
+
+      if (engineRef.current) {
+        engineRef.current.resize(width, height)
+      }
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  // Get canvas position (screen coordinates)
+  const getCanvasPosition = useCallback((e: React.MouseEvent) => {
+    const canvas = canvasRef.current
+    if (!canvas) return { x: 0, y: 0 }
+    
+    const rect = canvas.getBoundingClientRect()
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    }
+  }, [])
+
+  // Screen -> World coordinate conversion
+  const screenToWorld = useCallback((sx: number, sy: number) => {
+    const cam = cameraRef.current
+    return {
+      x: Math.floor((sx - cam.x) / cam.zoom),
+      y: Math.floor((sy - cam.y) / cam.zoom)
+    }
+  }, [])
+
+  // Zoom handler (mouse wheel)
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    const eng = engineRef.current
+    if (!eng) return
+    e.preventDefault()
+
+    const delta = e.deltaY > 0 ? 0.9 : 1.1
+    const cam = cameraRef.current
+    const newZoom = Math.min(Math.max(cam.zoom * delta, 1), 10) // Min 1x, Max 10x
+
+    // Zoom toward cursor position
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const mouseX = e.clientX - rect.left
+    const mouseY = e.clientY - rect.top
+
+    // Adjust pan so point under cursor stays fixed
+    const scale = newZoom / cam.zoom
+    cam.x = mouseX - (mouseX - cam.x) * scale
+    cam.y = mouseY - (mouseY - cam.y) * scale
+    cam.zoom = newZoom
+
+    eng.setTransform(cam.zoom, cam.x, cam.y)
+  }, [])
+
+  // Draw particles
+  const draw = useCallback((x: number, y: number) => {
+    const engine = engineRef.current
+    if (!engine) return
+
+    const radius = Math.floor(brushSize / 2)
+
+    if (selectedTool === 'eraser') {
+      engine.removeParticlesInRadius(x, y, radius)
+    } else if (selectedTool === 'brush') {
+      engine.addParticlesInRadius(x, y, radius, selectedElement)
+    }
+  }, [brushSize, selectedElement, selectedTool])
+
+  // Mouse handlers
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    const pos = getCanvasPosition(e)
+    lastMousePos.current = { x: e.clientX, y: e.clientY }
+
+    // Middle mouse button (1) or move tool -> pan
+    if (selectedTool === 'move' || e.button === 1) {
+      isDragging.current = true
+      e.preventDefault()
+      return
+    }
+
+    // Drawing
+    isDrawing.current = true
+    const worldPos = screenToWorld(pos.x, pos.y)
+    lastPos.current = worldPos
+    draw(worldPos.x, worldPos.y)
+  }, [getCanvasPosition, screenToWorld, draw, selectedTool])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const pos = getCanvasPosition(e)
+
+    // Pan mode
+    if (isDragging.current) {
+      const dx = e.clientX - lastMousePos.current.x
+      const dy = e.clientY - lastMousePos.current.y
+      
+      const cam = cameraRef.current
+      cam.x += dx
+      cam.y += dy
+      
+      if (engineRef.current) {
+        engineRef.current.setTransform(cam.zoom, cam.x, cam.y)
+      }
+      
+      lastMousePos.current = { x: e.clientX, y: e.clientY }
+      return
+    }
+
+    // Drawing mode
+    if (!isDrawing.current) return
+    
+    const worldPos = screenToWorld(pos.x, pos.y)
+    
+    // Interpolate between last position and current (in world space)
+    if (lastPos.current) {
+      const dx = worldPos.x - lastPos.current.x
+      const dy = worldPos.y - lastPos.current.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const steps = Math.max(1, Math.floor(dist))
+      
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps
+        const x = Math.floor(lastPos.current.x + dx * t)
+        const y = Math.floor(lastPos.current.y + dy * t)
+        draw(x, y)
+      }
+    }
+    
+    lastPos.current = worldPos
+  }, [getCanvasPosition, screenToWorld, draw])
+
+  const handleMouseUp = useCallback(() => {
+    isDrawing.current = false
+    isDragging.current = false
+    lastPos.current = null
+  }, [])
+
+  const handleMouseLeave = useCallback(() => {
+    isDrawing.current = false
+    isDragging.current = false
+    lastPos.current = null
+  }, [])
+
+  // Get cursor class
+  const getCursorClass = () => {
+    switch (selectedTool) {
+      case 'eraser': return 'cursor-cell'
+      case 'pipette': return 'cursor-copy'
+      case 'move': return 'cursor-grab'
+      default: return 'cursor-crosshair'
+    }
+  }
+
+  return (
+    <div 
+      ref={containerRef} 
+      className="w-full h-full bg-[#0a0a0a] overflow-hidden"
+    >
+      <canvas
+        ref={canvasRef}
+        className={`w-full h-full ${getCursorClass()}`}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
+        onWheel={handleWheel}
+        onContextMenu={(e) => e.preventDefault()}
+      />
+    </div>
+  )
+}
+
+--- End of File: apps/web/src/components/Canvas.tsx ---
+
+
+--- File: apps/web/src/components/panels/BottomBar.tsx ---
+
+import { useSimulationStore } from '@/stores/simulationStore'
+import { Play, Pause, SkipForward, RotateCcw } from 'lucide-react'
+
+export function BottomBar() {
+  const {
+    isPlaying,
+    speed,
+    fps,
+    particleCount,
+    play,
+    pause,
+    step,
+    reset,
+    setSpeed
+  } = useSimulationStore()
+
+  const speedOptions = [0.5, 1, 2, 4] as const
+
+  return (
+    <footer className="h-12 bg-[#1A1A1A] border-t border-[#333] flex items-center px-4 gap-4">
+      {/* Playback Controls */}
+      <div className="flex items-center gap-1">
+        <button
+          onClick={isPlaying ? pause : play}
+          className="p-2 rounded-lg hover:bg-[#252525] transition-colors"
+          title={isPlaying ? 'Pause' : 'Play'}
+        >
+          {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+        </button>
+        <button
+          onClick={step}
+          disabled={isPlaying}
+          className="p-2 rounded-lg hover:bg-[#252525] transition-colors disabled:opacity-50"
+          title="Step"
+        >
+          <SkipForward size={18} />
+        </button>
+        <button
+          onClick={reset}
+          className="p-2 rounded-lg hover:bg-[#252525] transition-colors text-[#EF4444]"
+          title="Reset"
+        >
+          <RotateCcw size={18} />
+        </button>
+      </div>
+
+      {/* Divider */}
+      <div className="w-px h-6 bg-[#333]" />
+
+      {/* Speed Control */}
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-[#A0A0A0]">Speed:</span>
+        <div className="flex gap-0.5">
+          {speedOptions.map((s) => (
+            <button
+              key={s}
+              onClick={() => setSpeed(s)}
+              className={`px-3 py-1 text-sm rounded-lg transition-colors ${
+                speed === s
+                  ? 'bg-[#3B82F6] text-white'
+                  : 'bg-[#252525] text-[#A0A0A0] hover:text-white'
+              }`}
+            >
+              {s}x
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Stats */}
+      <div className="flex items-center gap-6 text-sm">
+        <div className="flex items-center gap-1.5">
+          <span 
+            className={`w-2.5 h-2.5 rounded-full ${
+              fps >= 50 ? 'bg-[#22C55E]' : fps >= 30 ? 'bg-[#F59E0B]' : 'bg-[#EF4444]'
+            }`} 
+          />
+          <span className="text-[#A0A0A0]">FPS:</span>
+          <span className="font-mono w-6">{fps}</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[#A0A0A0]">Particles:</span>
+          <span className="font-mono">{formatNumber(particleCount)}</span>
+        </div>
+      </div>
+    </footer>
+  )
+}
+
+function formatNumber(num: number): string {
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`
+  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`
+  return num.toString()
+}
+
+--- End of File: apps/web/src/components/panels/BottomBar.tsx ---
+
+
+--- File: apps/web/src/components/panels/LeftPanel.tsx ---
+
+import { useState } from 'react'
+import { useToolStore } from '@/stores/toolStore'
+import { ELEMENTS, ELEMENT_CATEGORIES } from '@/lib/elements'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+
+export function LeftPanel() {
+  const [isCollapsed, setIsCollapsed] = useState(false)
+  const [activeCategory, setActiveCategory] = useState<string>('solids')
+  const { selectedElement, setElement } = useToolStore()
+
+  const categories = Object.entries(ELEMENT_CATEGORIES)
+  const elementsInCategory = ELEMENTS.filter(el => el.category === activeCategory)
+
+  if (isCollapsed) {
+    return (
+      <div className="w-14 bg-[#1A1A1A] border-r border-[#333] flex flex-col items-center py-4">
+        <button
+          onClick={() => setIsCollapsed(false)}
+          className="p-2.5 hover:bg-[#252525] rounded-lg transition-colors"
+          title="Expand panel"
+        >
+          <ChevronRight size={18} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <aside className="w-64 bg-[#1A1A1A] border-r border-[#333] flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-4 border-b border-[#333]">
+        <span className="text-lg font-semibold">Elements</span>
+        <button
+          onClick={() => setIsCollapsed(true)}
+          className="p-2 hover:bg-[#252525] rounded-lg transition-colors"
+          title="Collapse panel"
+        >
+          <ChevronLeft size={16} />
+        </button>
+      </div>
+
+      {/* Category Tabs */}
+      <div className="px-4 py-3 border-b border-[#333]">
+        <div className="flex gap-2 overflow-x-auto scrollbar-hide">
+          {categories.map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setActiveCategory(key)}
+              className={`px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all ${
+                activeCategory === key
+                  ? 'bg-[#3B82F6] text-white shadow-lg shadow-blue-500/20'
+                  : 'bg-[#252525] text-[#808080] hover:text-white hover:bg-[#2a2a2a]'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Elements Grid */}
+      <div className="flex-1 overflow-y-auto p-3">
+        <div className="grid grid-cols-3 gap-2">
+          {elementsInCategory.map((element) => (
+            <ElementButton
+              key={element.id}
+              element={element}
+              isSelected={selectedElement === element.id}
+              onClick={() => setElement(element.id)}
+            />
+          ))}
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+interface ElementButtonProps {
+  element: typeof ELEMENTS[0]
+  isSelected: boolean
+  onClick: () => void
+}
+
+function ElementButton({ element, isSelected, onClick }: ElementButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      className={`
+        aspect-square
+        flex flex-col items-center justify-center 
+        p-2 rounded-lg 
+        transition-all duration-200 
+        ${isSelected
+          ? 'bg-[#252525] ring-2 ring-[#3B82F6] shadow-lg shadow-blue-500/20'
+          : 'bg-[#1f1f1f] hover:bg-[#252525]'
+        }
+      `}
+      title={`${element.name}: ${element.description}`}
+    >
+      {/* Element Color Box */}
+      <div
+        className="w-10 h-10 rounded-lg shadow-md flex-shrink-0"
+        style={{
+          background: `linear-gradient(145deg, ${element.color}, ${adjustColor(element.color, -30)})`,
+          boxShadow: isSelected 
+            ? `0 0 12px ${element.color}50, inset 0 1px 0 ${adjustColor(element.color, 50)}40` 
+            : `inset 0 1px 0 ${adjustColor(element.color, 50)}30`,
+        }}
+      />
+      
+      {/* Element Name */}
+      <span className={`
+        text-xs mt-1.5 font-medium text-center w-full truncate
+        ${isSelected ? 'text-white' : 'text-[#707070]'}
+      `}>
+        {element.name}
+      </span>
+    </button>
+  )
+}
+
+// Helper to darken/lighten color
+function adjustColor(hex: string, amount: number): string {
+  const num = parseInt(hex.replace('#', ''), 16)
+  const r = Math.min(255, Math.max(0, (num >> 16) + amount))
+  const g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amount))
+  const b = Math.min(255, Math.max(0, (num & 0x0000FF) + amount))
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`
+}
+
+--- End of File: apps/web/src/components/panels/LeftPanel.tsx ---
+
+
+--- File: apps/web/src/components/panels/RightPanel.tsx ---
+
+import { useState } from 'react'
+import { useSimulationStore } from '@/stores/simulationStore'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+
+export function RightPanel() {
+  const [isCollapsed, setIsCollapsed] = useState(false)
+  const { gravity, ambientTemperature, setGravity, setAmbientTemperature } = useSimulationStore()
+
+  if (isCollapsed) {
+    return (
+      <div className="w-12 bg-[#1A1A1A] border-l border-[#333] flex flex-col items-center py-3">
+        <button
+          onClick={() => setIsCollapsed(false)}
+          className="p-2 hover:bg-[#252525] rounded transition-colors"
+        >
+          <ChevronLeft size={16} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <aside className="w-64 bg-[#1A1A1A] border-l border-[#333] flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[#333]">
+        <span className="text-base font-semibold">Settings</span>
+        <button
+          onClick={() => setIsCollapsed(true)}
+          className="p-1.5 hover:bg-[#252525] rounded transition-colors"
+        >
+          <ChevronRight size={14} />
+        </button>
+      </div>
+
+      {/* Settings */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-5">
+        {/* Gravity */}
+        <div className="space-y-2">
+          <label className="text-sm text-[#A0A0A0] font-medium">Gravity</label>
+          
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-[#A0A0A0] w-5">X:</span>
+              <input
+                type="range"
+                min={-20}
+                max={20}
+                step={0.1}
+                value={gravity.x}
+                onChange={(e) => setGravity({ ...gravity, x: Number(e.target.value) })}
+                className="flex-1 h-1.5 bg-[#333] rounded-full appearance-none cursor-pointer
+                           [&::-webkit-slider-thumb]:appearance-none
+                           [&::-webkit-slider-thumb]:w-4
+                           [&::-webkit-slider-thumb]:h-4
+                           [&::-webkit-slider-thumb]:bg-[#3B82F6]
+                           [&::-webkit-slider-thumb]:rounded-full"
+              />
+              <span className="text-xs font-mono w-10 text-right">{gravity.x.toFixed(1)}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-[#A0A0A0] w-5">Y:</span>
+              <input
+                type="range"
+                min={-20}
+                max={20}
+                step={0.1}
+                value={gravity.y}
+                onChange={(e) => setGravity({ ...gravity, y: Number(e.target.value) })}
+                className="flex-1 h-1.5 bg-[#333] rounded-full appearance-none cursor-pointer
+                           [&::-webkit-slider-thumb]:appearance-none
+                           [&::-webkit-slider-thumb]:w-4
+                           [&::-webkit-slider-thumb]:h-4
+                           [&::-webkit-slider-thumb]:bg-[#3B82F6]
+                           [&::-webkit-slider-thumb]:rounded-full"
+              />
+              <span className="text-xs font-mono w-10 text-right">{gravity.y.toFixed(1)}</span>
+            </div>
+          </div>
+          
+          {/* Gravity Presets */}
+          <div className="flex gap-1">
+            <PresetButton 
+              label="Earth" 
+              onClick={() => setGravity({ x: 0, y: 9.8 })} 
+            />
+            <PresetButton 
+              label="Moon" 
+              onClick={() => setGravity({ x: 0, y: 1.6 })} 
+            />
+            <PresetButton 
+              label="None" 
+              onClick={() => setGravity({ x: 0, y: 0 })} 
+            />
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div className="h-px bg-[#333]" />
+
+        {/* Ambient Temperature */}
+        <div className="space-y-2">
+          <label className="text-sm text-[#A0A0A0] font-medium">
+            Ambient Temperature
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={-50}
+              max={100}
+              value={ambientTemperature}
+              onChange={(e) => setAmbientTemperature(Number(e.target.value))}
+              className="flex-1 h-1.5 bg-[#333] rounded-full appearance-none cursor-pointer
+                         [&::-webkit-slider-thumb]:appearance-none
+                         [&::-webkit-slider-thumb]:w-4
+                         [&::-webkit-slider-thumb]:h-4
+                         [&::-webkit-slider-thumb]:bg-[#3B82F6]
+                         [&::-webkit-slider-thumb]:rounded-full"
+            />
+            <span className="text-xs font-mono w-12 text-right">{ambientTemperature}°C</span>
+          </div>
+          
+          {/* Temperature Presets */}
+          <div className="flex gap-1">
+            <PresetButton 
+              label="Cold" 
+              onClick={() => setAmbientTemperature(-20)} 
+            />
+            <PresetButton 
+              label="Normal" 
+              onClick={() => setAmbientTemperature(20)} 
+            />
+            <PresetButton 
+              label="Hot" 
+              onClick={() => setAmbientTemperature(50)} 
+            />
+          </div>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+interface PresetButtonProps {
+  label: string
+  onClick: () => void
+}
+
+function PresetButton({ label, onClick }: PresetButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex-1 px-2 py-1.5 text-xs bg-[#252525] rounded-lg
+                 text-[#A0A0A0] hover:text-white transition-colors"
+    >
+      {label}
+    </button>
+  )
+}
+
+--- End of File: apps/web/src/components/panels/RightPanel.tsx ---
+
+
+--- File: apps/web/src/components/panels/TopToolbar.tsx ---
+
+import { useToolStore } from '@/stores/toolStore'
+import { useSimulationStore } from '@/stores/simulationStore'
+import { resetCamera } from '@/components/Canvas'
+import { 
+  Circle, 
+  Square, 
+  Minus, 
+  Eraser, 
+  Pipette, 
+  PaintBucket,
+  Hand,
+  Focus,
+  Undo,
+  Redo,
+  Save,
+  FolderOpen,
+  Thermometer
+} from 'lucide-react'
+
+export function TopToolbar() {
+  const { 
+    selectedTool, 
+    brushShape, 
+    brushSize, 
+    setTool, 
+    setBrushShape, 
+    setBrushSize 
+  } = useToolStore()
+  
+  const { renderMode, toggleRenderMode } = useSimulationStore()
+
+  return (
+    <header className="h-14 bg-[#1A1A1A] border-b border-[#333] flex items-center px-4 gap-4">
+      {/* Logo */}
+      <div className="flex items-center gap-2 mr-4">
+        <div className="w-7 h-7 bg-gradient-to-br from-[#3B82F6] to-purple-500 rounded" />
+        <span className="font-semibold text-base">Particula</span>
+      </div>
+
+      {/* Divider */}
+      <div className="w-px h-6 bg-[#333]" />
+
+      {/* Brush Shapes */}
+      <div className="flex items-center gap-1">
+        <ToolButton
+          icon={<Circle size={16} />}
+          isActive={brushShape === 'circle'}
+          onClick={() => setBrushShape('circle')}
+          tooltip="Circle Brush"
+        />
+        <ToolButton
+          icon={<Square size={16} />}
+          isActive={brushShape === 'square'}
+          onClick={() => setBrushShape('square')}
+          tooltip="Square Brush"
+        />
+        <ToolButton
+          icon={<Minus size={16} />}
+          isActive={brushShape === 'line'}
+          onClick={() => setBrushShape('line')}
+          tooltip="Line Tool"
+        />
+      </div>
+
+      {/* Divider */}
+      <div className="w-px h-6 bg-[#333]" />
+
+      {/* Brush Size */}
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-[#A0A0A0]">Size:</span>
+        <input
+          type="range"
+          min={1}
+          max={50}
+          value={brushSize}
+          onChange={(e) => setBrushSize(Number(e.target.value))}
+          className="w-28 h-1.5 bg-[#333] rounded-full appearance-none cursor-pointer
+                     [&::-webkit-slider-thumb]:appearance-none
+                     [&::-webkit-slider-thumb]:w-4
+                     [&::-webkit-slider-thumb]:h-4
+                     [&::-webkit-slider-thumb]:bg-[#3B82F6]
+                     [&::-webkit-slider-thumb]:rounded-full
+                     [&::-webkit-slider-thumb]:cursor-pointer"
+        />
+        <span className="text-sm text-[#A0A0A0] w-8 font-mono">{brushSize}</span>
+      </div>
+
+      {/* Divider */}
+      <div className="w-px h-6 bg-[#333]" />
+
+      {/* Tools */}
+      <div className="flex items-center gap-1">
+        <ToolButton
+          icon={<Eraser size={16} />}
+          isActive={selectedTool === 'eraser'}
+          onClick={() => setTool('eraser')}
+          tooltip="Eraser"
+        />
+        <ToolButton
+          icon={<Hand size={16} />}
+          isActive={selectedTool === 'move'}
+          onClick={() => setTool('move')}
+          tooltip="Move / Pan (Middle Mouse)"
+        />
+        <ToolButton
+          icon={<Pipette size={16} />}
+          isActive={selectedTool === 'pipette'}
+          onClick={() => setTool('pipette')}
+          tooltip="Pipette"
+        />
+        <ToolButton
+          icon={<PaintBucket size={16} />}
+          isActive={selectedTool === 'fill'}
+          onClick={() => setTool('fill')}
+          tooltip="Fill"
+        />
+      </div>
+
+      {/* Divider */}
+      <div className="w-px h-6 bg-[#333]" />
+
+      {/* View Controls */}
+      <div className="flex items-center gap-1">
+        <ToolButton
+          icon={<Thermometer size={16} />}
+          isActive={renderMode === 'thermal'}
+          onClick={toggleRenderMode}
+          tooltip={renderMode === 'thermal' ? 'Normal View' : 'Thermal Vision'}
+        />
+        <ToolButton
+          icon={<Focus size={16} />}
+          onClick={resetCamera}
+          tooltip="Reset View (1:1)"
+        />
+      </div>
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Actions */}
+      <div className="flex items-center gap-1">
+        <ToolButton
+          icon={<Undo size={16} />}
+          onClick={() => console.log('Undo')}
+          tooltip="Undo"
+        />
+        <ToolButton
+          icon={<Redo size={16} />}
+          onClick={() => console.log('Redo')}
+          tooltip="Redo"
+        />
+        <div className="w-px h-6 bg-border mx-1" />
+        <ToolButton
+          icon={<Save size={16} />}
+          onClick={() => console.log('Save')}
+          tooltip="Save"
+        />
+        <ToolButton
+          icon={<FolderOpen size={16} />}
+          onClick={() => console.log('Load')}
+          tooltip="Load"
+        />
+      </div>
+    </header>
+  )
+}
+
+interface ToolButtonProps {
+  icon: React.ReactNode
+  isActive?: boolean
+  onClick: () => void
+  tooltip: string
+}
+
+function ToolButton({ icon, isActive, onClick, tooltip }: ToolButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      title={tooltip}
+      className={`p-2.5 rounded-lg transition-colors ${
+        isActive
+          ? 'bg-[#3B82F6] text-white'
+          : 'hover:bg-[#252525] text-[#A0A0A0] hover:text-white'
+      }`}
+    >
+      {icon}
+    </button>
+  )
+}
+
+--- End of File: apps/web/src/components/panels/TopToolbar.tsx ---
+
+
+--- File: apps/web/src/lib/elements.ts ---
+
+/**
+ * UI-facing element definitions for LeftPanel
+ */
+
+import type { ElementType } from './engine'
+
+export type { ElementType }
+
+export interface Element {
+  id: ElementType
+  name: string
+  category: string
+  color: string
+  description: string
+}
+
+export const ELEMENT_CATEGORIES: Record<string, string> = {
+  solids: 'Solids',
+  liquids: 'Liquids',
+  gases: 'Gases',
+  energy: 'Energy',
+  utility: 'Utility',
+  bio: 'Nature',
+}
+
+export const ELEMENTS: Element[] = [
+  // Solids
+  {
+    id: 'stone',
+    name: 'Stone',
+    category: 'solids',
+    color: '#808080',
+    description: 'Heavy solid, melts at high temperature',
+  },
+  {
+    id: 'sand',
+    name: 'Sand',
+    category: 'solids',
+    color: '#C2B280',
+    description: 'Falls and piles up, melts into glass',
+  },
+  {
+    id: 'wood',
+    name: 'Wood',
+    category: 'solids',
+    color: '#8B4513',
+    description: 'Flammable solid',
+  },
+  {
+    id: 'metal',
+    name: 'Metal',
+    category: 'solids',
+    color: '#A9A9A9',
+    description: 'Conducts heat and electricity',
+  },
+  {
+    id: 'ice',
+    name: 'Ice',
+    category: 'solids',
+    color: '#A5F2F3',
+    description: 'Melts from fire/lava, floats on water',
+  },
+  {
+    id: 'gunpowder',
+    name: 'Gunpowder',
+    category: 'solids',
+    color: '#404040',
+    description: 'Explosive! Ignites instantly from fire',
+  },
+  
+  // Liquids
+  {
+    id: 'water',
+    name: 'Water',
+    category: 'liquids',
+    color: '#4169E1',
+    description: 'Flows, evaporates, extinguishes fire',
+  },
+  {
+    id: 'oil',
+    name: 'Oil',
+    category: 'liquids',
+    color: '#4A4A2A',
+    description: 'Flammable liquid, floats on water',
+  },
+  {
+    id: 'lava',
+    name: 'Lava',
+    category: 'liquids',
+    color: '#FF4500',
+    description: 'Hot liquid, ignites flammables',
+  },
+  {
+    id: 'acid',
+    name: 'Acid',
+    category: 'liquids',
+    color: '#39FF14',
+    description: 'Dissolves stone, metal, wood (1:1)',
+  },
+  
+  // Gases
+  {
+    id: 'steam',
+    name: 'Steam',
+    category: 'gases',
+    color: '#E0E0E0',
+    description: 'Rises up, condenses into water',
+  },
+  {
+    id: 'smoke',
+    name: 'Smoke',
+    category: 'gases',
+    color: '#2F2F2F',
+    description: 'Rises and dissipates',
+  },
+  
+  // Energy
+  {
+    id: 'fire',
+    name: 'Fire',
+    category: 'energy',
+    color: '#FF6600',
+    description: 'Burns flammables, extinguished by water',
+  },
+  {
+    id: 'spark',
+    name: 'Spark',
+    category: 'energy',
+    color: '#FFFF00',
+    description: 'Brief ignition source',
+  },
+  {
+    id: 'electricity',
+    name: 'Electric',
+    category: 'energy',
+    color: '#00FFFF',
+    description: 'Flows through conductors',
+  },
+  
+  // Utility
+  {
+    id: 'clone',
+    name: 'Clone',
+    category: 'utility',
+    color: '#00FF00',
+    description: 'Duplicates touching particles',
+  },
+  {
+    id: 'void',
+    name: 'Void',
+    category: 'utility',
+    color: '#000000',
+    description: 'Destroys all particles',
+  },
+  
+  // Nature/Bio
+  {
+    id: 'dirt',
+    name: 'Dirt',
+    category: 'bio',
+    color: '#5C4033',
+    description: 'Fertile soil for plants',
+  },
+  {
+    id: 'seed',
+    name: 'Seed',
+    category: 'bio',
+    color: '#E2C489',
+    description: 'Plant on wet dirt to grow!',
+  },
+  {
+    id: 'plant',
+    name: 'Plant',
+    category: 'bio',
+    color: '#228B22',
+    description: 'Grows with water, burns easily',
+  },
+]
+
+export function getElementById(id: ElementType): Element | undefined {
+  return ELEMENTS.find(el => el.id === id)
+}
+
+export function getElementColor(id: ElementType): string {
+  return getElementById(id)?.color ?? '#FFFFFF'
+}
+
+--- End of File: apps/web/src/lib/elements.ts ---
+
+
+--- File: apps/web/src/lib/engine/Renderer.ts ---
+
+/**
+ * High-performance renderer using Double Buffering
+ * Phase 1: Reads directly from TypedArrays - no object iteration!
+ * 
+ * Optimization:
+ * - clearPixels uses Uint32Array.fill() - 50-100x faster
+ * - renderNormal reads from colors Uint32Array directly
+ * - No object access = no pointer chasing = cache friendly
+ */
+
+import { EL_EMPTY } from './types'
+
+export type RenderMode = 'normal' | 'thermal'
+
+export class CanvasRenderer {
+  private ctx: CanvasRenderingContext2D  // Screen (visible)
+  
+  // Virtual buffer (Offscreen)
+  private bufferCanvas: HTMLCanvasElement
+  private bufferCtx: CanvasRenderingContext2D
+  private imageData: ImageData
+  private pixels: Uint8ClampedArray
+  private pixels32: Uint32Array  // View over pixels for fast fill
+  
+  private width: number
+  private height: number
+  private mode: RenderMode = 'normal'
+
+  // Camera state
+  private zoom: number = 1
+  private panX: number = 0
+  private panY: number = 0
+  
+  // Background color as packed ABGR (for Uint32Array)
+  // 0xFF0A0A0A = alpha=255, r=10, g=10, b=10
+  private readonly BG_COLOR_32 = 0xFF0A0A0A
+  private readonly BG_R = 10
+  private readonly BG_G = 10
+  private readonly BG_B = 10
+
+  constructor(ctx: CanvasRenderingContext2D, width: number, height: number) {
+    this.ctx = ctx
+    this.width = width
+    this.height = height
+
+    // 1. Create offscreen buffer
+    this.bufferCanvas = document.createElement('canvas')
+    this.bufferCanvas.width = width
+    this.bufferCanvas.height = height
+    const bCtx = this.bufferCanvas.getContext('2d', { alpha: false })
+    if (!bCtx) throw new Error('Failed to create buffer context')
+    this.bufferCtx = bCtx
+
+    // 2. Pixels are tied to buffer
+    this.imageData = this.bufferCtx.createImageData(width, height)
+    this.pixels = this.imageData.data
+    // Create Uint32 view over the same buffer for fast operations
+    this.pixels32 = new Uint32Array(this.pixels.buffer)
+    
+    // Pixel-art rendering (no smoothing on zoom)
+    this.ctx.imageSmoothingEnabled = false
+    
+    this.clearPixels()
+  }
+
+  // Camera control from outside
+  setTransform(zoom: number, panX: number, panY: number): void {
+    this.zoom = zoom
+    this.panX = panX
+    this.panY = panY
+  }
+
+  resize(width: number, height: number): void {
+    this.width = width
+    this.height = height
+    
+    // Resize buffer
+    this.bufferCanvas.width = width
+    this.bufferCanvas.height = height
+    this.imageData = this.bufferCtx.createImageData(width, height)
+    this.pixels = this.imageData.data
+    this.pixels32 = new Uint32Array(this.pixels.buffer)
+    
+    // Re-disable smoothing after resize
+    this.ctx.imageSmoothingEnabled = false
+    
+    this.clearPixels()
+  }
+
+  setMode(mode: RenderMode): void {
+    this.mode = mode
+  }
+
+  getMode(): RenderMode {
+    return this.mode
+  }
+
+  // OPTIMIZED: Use Uint32Array.fill() - 50-100x faster than loop!
+  private clearPixels(): void {
+    this.pixels32.fill(this.BG_COLOR_32)
+  }
+
+  // NEW API: Accept TypedArrays directly
+  render(types: Uint8Array, colors: Uint32Array, temperatureData?: Float32Array): void {
+    // 1. Render pixels to BUFFER
+    if (this.mode === 'thermal' && temperatureData) {
+      this.renderThermal(temperatureData)
+    } else {
+      this.renderNormalTyped(types, colors)
+    }
+
+    // Put pixels to buffer context
+    this.bufferCtx.putImageData(this.imageData, 0, 0)
+
+    // 2. Draw BUFFER to SCREEN with camera transform
+    // Clear screen with background
+    this.ctx.fillStyle = `rgb(${this.BG_R}, ${this.BG_G}, ${this.BG_B})`
+    this.ctx.fillRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
+    
+    this.ctx.save()
+    // Apply Pan then Zoom
+    this.ctx.translate(this.panX, this.panY)
+    this.ctx.scale(this.zoom, this.zoom)
+    
+    // Draw buffer image
+    this.ctx.drawImage(this.bufferCanvas, 0, 0)
+    
+    // 3. Draw world border (neon glow effect)
+    this.drawWorldBorder()
+    
+    this.ctx.restore()
+  }
+
+  /**
+   * Draw a stylish border around the simulation world
+   * Creates a neon glow effect with gradient
+   */
+  private drawWorldBorder(): void {
+    const ctx = this.ctx
+    const w = this.width
+    const h = this.height
+    
+    // Outer glow (wider, more transparent)
+    ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)' // Blue glow
+    ctx.lineWidth = 6 / this.zoom // Compensate for zoom
+    ctx.strokeRect(-3 / this.zoom, -3 / this.zoom, w + 6 / this.zoom, h + 6 / this.zoom)
+    
+    // Middle glow
+    ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)'
+    ctx.lineWidth = 3 / this.zoom
+    ctx.strokeRect(-1.5 / this.zoom, -1.5 / this.zoom, w + 3 / this.zoom, h + 3 / this.zoom)
+    
+    // Inner sharp border
+    ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'
+    ctx.lineWidth = 1 / this.zoom
+    ctx.strokeRect(0, 0, w, h)
+    
+    // Corner accents (bright dots)
+    const cornerSize = 8 / this.zoom
+    ctx.fillStyle = '#3B82F6'
+    
+    // Top-left
+    ctx.fillRect(-cornerSize / 2, -cornerSize / 2, cornerSize, 2 / this.zoom)
+    ctx.fillRect(-cornerSize / 2, -cornerSize / 2, 2 / this.zoom, cornerSize)
+    
+    // Top-right
+    ctx.fillRect(w - cornerSize / 2, -cornerSize / 2, cornerSize, 2 / this.zoom)
+    ctx.fillRect(w - 2 / this.zoom + cornerSize / 2, -cornerSize / 2, 2 / this.zoom, cornerSize)
+    
+    // Bottom-left
+    ctx.fillRect(-cornerSize / 2, h - 2 / this.zoom + cornerSize / 2, cornerSize, 2 / this.zoom)
+    ctx.fillRect(-cornerSize / 2, h - cornerSize / 2, 2 / this.zoom, cornerSize)
+    
+    // Bottom-right
+    ctx.fillRect(w - cornerSize / 2, h - 2 / this.zoom + cornerSize / 2, cornerSize, 2 / this.zoom)
+    ctx.fillRect(w - 2 / this.zoom + cornerSize / 2, h - cornerSize / 2, 2 / this.zoom, cornerSize)
+  }
+
+  /**
+   * OPTIMIZED: Read directly from TypedArrays
+   * No object access = no pointer chasing = cache friendly
+   */
+  private renderNormalTyped(types: Uint8Array, colors: Uint32Array): void {
+    const pixels = this.pixels
+    const len = Math.min(types.length, this.width * this.height)
+    
+    for (let i = 0; i < len; i++) {
+      const base = i << 2 // i * 4
+      
+      if (types[i] !== EL_EMPTY) {
+        const color = colors[i]
+        pixels[base] = (color >> 16) & 0xFF     // R
+        pixels[base + 1] = (color >> 8) & 0xFF  // G
+        pixels[base + 2] = color & 0xFF         // B
+        pixels[base + 3] = (color >> 24) & 0xFF // A
+      } else {
+        pixels[base] = this.BG_R
+        pixels[base + 1] = this.BG_G
+        pixels[base + 2] = this.BG_B
+        pixels[base + 3] = 255
+      }
+    }
+  }
+
+  /**
+   * Render thermal vision - temperature to color gradient
+   */
+  private renderThermal(temps: Float32Array): void {
+    const pixels = this.pixels
+    const len = Math.min(temps.length, this.width * this.height)
+
+    for (let i = 0; i < len; i++) {
+      const temp = temps[i]
+      const base = i << 2
+      
+      const [r, g, b] = this.getThermalColor(temp)
+      
+      pixels[base] = r
+      pixels[base + 1] = g
+      pixels[base + 2] = b
+      pixels[base + 3] = 255
+    }
+  }
+
+  /**
+   * Temperature to color gradient:
+   * Blue (-20) -> Cyan (0) -> Green (20) -> Yellow (100) -> Red (500) -> White (1000)
+   */
+  private getThermalColor(t: number): [number, number, number] {
+    // Freezing: Deep Blue to Blue
+    if (t < 0) {
+      const intensity = Math.min(1, Math.abs(t) / 30)
+      return [0, 0, Math.floor(128 + 127 * intensity)]
+    }
+    
+    // Cold: Blue to Cyan (0-20)
+    if (t < 20) {
+      const ratio = t / 20
+      return [0, Math.floor(ratio * 255), 255]
+    }
+    
+    // Ambient: Cyan to Green (20-50)
+    if (t < 50) {
+      const ratio = (t - 20) / 30
+      return [0, 255, Math.floor(255 * (1 - ratio))]
+    }
+    
+    // Warm: Green to Yellow (50-100)
+    if (t < 100) {
+      const ratio = (t - 50) / 50
+      return [Math.floor(255 * ratio), 255, 0]
+    }
+    
+    // Hot: Yellow to Red (100-500)
+    if (t < 500) {
+      const ratio = (t - 100) / 400
+      return [255, Math.floor(255 * (1 - ratio)), 0]
+    }
+    
+    // Extreme: Red to White (500-1000+)
+    const ratio = Math.min(1, (t - 500) / 500)
+    return [255, Math.floor(255 * ratio), Math.floor(255 * ratio)]
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/Renderer.ts ---
+
+
+--- File: apps/web/src/lib/engine/WorkerParticleEngine.ts ---
+
+/**
+ * WorkerParticleEngine - Multi-threaded particle simulation
+ * 
+ * Phase 2: Simulation runs in Web Worker
+ * 
+ * Main Thread: Rendering + UI
+ * Worker Thread: Physics simulation
+ * Communication: SharedArrayBuffer (zero-copy!)
+ */
+
+import { SharedGrid, isSharedArrayBufferAvailable } from './core/SharedGrid'
+import { CanvasRenderer, RenderMode } from './Renderer'
+import { ElementType, WorldSettings } from './types'
+import type { WorkerMessage, WorkerResponse } from './workers'
+
+// Import worker using Vite's ?worker syntax
+import SimulationWorker from './workers/simulation.worker?worker'
+
+export class WorkerParticleEngine {
+  private grid: SharedGrid
+  private worker: Worker
+  private renderer: CanvasRenderer | null = null
+  
+  private _width: number
+  private _height: number
+  private _particleCount: number = 0
+  private _frame: number = 0
+  private _isReady: boolean = false
+  private _isRunning: boolean = false
+  
+  // Callbacks
+  private onReadyCallback: (() => void) | null = null
+  private onStepCallback: ((frame: number, particleCount: number) => void) | null = null
+  
+  constructor(width: number, height: number) {
+    if (!isSharedArrayBufferAvailable()) {
+      throw new Error('SharedArrayBuffer is not available. Check Cross-Origin Isolation headers.')
+    }
+    
+    this._width = width
+    this._height = height
+    
+    // Create shared grid
+    this.grid = new SharedGrid(width, height)
+    
+    // Create worker
+    this.worker = new SimulationWorker()
+    this.worker.onmessage = this.handleWorkerMessage.bind(this)
+    this.worker.onerror = this.handleWorkerError.bind(this)
+    
+    // Initialize worker with shared buffers
+    this.sendMessage({ type: 'init', buffers: this.grid.getBuffers() })
+  }
+  
+  private sendMessage(msg: WorkerMessage) {
+    this.worker.postMessage(msg)
+  }
+  
+  private handleWorkerMessage(e: MessageEvent<WorkerResponse>) {
+    const msg = e.data
+    
+    switch (msg.type) {
+      case 'ready':
+        this._isReady = true
+        this.onReadyCallback?.()
+        break
+        
+      case 'stepped':
+        this._frame = msg.frame
+        this._particleCount = msg.particleCount
+        this.onStepCallback?.(msg.frame, msg.particleCount)
+        break
+        
+      case 'stats':
+        this._frame = msg.frame
+        this._particleCount = msg.particleCount
+        break
+        
+      case 'error':
+        console.error('Worker error:', msg.message)
+        break
+    }
+  }
+  
+  private handleWorkerError(e: ErrorEvent) {
+    console.error('Worker error:', e.message)
+  }
+  
+  // === Public API ===
+  
+  get width(): number { return this._width }
+  get height(): number { return this._height }
+  get particleCount(): number { return this._particleCount }
+  get frame(): number { return this._frame }
+  get isReady(): boolean { return this._isReady }
+  get isRunning(): boolean { return this._isRunning }
+  
+  /**
+   * Set callback for when worker is ready
+   */
+  onReady(callback: () => void) {
+    this.onReadyCallback = callback
+    if (this._isReady) callback()
+  }
+  
+  /**
+   * Set callback for each simulation step
+   */
+  onStep(callback: (frame: number, particleCount: number) => void) {
+    this.onStepCallback = callback
+  }
+  
+  /**
+   * Attach renderer to canvas
+   */
+  attachRenderer(ctx: CanvasRenderingContext2D): void {
+    this.renderer = new CanvasRenderer(ctx, this._width, this._height)
+  }
+  
+  /**
+   * Start continuous simulation
+   */
+  start(): void {
+    if (!this._isReady) return
+    this._isRunning = true
+    this.sendMessage({ type: 'start' })
+  }
+  
+  /**
+   * Stop continuous simulation
+   */
+  stop(): void {
+    this._isRunning = false
+    this.sendMessage({ type: 'stop' })
+  }
+  
+  /**
+   * Run single simulation step
+   */
+  step(): void {
+    if (!this._isReady) return
+    this.sendMessage({ type: 'step' })
+  }
+  
+  /**
+   * Update world settings
+   */
+  setSettings(settings: Partial<WorldSettings>): void {
+    this.sendMessage({ type: 'setSettings', settings })
+  }
+  
+  /**
+   * Add particle at position
+   */
+  addParticle(x: number, y: number, element: ElementType): void {
+    this.sendMessage({ type: 'addParticle', x, y, element })
+  }
+  
+  /**
+   * Add particles in radius
+   */
+  addParticlesInRadius(cx: number, cy: number, radius: number, element: ElementType): void {
+    this.sendMessage({ type: 'addParticlesInRadius', cx, cy, radius, element })
+  }
+  
+  /**
+   * Remove particle at position
+   */
+  removeParticle(x: number, y: number): void {
+    this.sendMessage({ type: 'removeParticle', x, y })
+  }
+  
+  /**
+   * Remove particles in radius
+   */
+  removeParticlesInRadius(cx: number, cy: number, radius: number): void {
+    this.sendMessage({ type: 'removeParticlesInRadius', cx, cy, radius })
+  }
+  
+  /**
+   * Clear all particles
+   */
+  clear(): void {
+    this.sendMessage({ type: 'clear' })
+    this._particleCount = 0
+    this._frame = 0
+  }
+  
+  /**
+   * Render current state
+   * Reads directly from SharedArrayBuffer - no copying!
+   */
+  render(): void {
+    if (!this.renderer) return
+    
+    this.renderer.render(
+      this.grid.types,
+      this.grid.colors,
+      this.grid.temperature
+    )
+  }
+  
+  /**
+   * Set render mode
+   */
+  setRenderMode(mode: RenderMode): void {
+    this.renderer?.setMode(mode)
+  }
+  
+  /**
+   * Get render mode
+   */
+  getRenderMode(): RenderMode {
+    return this.renderer?.getMode() ?? 'normal'
+  }
+  
+  /**
+   * Set camera transform
+   */
+  setTransform(zoom: number, panX: number, panY: number): void {
+    this.renderer?.setTransform(zoom, panX, panY)
+  }
+  
+  /**
+   * Resize simulation
+   */
+  resize(width: number, height: number): void {
+    // Note: resize requires recreating the worker with new buffers
+    // For now, this is a simple implementation
+    this._width = width
+    this._height = height
+    this.grid.resize(width, height)
+    this.renderer?.resize(width, height)
+    
+    // Reinitialize worker with new buffers
+    this.sendMessage({ type: 'init', buffers: this.grid.getBuffers() })
+  }
+  
+  /**
+   * Terminate worker and cleanup
+   */
+  destroy(): void {
+    this.worker.terminate()
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/WorkerParticleEngine.ts ---
+
+
+--- File: apps/web/src/lib/engine/__tests__/LiquidBehavior.test.ts ---
+
+/**
+ * Tests for LiquidBehavior - Pure Dispersion Algorithm
+ * Run with: npx vitest run
+ */
+
+import { describe, it, expect, beforeEach } from 'vitest'
+import { Grid } from '../core/Grid'
+import { LiquidBehavior } from '../behaviors/LiquidBehavior'
+import { UpdateContext } from '../behaviors/IBehavior'
+import { WorldSettings, Particle } from '../types'
+
+// Test helper to create a particle
+function createParticle(element: 'water' | 'oil' | 'lava'): Particle {
+  return {
+    element,
+    color: 0xFF0000FF,
+    updated: false,
+    lifetime: 0
+  }
+}
+
+// Test helper to create update context
+function createContext(grid: Grid, x: number, y: number, frame: number = 0): UpdateContext {
+  const settings: WorldSettings = {
+    gravity: { x: 0, y: 9.8 },
+    ambientTemperature: 20,
+    speed: 1
+  }
+  return { grid, x, y, settings, frame }
+}
+
+describe('LiquidBehavior', () => {
+  let grid: Grid
+  let behavior: LiquidBehavior
+
+  beforeEach(() => {
+    grid = new Grid(20, 20)
+    behavior = new LiquidBehavior()
+  })
+
+  describe('Falling', () => {
+    it('should fall into empty space below', () => {
+      grid.set(10, 5, createParticle('water'))
+      
+      behavior.update(createContext(grid, 10, 5))
+      
+      expect(grid.get(10, 5)).toBeNull()
+      expect(grid.get(10, 6)).not.toBeNull()
+      expect(grid.get(10, 6)?.element).toBe('water')
+    })
+
+    it('should fall diagonally if straight down is blocked', () => {
+      grid.set(10, 5, createParticle('water'))
+      grid.set(10, 6, createParticle('lava')) // lava is denser, can't displace
+      
+      behavior.update(createContext(grid, 10, 5))
+      
+      // Should have moved diagonally (9,6) or (11,6)
+      const movedLeft = grid.get(9, 6) !== null
+      const movedRight = grid.get(11, 6) !== null
+      expect(movedLeft || movedRight).toBe(true)
+    })
+  })
+
+  describe('Density layering', () => {
+    it('should sink heavier liquid into lighter', () => {
+      grid.set(10, 5, createParticle('lava')) // density 2500
+      grid.set(10, 6, createParticle('oil')) // density 800
+      
+      behavior.update(createContext(grid, 10, 5))
+      
+      // Lava should have swapped with oil
+      expect(grid.get(10, 5)?.element).toBe('oil')
+      expect(grid.get(10, 6)?.element).toBe('lava')
+    })
+
+    it('should NOT sink lighter liquid into heavier', () => {
+      grid.set(10, 5, createParticle('oil')) // density 800
+      grid.set(10, 6, createParticle('lava')) // density 2500
+      // Block ALL escape routes (including diagonals)
+      grid.set(9, 5, createParticle('lava'))
+      grid.set(11, 5, createParticle('lava'))
+      grid.set(9, 6, createParticle('lava'))
+      grid.set(11, 6, createParticle('lava'))
+      
+      behavior.update(createContext(grid, 10, 5))
+      
+      // Oil should stay on top (can't sink, can't spread)
+      expect(grid.get(10, 5)?.element).toBe('oil')
+      expect(grid.get(10, 6)?.element).toBe('lava')
+    })
+  })
+
+  describe('Dispersion (Scan & Teleport)', () => {
+    it('should teleport to cliff edge for waterfall effect', () => {
+      // Water on a platform with cliffs at both ends
+      //   [_][ ][ ][ ][W][ ][ ][ ][_]   <- water at 10, cliffs at x=6 and x=14
+      //   [ ][=][=][=][=][=][=][=][ ]   <- solid platform from x=7 to x=13
+      
+      grid.set(10, 5, createParticle('water'))
+      // Create solid platform below (block diagonals too)
+      for (let x = 7; x <= 13; x++) {
+        grid.set(x, 6, createParticle('lava'))
+      }
+      // Cliffs at x=6 and x=14 - empty below
+      
+      behavior.update(createContext(grid, 10, 5))
+      
+      // Water should teleport towards one of the cliffs (dispersion range is 8 for water)
+      expect(grid.get(10, 5)).toBeNull()
+      // Should have moved towards a cliff (including the cliff position itself)
+      const foundLeft = [6, 7, 8, 9].find(x => grid.get(x, 5) !== null)
+      const foundRight = [11, 12, 13, 14].find(x => grid.get(x, 5) !== null)
+      expect(foundLeft !== undefined || foundRight !== undefined).toBe(true)
+    })
+
+    it('should spread sideways when resting on surface', () => {
+      // Water on solid with empty space to sides
+      grid.set(10, 10, createParticle('water'))
+      // Block below AND diagonals AND far cliffs to force horizontal spread
+      for (let x = 2; x <= 18; x++) {
+        grid.set(x, 11, createParticle('lava'))
+      }
+      
+      behavior.update(createContext(grid, 10, 10))
+      
+      // Should have spread somewhere (dispersion range is 8 for water)
+      // Water should have moved from original position
+      const waterMoved = grid.get(10, 10) === null
+      expect(waterMoved).toBe(true)
+    })
+
+    it('should NOT spread if completely surrounded', () => {
+      // Water completely surrounded (including diagonals)
+      grid.set(10, 10, createParticle('water'))
+      // All 8 neighbors
+      grid.set(9, 9, createParticle('lava'))
+      grid.set(10, 9, createParticle('lava'))
+      grid.set(11, 9, createParticle('lava'))
+      grid.set(9, 10, createParticle('lava'))
+      grid.set(11, 10, createParticle('lava'))
+      grid.set(9, 11, createParticle('lava'))
+      grid.set(10, 11, createParticle('lava'))
+      grid.set(11, 11, createParticle('lava'))
+      
+      behavior.update(createContext(grid, 10, 10))
+      
+      // Water should stay in place
+      expect(grid.get(10, 10)?.element).toBe('water')
+    })
+
+    it('should respect dispersion rate (lava is slow)', () => {
+      // Lava has dispersion: 2, so it should only scan 2 cells
+      grid.set(10, 10, createParticle('lava'))
+      // Block below AND diagonals
+      grid.set(9, 11, createParticle('lava'))
+      grid.set(10, 11, createParticle('lava'))
+      grid.set(11, 11, createParticle('lava'))
+      
+      behavior.update(createContext(grid, 10, 10))
+      
+      // Lava should have moved, but only 1-2 cells
+      const lavaPos = [8, 9, 10, 11, 12].find(x => grid.get(x, 10)?.element === 'lava')
+      expect(lavaPos).toBeDefined()
+      if (lavaPos !== 10) {
+        expect(Math.abs(lavaPos! - 10)).toBeLessThanOrEqual(2)
+      }
+    })
+  })
+
+  describe('Prioritization', () => {
+    it('should prefer falling over spreading', () => {
+      // Water with both options: fall down or spread sideways
+      grid.set(10, 5, createParticle('water'))
+      // Leave both down and sides open
+      
+      behavior.update(createContext(grid, 10, 5))
+      
+      // Should have fallen, not spread
+      expect(grid.get(10, 6)?.element).toBe('water')
+      expect(grid.get(10, 5)).toBeNull()
+    })
+
+    it('should prefer cliff over flat spread', () => {
+      // Water with cliff on right, flat on left
+      grid.set(10, 5, createParticle('water'))
+      grid.set(10, 6, createParticle('lava')) // blocked below
+      // Create cliff on right (empty at x=12, y=6)
+      grid.set(11, 6, createParticle('lava'))
+      // x=12 has no floor - it's a cliff
+      
+      // Left side is flat (has floor all the way)
+      for (let x = 5; x < 10; x++) {
+        grid.set(x, 6, createParticle('lava'))
+      }
+      
+      // Run several times to account for randomness
+      let movedToCliff = false
+      for (let i = 0; i < 20; i++) {
+        grid.clear()
+        grid.set(10, 5, createParticle('water'))
+        grid.set(10, 6, createParticle('lava'))
+        grid.set(11, 6, createParticle('lava'))
+        for (let x = 5; x < 10; x++) {
+          grid.set(x, 6, createParticle('lava'))
+        }
+        
+        behavior.update(createContext(grid, 10, 5, i))
+        
+        // Check if moved towards cliff (right side)
+        if (grid.get(11, 5) !== null || grid.get(12, 5) !== null) {
+          movedToCliff = true
+          break
+        }
+      }
+      
+      expect(movedToCliff).toBe(true)
+    })
+  })
+})
+
+--- End of File: apps/web/src/lib/engine/__tests__/LiquidBehavior.test.ts ---
+
+
+--- File: apps/web/src/lib/engine/behaviors/EnergyBehavior.ts ---
+
+/**
+ * EnergyBehavior - Physics for energy particles (fire, spark, electricity)
+ * Fire rises erratically, spark/electricity move through conductors
+ * 
+ * Phase 1: Direct TypedArray access - no object allocations!
+ */
+
+import { IBehavior, UpdateContext } from './IBehavior'
+import { ElementCategory, EL_EMPTY, EL_FIRE, EL_SPARK, EL_ELECTRICITY } from '../types'
+
+export class EnergyBehavior implements IBehavior {
+  readonly category: ElementCategory = 'energy'
+  
+  update(ctx: UpdateContext): void {
+    const { grid, x, y } = ctx
+    
+    // Direct TypedArray access - no object creation!
+    const type = grid.getType(x, y)
+    if (type === EL_EMPTY) return
+    
+    switch (type) {
+      case EL_FIRE:
+        this.updateFire(ctx)
+        break
+      case EL_SPARK:
+        this.updateSpark(ctx)
+        break
+      case EL_ELECTRICITY:
+        this.updateElectricity(ctx)
+        break
+    }
+  }
+  
+  private updateFire(ctx: UpdateContext): void {
+    const { grid, x, y, frame } = ctx
+    
+    // Fire rises erratically
+    const rand = (frame * x * y) & 3
+    
+    if (rand === 0 && grid.isEmpty(x, y - 1)) {
+      grid.swap(x, y, x, y - 1)
+    } else if (rand === 1 && grid.isEmpty(x - 1, y - 1)) {
+      grid.swap(x, y, x - 1, y - 1)
+    } else if (rand === 2 && grid.isEmpty(x + 1, y - 1)) {
+      grid.swap(x, y, x + 1, y - 1)
+    }
+  }
+  
+  private updateSpark(_ctx: UpdateContext): void {
+    // Spark is handled by lifetime, no movement needed
+  }
+  
+  private updateElectricity(_ctx: UpdateContext): void {
+    // Electricity is handled by lifetime
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/behaviors/EnergyBehavior.ts ---
+
+
+--- File: apps/web/src/lib/engine/behaviors/GasBehavior.ts ---
+
+/**
+ * GasBehavior - Pure dispersion-based gas physics
+ * 
+ * Phase 1: Direct TypedArray access - no object allocations!
+ * 
+ * Philosophy:
+ * - Gases are "inverted liquids" - they rise instead of fall
+ * - Scan & teleport horizontally to find "chimneys" (openings above)
+ * - Can bubble up through liquids and powders (density-based)
+ */
+
+import { IBehavior, UpdateContext, getRandomDirection } from './IBehavior'
+import { ElementCategory, EL_EMPTY, CAT_SOLID } from '../types'
+import { ELEMENT_DATA, getCategoryById, getDensityById } from '../elements'
+import { IGrid } from '../core/Grid'
+
+interface ScanResult {
+  found: boolean
+  x: number
+  hasChimney: boolean
+}
+
+export class GasBehavior implements IBehavior {
+  readonly category: ElementCategory = 'gas'
+  
+  update(ctx: UpdateContext): void {
+    const { grid, x, y, frame } = ctx
+    
+    // Direct TypedArray access - no object creation!
+    const type = grid.getType(x, y)
+    if (type === EL_EMPTY) return
+    
+    const props = ELEMENT_DATA[type]
+    const density = props.density
+    const range = props.dispersion || 5
+    
+    const { dx1, dx2 } = getRandomDirection(frame, x)
+    
+    // --- 1. Rise UP (against gravity) ---
+    if (this.tryRise(grid, x, y, x, y - 1, density)) return
+    
+    // --- 2. Rise DIAGONALLY ---
+    if (this.tryRise(grid, x, y, x + dx1, y - 1, density)) return
+    if (this.tryRise(grid, x, y, x + dx2, y - 1, density)) return
+    
+    // --- 3. Dispersion: Scan ceiling for chimneys ---
+    const leftTarget = this.scanCeiling(grid, x, y, -1, range, density)
+    const rightTarget = this.scanCeiling(grid, x, y, 1, range, density)
+    
+    let targetX = x
+    
+    if (leftTarget.found && rightTarget.found) {
+      if (leftTarget.hasChimney && !rightTarget.hasChimney) {
+        targetX = leftTarget.x
+      } else if (!leftTarget.hasChimney && rightTarget.hasChimney) {
+        targetX = rightTarget.x
+      } else {
+        targetX = Math.random() < 0.5 ? leftTarget.x : rightTarget.x
+      }
+    } else if (leftTarget.found) {
+      targetX = leftTarget.x
+    } else if (rightTarget.found) {
+      targetX = rightTarget.x
+    }
+    
+    if (targetX !== x) {
+      grid.swap(x, y, targetX, y)
+    }
+  }
+  
+  private scanCeiling(
+    grid: IGrid,
+    startX: number,
+    y: number,
+    dir: number,
+    range: number,
+    myDensity: number
+  ): ScanResult {
+    let bestX = startX
+    let found = false
+    let hasChimney = false
+    
+    for (let i = 1; i <= range; i++) {
+      const tx = startX + (dir * i)
+      
+      if (!grid.inBounds(tx, y)) break
+      
+      const targetType = grid.getType(tx, y)
+      
+      // CASE 1: Empty cell
+      if (targetType === EL_EMPTY) {
+        bestX = tx
+        found = true
+        
+        // Check for chimney above
+        if (grid.inBounds(tx, y - 1)) {
+          const aboveType = grid.getType(tx, y - 1)
+          if (aboveType === EL_EMPTY || getDensityById(aboveType) > myDensity) {
+            hasChimney = true
+            break
+          }
+        }
+        continue
+      }
+      
+      // CASE 2: Occupied - can we displace it?
+      const tCat = getCategoryById(targetType)
+      
+      if (tCat !== CAT_SOLID) {
+        const tDensity = getDensityById(targetType)
+        if (tDensity > myDensity) {
+          bestX = tx
+          found = true
+          break
+        }
+      }
+      
+      // CASE 3: Wall or lighter/same gas - stop
+      break
+    }
+    
+    return { found, x: bestX, hasChimney }
+  }
+  
+  private tryRise(
+    grid: IGrid,
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    myDensity: number
+  ): boolean {
+    if (!grid.inBounds(toX, toY)) return false
+    
+    const targetType = grid.getType(toX, toY)
+    
+    // Empty cell - just rise
+    if (targetType === EL_EMPTY) {
+      grid.swap(fromX, fromY, toX, toY)
+      return true
+    }
+    
+    // Can we bubble through? (target must be heavier and not solid)
+    const tCat = getCategoryById(targetType)
+    
+    if (tCat !== CAT_SOLID) {
+      const tDensity = getDensityById(targetType)
+      if (tDensity > myDensity) {
+        grid.swap(fromX, fromY, toX, toY)
+        return true
+      }
+    }
+    
+    return false
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/behaviors/GasBehavior.ts ---
+
+
+--- File: apps/web/src/lib/engine/behaviors/IBehavior.ts ---
+
+/**
+ * IBehavior - Interface for particle behaviors
+ * Open/Closed Principle: New behaviors can be added without modifying existing code
+ */
+
+import { IGrid } from '../core/Grid'
+import { WorldSettings, ElementCategory } from '../types'
+
+export interface UpdateContext {
+  grid: IGrid
+  x: number
+  y: number
+  settings: WorldSettings
+  frame: number
+}
+
+export interface IBehavior {
+  readonly category: ElementCategory
+  update(ctx: UpdateContext): void
+}
+
+// Gravity helper used by multiple behaviors
+export function getGravityDirection(settings: WorldSettings): { gx: number; gy: number } {
+  return {
+    gx: settings.gravity.x > 0 ? 1 : settings.gravity.x < 0 ? -1 : 0,
+    gy: settings.gravity.y > 0 ? 1 : settings.gravity.y < 0 ? -1 : 0
+  }
+}
+
+// Random direction helper
+export function getRandomDirection(frame: number, x: number): { dx1: number; dx2: number } {
+  const goLeft = (frame + x) & 1
+  return {
+    dx1: goLeft ? -1 : 1,
+    dx2: goLeft ? 1 : -1
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/behaviors/IBehavior.ts ---
+
+
+--- File: apps/web/src/lib/engine/behaviors/LiquidBehavior.ts ---
+
+/**
+ * LiquidBehavior - Pure dispersion-based liquid physics
+ * 
+ * Phase 1: Direct TypedArray access - no object allocations!
+ * 
+ * Philosophy:
+ * - No mass, no pressure formulas - just discrete particle movement
+ * - Liquids "scan & teleport" up to N cells horizontally (dispersion rate)
+ * - Prioritizes falling into holes/cliffs for waterfall effect
+ * - Heavier liquids can push lighter ones horizontally for level equalization
+ */
+
+import { IBehavior, UpdateContext, getRandomDirection } from './IBehavior'
+import { ElementCategory, EL_EMPTY, CAT_LIQUID, CAT_GAS } from '../types'
+import { ELEMENT_DATA, getCategoryById, getDensityById } from '../elements'
+import { IGrid } from '../core/Grid'
+
+interface ScanResult {
+  found: boolean
+  x: number
+  hasCliff: boolean
+}
+
+export class LiquidBehavior implements IBehavior {
+  readonly category: ElementCategory = 'liquid'
+  
+  update(ctx: UpdateContext): void {
+    const { grid, x, y, frame } = ctx
+    
+    // Direct TypedArray access - no object creation!
+    const type = grid.getType(x, y)
+    if (type === EL_EMPTY) return
+    
+    const props = ELEMENT_DATA[type]
+    const density = props.density
+    const range = props.dispersion || 5
+    
+    const { dx1, dx2 } = getRandomDirection(frame, x)
+    
+    // --- 1. Gravity: Fall Down ---
+    if (this.tryMove(grid, x, y, x, y + 1, density)) return
+    
+    // --- 2. Gravity: Fall Diagonally ---
+    if (this.tryMove(grid, x, y, x + dx1, y + 1, density)) return
+    if (this.tryMove(grid, x, y, x + dx2, y + 1, density)) return
+    
+    // --- 3. Dispersion: Scan & Teleport ---
+    const leftTarget = this.scanLine(grid, x, y, -1, range, density)
+    const rightTarget = this.scanLine(grid, x, y, 1, range, density)
+    
+    // Choose best target
+    let targetX = x
+    
+    if (leftTarget.found && rightTarget.found) {
+      if (leftTarget.hasCliff && !rightTarget.hasCliff) {
+        targetX = leftTarget.x
+      } else if (!leftTarget.hasCliff && rightTarget.hasCliff) {
+        targetX = rightTarget.x
+      } else {
+        targetX = Math.random() < 0.5 ? leftTarget.x : rightTarget.x
+      }
+    } else if (leftTarget.found) {
+      targetX = leftTarget.x
+    } else if (rightTarget.found) {
+      targetX = rightTarget.x
+    }
+    
+    if (targetX !== x) {
+      grid.swap(x, y, targetX, y)
+    }
+  }
+  
+  private scanLine(
+    grid: IGrid,
+    startX: number,
+    y: number,
+    dir: number,
+    range: number,
+    myDensity: number
+  ): ScanResult {
+    let bestX = startX
+    let found = false
+    let hasCliff = false
+    
+    for (let i = 1; i <= range; i++) {
+      const tx = startX + (dir * i)
+      
+      if (!grid.inBounds(tx, y)) break
+      
+      const targetType = grid.getType(tx, y)
+      
+      // CASE 1: Empty cell
+      if (targetType === EL_EMPTY) {
+        bestX = tx
+        found = true
+        
+        // Check for cliff below (waterfall effect)
+        if (grid.inBounds(tx, y + 1) && grid.isEmpty(tx, y + 1)) {
+          hasCliff = true
+          break
+        }
+        continue
+      }
+      
+      // CASE 2: Occupied cell - check if we can displace
+      const tCat = getCategoryById(targetType)
+      
+      if (tCat === CAT_LIQUID || tCat === CAT_GAS) {
+        const tDensity = getDensityById(targetType)
+        
+        if (myDensity > tDensity) {
+          bestX = tx
+          found = true
+          break
+        }
+      }
+      
+      // CASE 3: Wall or same/heavier liquid - stop scanning
+      break
+    }
+    
+    return { found, x: bestX, hasCliff }
+  }
+  
+  private tryMove(
+    grid: IGrid,
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    myDensity: number
+  ): boolean {
+    if (!grid.inBounds(toX, toY)) return false
+    
+    const targetType = grid.getType(toX, toY)
+    
+    // Empty cell - just move
+    if (targetType === EL_EMPTY) {
+      grid.swap(fromX, fromY, toX, toY)
+      return true
+    }
+    
+    // Check if we can displace (heavier sinks into lighter)
+    const tCat = getCategoryById(targetType)
+    if (tCat === CAT_LIQUID || tCat === CAT_GAS) {
+      if (myDensity > getDensityById(targetType)) {
+        grid.swap(fromX, fromY, toX, toY)
+        return true
+      }
+    }
+    
+    return false
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/behaviors/LiquidBehavior.ts ---
+
+
+--- File: apps/web/src/lib/engine/behaviors/PlantBehavior.ts ---
+
+/**
+ * PlantBehavior - Agent-based plant growth system
+ * 
+ * Phase 1: Direct TypedArray access - no object allocations!
+ * 
+ * Seed: Falls like powder, germinates when touching dirt + water
+ * Plant: Grows upward consuming water, affected by temperature
+ */
+
+import { IBehavior, UpdateContext, getRandomDirection } from './IBehavior'
+import { 
+  ElementCategory, 
+  EL_EMPTY, 
+  EL_SEED, 
+  EL_PLANT, 
+  EL_WATER, 
+  EL_DIRT, 
+  EL_SAND,
+  CAT_LIQUID
+} from '../types'
+import { ELEMENT_DATA, getCategoryById, getDensityById, getColorById } from '../elements'
+import { IGrid } from '../core/Grid'
+
+const SEED_DENSITY = 1100
+
+export class PlantBehavior implements IBehavior {
+  readonly category: ElementCategory = 'bio'
+
+  update(ctx: UpdateContext): void {
+    const { grid, x, y } = ctx
+    
+    // Direct TypedArray access - no object creation!
+    const type = grid.getType(x, y)
+    if (type === EL_EMPTY) return
+
+    if (type === EL_SEED) {
+      this.processSeed(ctx)
+    } else if (type === EL_PLANT) {
+      this.processPlant(ctx)
+    }
+  }
+
+  private processSeed(ctx: UpdateContext): void {
+    const { grid, x, y, frame } = ctx
+    
+    // 1. Gravity - fall down
+    if (this.canSeedDisplace(grid, x, y + 1)) {
+      grid.swap(x, y, x, y + 1)
+      return
+    }
+    
+    // 2. Diagonal falling
+    const { dx1, dx2 } = getRandomDirection(frame, x)
+    if (this.canSeedDisplace(grid, x + dx1, y + 1)) {
+      grid.swap(x, y, x + dx1, y + 1)
+      return
+    }
+    if (this.canSeedDisplace(grid, x + dx2, y + 1)) {
+      grid.swap(x, y, x + dx2, y + 1)
+      return
+    }
+
+    // 3. Germination check
+    const belowType = grid.getType(x, y + 1)
+    if (belowType === EL_DIRT || belowType === EL_SAND) {
+      if (this.hasWaterNeighbor(grid, x, y)) {
+        this.transformToPlant(ctx, x, y)
+      }
+    }
+  }
+  
+  private canSeedDisplace(grid: IGrid, x: number, y: number): boolean {
+    if (!grid.inBounds(x, y)) return false
+    
+    const targetType = grid.getType(x, y)
+    if (targetType === EL_EMPTY) return true
+    
+    const targetCat = getCategoryById(targetType)
+    if (targetCat === CAT_LIQUID) {
+      return SEED_DENSITY > getDensityById(targetType)
+    }
+    
+    return false
+  }
+
+  private processPlant(ctx: UpdateContext): void {
+    const { grid, x, y } = ctx
+    
+    const temp = grid.getTemp(x, y)
+    
+    if (temp < 0) return
+    
+    if (temp > 150) {
+      grid.clearCell(x, y)
+      return
+    }
+
+    if (Math.random() > 0.05) return
+
+    const canGrowUp = grid.inBounds(x, y - 1) && grid.isEmpty(x, y - 1)
+    
+    if (!canGrowUp) {
+      if (Math.random() > 0.2) return
+    }
+
+    const waterPos = this.findWater(grid, x, y, 3)
+    
+    if (waterPos) {
+      grid.clearCell(waterPos.x, waterPos.y)
+      
+      const growOptions = [
+        { dx: 0, dy: -1 },
+        { dx: -1, dy: -1 },
+        { dx: 1, dy: -1 },
+      ]
+      
+      const weights = [0.6, 0.2, 0.2]
+      const rand = Math.random()
+      let cumulative = 0
+      let chosen = growOptions[0]
+      
+      for (let i = 0; i < growOptions.length; i++) {
+        cumulative += weights[i]
+        if (rand < cumulative) {
+          chosen = growOptions[i]
+          break
+        }
+      }
+      
+      const gx = x + chosen.dx
+      const gy = y + chosen.dy
+      
+      if (grid.inBounds(gx, gy) && grid.isEmpty(gx, gy)) {
+        this.transformToPlant(ctx, gx, gy)
+      }
+    }
+  }
+
+  private transformToPlant(ctx: UpdateContext, x: number, y: number): void {
+    const { grid, frame } = ctx
+    const seed = (x * 11 + y * 17 + frame) & 31
+    const props = ELEMENT_DATA[EL_PLANT]
+    
+    grid.setParticle(
+      x, y,
+      EL_PLANT,
+      getColorById(EL_PLANT, seed),
+      props.lifetime,
+      20  // Room temperature
+    )
+  }
+
+  private hasWaterNeighbor(grid: IGrid, x: number, y: number): boolean {
+    return this.findWater(grid, x, y, 1) !== null
+  }
+
+  private findWater(grid: IGrid, cx: number, cy: number, radius: number): { x: number; y: number } | null {
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const nx = cx + dx
+        const ny = cy + dy
+        if (grid.inBounds(nx, ny)) {
+          if (grid.getType(nx, ny) === EL_WATER) {
+            return { x: nx, y: ny }
+          }
+        }
+      }
+    }
+    return null
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/behaviors/PlantBehavior.ts ---
+
+
+--- File: apps/web/src/lib/engine/behaviors/PowderBehavior.ts ---
+
+/**
+ * PowderBehavior - Physics for powder particles (sand, etc.)
+ * Falls down, piles up, can sink into lighter liquids
+ * 
+ * Phase 1: Direct TypedArray access - no object allocations!
+ */
+
+import { IBehavior, UpdateContext, getGravityDirection, getRandomDirection } from './IBehavior'
+import { ElementCategory, EL_EMPTY, CAT_LIQUID } from '../types'
+import { ELEMENT_DATA, getCategoryById, getDensityById } from '../elements'
+
+export class PowderBehavior implements IBehavior {
+  readonly category: ElementCategory = 'powder'
+  
+  update(ctx: UpdateContext): void {
+    const { grid, x, y, settings, frame } = ctx
+    
+    // Direct TypedArray access - no object creation!
+    const type = grid.getType(x, y)
+    if (type === EL_EMPTY) return
+    
+    const myDensity = ELEMENT_DATA[type].density
+    const { gx, gy } = getGravityDirection(settings)
+    
+    // No gravity = no movement
+    if (gy === 0 && gx === 0) return
+    
+    // Try to fall in gravity direction
+    if (this.canDisplace(grid, x + gx, y + gy, myDensity)) {
+      grid.swap(x, y, x + gx, y + gy)
+      return
+    }
+    
+    // Try diagonal movement
+    const { dx1, dx2 } = getRandomDirection(frame, x)
+    
+    if (this.canDisplace(grid, x + dx1 + gx, y + gy, myDensity)) {
+      grid.swap(x, y, x + dx1 + gx, y + gy)
+      return
+    }
+    
+    if (this.canDisplace(grid, x + dx2 + gx, y + gy, myDensity)) {
+      grid.swap(x, y, x + dx2 + gx, y + gy)
+    }
+  }
+  
+  private canDisplace(grid: UpdateContext['grid'], x: number, y: number, myDensity: number): boolean {
+    if (!grid.inBounds(x, y)) return false
+    
+    const targetType = grid.getType(x, y)
+    if (targetType === EL_EMPTY) return true // Empty = can move
+    
+    const targetCat = getCategoryById(targetType)
+    // Can only displace liquids, not solids
+    if (targetCat !== CAT_LIQUID) return false
+    
+    return myDensity > getDensityById(targetType)
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/behaviors/PowderBehavior.ts ---
+
+
+--- File: apps/web/src/lib/engine/behaviors/UtilityBehavior.ts ---
+
+/**
+ * UtilityBehavior - Handles Clone and Void elements
+ * Clone: Duplicates touching elements into empty neighbors
+ * Void: Destroys all touching elements
+ * 
+ * Phase 1: Direct TypedArray access - no object allocations!
+ */
+
+import { IBehavior, UpdateContext } from './IBehavior'
+import { 
+  ElementCategory, 
+  ElementId,
+  EL_EMPTY, 
+  EL_CLONE, 
+  EL_VOID,
+  CAT_UTILITY
+} from '../types'
+import { ELEMENT_DATA, getCategoryById, getColorById } from '../elements'
+import { IGrid } from '../core/Grid'
+
+export class UtilityBehavior implements IBehavior {
+  readonly category: ElementCategory = 'utility'
+
+  update(ctx: UpdateContext): void {
+    const { grid, x, y, frame } = ctx
+    
+    // Direct TypedArray access - no object creation!
+    const type = grid.getType(x, y)
+    if (type === EL_EMPTY) return
+
+    if (type === EL_VOID) {
+      this.processVoid(grid, x, y)
+    } else if (type === EL_CLONE) {
+      this.processClone(grid, x, y, frame)
+    }
+  }
+
+  /**
+   * VOID: Destroys all adjacent particles (except other utilities)
+   */
+  private processVoid(grid: IGrid, x: number, y: number): void {
+    const neighbors = [
+      { nx: x, ny: y - 1 },
+      { nx: x, ny: y + 1 },
+      { nx: x - 1, ny: y },
+      { nx: x + 1, ny: y }
+    ]
+
+    for (const { nx, ny } of neighbors) {
+      if (!grid.inBounds(nx, ny)) continue
+      
+      const neighborType = grid.getType(nx, ny)
+      if (neighborType !== EL_EMPTY && neighborType !== EL_VOID && neighborType !== EL_CLONE) {
+        grid.clearCell(nx, ny)
+      }
+    }
+  }
+
+  /**
+   * CLONE: Finds a donor element and copies it to empty adjacent cells
+   */
+  private processClone(grid: IGrid, x: number, y: number, frame: number): void {
+    const directions = [
+      { dx: 0, dy: -1 },
+      { dx: 0, dy: 1 },
+      { dx: -1, dy: 0 },
+      { dx: 1, dy: 0 }
+    ]
+
+    // 1. Find a donor element (first non-utility neighbor)
+    let sourceType: ElementId = EL_EMPTY
+    
+    for (const dir of directions) {
+      const nx = x + dir.dx
+      const ny = y + dir.dy
+      
+      if (!grid.inBounds(nx, ny)) continue
+      
+      const neighborType = grid.getType(nx, ny)
+      if (neighborType !== EL_EMPTY) {
+        const cat = getCategoryById(neighborType)
+        if (cat !== CAT_UTILITY) {
+          sourceType = neighborType
+          break
+        }
+      }
+    }
+
+    if (sourceType === EL_EMPTY) return  // No donor found
+
+    // 2. Clone into ONE empty adjacent cell
+    const startDir = frame % 4
+    
+    for (let i = 0; i < 4; i++) {
+      const dir = directions[(startDir + i) % 4]
+      const nx = x + dir.dx
+      const ny = y + dir.dy
+      
+      if (!grid.inBounds(nx, ny)) continue
+      if (!grid.isEmpty(nx, ny)) continue
+      
+      // Create cloned particle using direct TypedArray writes
+      const seed = (nx * 7 + ny * 13 + frame) & 31
+      const props = ELEMENT_DATA[sourceType]
+      
+      grid.setParticle(
+        nx, ny,
+        sourceType,
+        getColorById(sourceType, seed),
+        props.lifetime,
+        props.defaultTemp
+      )
+      return  // Only clone ONE per frame!
+    }
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/behaviors/UtilityBehavior.ts ---
+
+
+--- File: apps/web/src/lib/engine/behaviors/index.ts ---
+
+/**
+ * Behavior exports
+ */
+
+export type { IBehavior, UpdateContext } from './IBehavior'
+export { getGravityDirection, getRandomDirection } from './IBehavior'
+export { PowderBehavior } from './PowderBehavior'
+export { LiquidBehavior } from './LiquidBehavior'
+export { GasBehavior } from './GasBehavior'
+export { EnergyBehavior } from './EnergyBehavior'
+export { UtilityBehavior } from './UtilityBehavior'
+export { PlantBehavior } from './PlantBehavior'
+
+--- End of File: apps/web/src/lib/engine/behaviors/index.ts ---
+
+
+--- File: apps/web/src/lib/engine/core/Grid.ts ---
+
+/**
+ * Grid - Data-Oriented Design with Structure of Arrays (SoA)
+ * 
+ * Phase 1: TypedArrays for zero GC pressure
+ * 
+ * Instead of: grid[i] = { type: 'sand', color: 0xFFF, ... }  // GC nightmare
+ * We have:    types[i] = 2, colors[i] = 0xFFF, ...           // Cache-friendly
+ * 
+ * Benefits:
+ * - No object allocations during simulation
+ * - Linear memory access = CPU cache happy
+ * - TypedArrays are fixed-size = no GC
+ */
+
+import { 
+  ElementId, 
+  EL_EMPTY,
+  Particle,
+  ELEMENT_NAME_TO_ID,
+  ELEMENT_ID_TO_NAME
+} from '../types'
+
+// Background color as ABGR (for ImageData)
+const BG_COLOR = 0xFF0A0A0A  // Opaque dark gray
+
+export interface IGrid {
+  readonly width: number
+  readonly height: number
+  
+  // === SoA Data Access ===
+  // Type (element ID)
+  getType(x: number, y: number): ElementId
+  getTypeIdx(idx: number): ElementId
+  setType(x: number, y: number, type: ElementId): void
+  setTypeIdx(idx: number, type: ElementId): void
+  
+  // Color (ABGR packed)
+  getColor(x: number, y: number): number
+  getColorIdx(idx: number): number
+  setColor(x: number, y: number, color: number): void
+  setColorIdx(idx: number, color: number): void
+  
+  // Lifetime
+  getLife(x: number, y: number): number
+  getLifeIdx(idx: number): number
+  setLife(x: number, y: number, life: number): void
+  setLifeIdx(idx: number, life: number): void
+  
+  // Updated flag (per-frame)
+  isUpdated(x: number, y: number): boolean
+  isUpdatedIdx(idx: number): boolean
+  setUpdated(x: number, y: number, updated: boolean): void
+  setUpdatedIdx(idx: number, updated: boolean): void
+  resetUpdated(): void
+  
+  // Temperature
+  getTemp(x: number, y: number): number
+  getTempIdx(idx: number): number
+  setTemp(x: number, y: number, temp: number): void
+  setTempIdx(idx: number, temp: number): void
+  
+  // === Utilities ===
+  index(x: number, y: number): number
+  coords(idx: number): { x: number; y: number }
+  inBounds(x: number, y: number): boolean
+  isEmpty(x: number, y: number): boolean
+  isEmptyIdx(idx: number): boolean
+  
+  // Swap two cells (all data)
+  swap(x1: number, y1: number, x2: number, y2: number): void
+  swapIdx(idx1: number, idx2: number): void
+  
+  // Set/clear particle with all data
+  setParticle(x: number, y: number, type: ElementId, color: number, life: number, temp: number): void
+  clearCell(x: number, y: number): void
+  
+  // Raw arrays for renderer
+  readonly types: Uint8Array
+  readonly colors: Uint32Array
+  readonly temperature: Float32Array
+  
+  // Legacy compatibility (returns Particle object - USE SPARINGLY!)
+  get(x: number, y: number): Particle | null
+  set(x: number, y: number, particle: Particle | null): void
+  
+  // Lifecycle
+  clear(): void
+  resize(width: number, height: number): void
+}
+
+export class Grid implements IGrid {
+  private _width: number
+  private _height: number
+  private _size: number
+  
+  // === Structure of Arrays ===
+  // All data for cell i is at: types[i], colors[i], life[i], updated[i], temperature[i]
+  public types: Uint8Array        // Element type (0-255)
+  public colors: Uint32Array      // ABGR packed color
+  private life: Uint16Array       // Remaining lifetime (0 = infinite, else frames)
+  private updated: Uint8Array     // 0 = not updated, 1 = updated this frame
+  public temperature: Float32Array // Temperature in °C
+  
+  constructor(width: number, height: number) {
+    this._width = Math.max(1, Math.floor(width))
+    this._height = Math.max(1, Math.floor(height))
+    this._size = this._width * this._height
+    
+    // Allocate all arrays
+    this.types = new Uint8Array(this._size)         // All 0 = EL_EMPTY
+    this.colors = new Uint32Array(this._size)
+    this.life = new Uint16Array(this._size)
+    this.updated = new Uint8Array(this._size)
+    this.temperature = new Float32Array(this._size)
+    
+    // Initialize
+    this.colors.fill(BG_COLOR)
+    this.temperature.fill(20)  // 20°C ambient
+  }
+  
+  get width(): number { return this._width }
+  get height(): number { return this._height }
+  
+  // === Index conversion ===
+  index(x: number, y: number): number {
+    return y * this._width + x
+  }
+  
+  coords(idx: number): { x: number; y: number } {
+    return {
+      x: idx % this._width,
+      y: Math.floor(idx / this._width)
+    }
+  }
+  
+  // === Bounds checking ===
+  inBounds(x: number, y: number): boolean {
+    return x >= 0 && x < this._width && y >= 0 && y < this._height
+  }
+  
+  isEmpty(x: number, y: number): boolean {
+    if (!this.inBounds(x, y)) return false
+    return this.types[this.index(x, y)] === EL_EMPTY
+  }
+  
+  isEmptyIdx(idx: number): boolean {
+    return this.types[idx] === EL_EMPTY
+  }
+  
+  // === Type access ===
+  getType(x: number, y: number): ElementId {
+    if (!this.inBounds(x, y)) return EL_EMPTY
+    return this.types[this.index(x, y)]
+  }
+  
+  getTypeIdx(idx: number): ElementId {
+    return this.types[idx]
+  }
+  
+  setType(x: number, y: number, type: ElementId): void {
+    if (!this.inBounds(x, y)) return
+    this.types[this.index(x, y)] = type
+  }
+  
+  setTypeIdx(idx: number, type: ElementId): void {
+    this.types[idx] = type
+  }
+  
+  // === Color access ===
+  getColor(x: number, y: number): number {
+    if (!this.inBounds(x, y)) return BG_COLOR
+    return this.colors[this.index(x, y)]
+  }
+  
+  getColorIdx(idx: number): number {
+    return this.colors[idx]
+  }
+  
+  setColor(x: number, y: number, color: number): void {
+    if (!this.inBounds(x, y)) return
+    this.colors[this.index(x, y)] = color
+  }
+  
+  setColorIdx(idx: number, color: number): void {
+    this.colors[idx] = color
+  }
+  
+  // === Lifetime access ===
+  getLife(x: number, y: number): number {
+    if (!this.inBounds(x, y)) return 0
+    return this.life[this.index(x, y)]
+  }
+  
+  getLifeIdx(idx: number): number {
+    return this.life[idx]
+  }
+  
+  setLife(x: number, y: number, life: number): void {
+    if (!this.inBounds(x, y)) return
+    this.life[this.index(x, y)] = life
+  }
+  
+  setLifeIdx(idx: number, life: number): void {
+    this.life[idx] = life
+  }
+  
+  // === Updated flag ===
+  isUpdated(x: number, y: number): boolean {
+    if (!this.inBounds(x, y)) return true
+    return this.updated[this.index(x, y)] === 1
+  }
+  
+  isUpdatedIdx(idx: number): boolean {
+    return this.updated[idx] === 1
+  }
+  
+  setUpdated(x: number, y: number, upd: boolean): void {
+    if (!this.inBounds(x, y)) return
+    this.updated[this.index(x, y)] = upd ? 1 : 0
+  }
+  
+  setUpdatedIdx(idx: number, upd: boolean): void {
+    this.updated[idx] = upd ? 1 : 0
+  }
+  
+  resetUpdated(): void {
+    this.updated.fill(0)
+  }
+  
+  // === Temperature access ===
+  getTemp(x: number, y: number): number {
+    if (!this.inBounds(x, y)) return 20
+    return this.temperature[this.index(x, y)]
+  }
+  
+  getTempIdx(idx: number): number {
+    return this.temperature[idx]
+  }
+  
+  setTemp(x: number, y: number, temp: number): void {
+    if (!this.inBounds(x, y)) return
+    this.temperature[this.index(x, y)] = temp
+  }
+  
+  setTempIdx(idx: number, temp: number): void {
+    this.temperature[idx] = temp
+  }
+  
+  // === Swap two cells ===
+  swap(x1: number, y1: number, x2: number, y2: number): void {
+    if (!this.inBounds(x1, y1) || !this.inBounds(x2, y2)) return
+    this.swapIdx(this.index(x1, y1), this.index(x2, y2))
+  }
+  
+  swapIdx(idx1: number, idx2: number): void {
+    // Swap types
+    const t = this.types[idx1]
+    this.types[idx1] = this.types[idx2]
+    this.types[idx2] = t
+    
+    // Swap colors
+    const c = this.colors[idx1]
+    this.colors[idx1] = this.colors[idx2]
+    this.colors[idx2] = c
+    
+    // Swap life
+    const l = this.life[idx1]
+    this.life[idx1] = this.life[idx2]
+    this.life[idx2] = l
+    
+    // Swap updated
+    const u = this.updated[idx1]
+    this.updated[idx1] = this.updated[idx2]
+    this.updated[idx2] = u
+    
+    // Swap temperature
+    const temp = this.temperature[idx1]
+    this.temperature[idx1] = this.temperature[idx2]
+    this.temperature[idx2] = temp
+  }
+  
+  // === Set particle with all data ===
+  setParticle(x: number, y: number, type: ElementId, color: number, life: number, temp: number): void {
+    if (!this.inBounds(x, y)) return
+    const idx = this.index(x, y)
+    this.types[idx] = type
+    this.colors[idx] = color
+    this.life[idx] = life
+    this.temperature[idx] = temp
+    this.updated[idx] = 1  // Mark as updated
+  }
+  
+  // === Clear single cell ===
+  clearCell(x: number, y: number): void {
+    if (!this.inBounds(x, y)) return
+    const idx = this.index(x, y)
+    this.types[idx] = EL_EMPTY
+    this.colors[idx] = BG_COLOR
+    this.life[idx] = 0
+    this.temperature[idx] = 20
+  }
+  
+  // === Legacy compatibility ===
+  // WARNING: Creates objects! Use sparingly during transition
+  get(x: number, y: number): Particle | null {
+    if (!this.inBounds(x, y)) return null
+    const idx = this.index(x, y)
+    const type = this.types[idx]
+    if (type === EL_EMPTY) return null
+    
+    return {
+      element: ELEMENT_ID_TO_NAME[type],
+      color: this.colors[idx],
+      updated: this.updated[idx] === 1,
+      lifetime: this.life[idx]
+    }
+  }
+  
+  set(x: number, y: number, particle: Particle | null): void {
+    if (!this.inBounds(x, y)) return
+    const idx = this.index(x, y)
+    
+    if (particle === null) {
+      this.types[idx] = EL_EMPTY
+      this.colors[idx] = BG_COLOR
+      this.life[idx] = 0
+      // Keep temperature (air inherits)
+    } else {
+      this.types[idx] = ELEMENT_NAME_TO_ID[particle.element]
+      this.colors[idx] = particle.color
+      this.life[idx] = particle.lifetime
+      this.updated[idx] = particle.updated ? 1 : 0
+    }
+  }
+  
+  // === Clear entire grid ===
+  clear(): void {
+    this.types.fill(EL_EMPTY)
+    this.colors.fill(BG_COLOR)
+    this.life.fill(0)
+    this.updated.fill(0)
+    this.temperature.fill(20)
+  }
+  
+  // === Resize grid ===
+  resize(width: number, height: number): void {
+    const w = Math.max(1, Math.floor(width))
+    const h = Math.max(1, Math.floor(height))
+    const newSize = w * h
+    
+    // Allocate new arrays
+    const newTypes = new Uint8Array(newSize)
+    const newColors = new Uint32Array(newSize)
+    const newLife = new Uint16Array(newSize)
+    const newUpdated = new Uint8Array(newSize)
+    const newTemp = new Float32Array(newSize)
+    
+    // Initialize with defaults
+    newColors.fill(BG_COLOR)
+    newTemp.fill(20)
+    
+    // Copy existing data that fits
+    const minH = Math.min(this._height, h)
+    const minW = Math.min(this._width, w)
+    
+    for (let y = 0; y < minH; y++) {
+      for (let x = 0; x < minW; x++) {
+        const oldIdx = y * this._width + x
+        const newIdx = y * w + x
+        
+        newTypes[newIdx] = this.types[oldIdx]
+        newColors[newIdx] = this.colors[oldIdx]
+        newLife[newIdx] = this.life[oldIdx]
+        newUpdated[newIdx] = this.updated[oldIdx]
+        newTemp[newIdx] = this.temperature[oldIdx]
+      }
+    }
+    
+    // Replace arrays
+    this._width = w
+    this._height = h
+    this._size = newSize
+    this.types = newTypes
+    this.colors = newColors
+    this.life = newLife
+    this.updated = newUpdated
+    this.temperature = newTemp
+  }
+  
+  // === Legacy iteration (USE SPARINGLY - creates objects!) ===
+  forEach(callback: (particle: Particle | null, x: number, y: number, idx: number) => void): void {
+    for (let y = 0; y < this._height; y++) {
+      for (let x = 0; x < this._width; x++) {
+        const idx = this.index(x, y)
+        callback(this.get(x, y), x, y, idx)
+      }
+    }
+  }
+  
+  // Legacy getter (creates new array!)
+  getCells(): (Particle | null)[] {
+    const cells: (Particle | null)[] = new Array(this._size)
+    for (let i = 0; i < this._size; i++) {
+      if (this.types[i] === EL_EMPTY) {
+        cells[i] = null
+      } else {
+        cells[i] = {
+          element: ELEMENT_ID_TO_NAME[this.types[i]],
+          color: this.colors[i],
+          updated: this.updated[i] === 1,
+          lifetime: this.life[i]
+        }
+      }
+    }
+    return cells
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/core/Grid.ts ---
+
+
+--- File: apps/web/src/lib/engine/core/SharedGrid.ts ---
+
+/**
+ * SharedGrid - Grid backed by SharedArrayBuffer
+ * 
+ * Phase 2: Multi-threaded simulation
+ * 
+ * This grid can be shared between Main Thread and Web Workers.
+ * Both threads see the same memory - no copying needed!
+ * 
+ * Usage:
+ *   Main Thread: Creates SharedGrid, passes buffers to Worker
+ *   Worker: Receives buffers, creates views, runs simulation
+ *   Main Thread: Reads updated data for rendering
+ */
+
+import { 
+  ElementId, 
+  EL_EMPTY,
+  Particle,
+  ELEMENT_NAME_TO_ID,
+  ELEMENT_ID_TO_NAME
+} from '../types'
+import { IGrid } from './Grid'
+
+// Background color as ABGR (for ImageData)
+const BG_COLOR = 0xFF0A0A0A
+
+/**
+ * Buffers that can be transferred to a Worker
+ */
+export interface SharedGridBuffers {
+  types: SharedArrayBuffer
+  colors: SharedArrayBuffer
+  life: SharedArrayBuffer
+  updated: SharedArrayBuffer
+  temperature: SharedArrayBuffer
+  width: number
+  height: number
+}
+
+/**
+ * Check if SharedArrayBuffer is available
+ */
+export function isSharedArrayBufferAvailable(): boolean {
+  try {
+    new SharedArrayBuffer(1)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export class SharedGrid implements IGrid {
+  private _width: number
+  private _height: number
+  private _size: number
+  
+  // Shared buffers (can be transferred to workers)
+  private _typesBuffer: SharedArrayBuffer
+  private _colorsBuffer: SharedArrayBuffer
+  private _lifeBuffer: SharedArrayBuffer
+  private _updatedBuffer: SharedArrayBuffer
+  private _temperatureBuffer: SharedArrayBuffer
+  
+  // TypedArray views over shared buffers
+  public types: Uint8Array
+  public colors: Uint32Array
+  private life: Uint16Array
+  private updated: Uint8Array
+  public temperature: Float32Array
+  
+  constructor(width: number, height: number) {
+    this._width = Math.max(1, Math.floor(width))
+    this._height = Math.max(1, Math.floor(height))
+    this._size = this._width * this._height
+    
+    // Allocate SharedArrayBuffers
+    this._typesBuffer = new SharedArrayBuffer(this._size)
+    this._colorsBuffer = new SharedArrayBuffer(this._size * 4)  // Uint32 = 4 bytes
+    this._lifeBuffer = new SharedArrayBuffer(this._size * 2)    // Uint16 = 2 bytes
+    this._updatedBuffer = new SharedArrayBuffer(this._size)
+    this._temperatureBuffer = new SharedArrayBuffer(this._size * 4)  // Float32 = 4 bytes
+    
+    // Create views
+    this.types = new Uint8Array(this._typesBuffer)
+    this.colors = new Uint32Array(this._colorsBuffer)
+    this.life = new Uint16Array(this._lifeBuffer)
+    this.updated = new Uint8Array(this._updatedBuffer)
+    this.temperature = new Float32Array(this._temperatureBuffer)
+    
+    // Initialize
+    this.colors.fill(BG_COLOR)
+    this.temperature.fill(20)
+  }
+  
+  /**
+   * Create SharedGrid from existing buffers (used in Worker)
+   */
+  static fromBuffers(buffers: SharedGridBuffers): SharedGrid {
+    const grid = Object.create(SharedGrid.prototype) as SharedGrid
+    
+    grid._width = buffers.width
+    grid._height = buffers.height
+    grid._size = buffers.width * buffers.height
+    
+    grid._typesBuffer = buffers.types
+    grid._colorsBuffer = buffers.colors
+    grid._lifeBuffer = buffers.life
+    grid._updatedBuffer = buffers.updated
+    grid._temperatureBuffer = buffers.temperature
+    
+    grid.types = new Uint8Array(buffers.types)
+    grid.colors = new Uint32Array(buffers.colors)
+    grid.life = new Uint16Array(buffers.life)
+    grid.updated = new Uint8Array(buffers.updated)
+    grid.temperature = new Float32Array(buffers.temperature)
+    
+    return grid
+  }
+  
+  /**
+   * Get buffers for transfer to Worker
+   */
+  getBuffers(): SharedGridBuffers {
+    return {
+      types: this._typesBuffer,
+      colors: this._colorsBuffer,
+      life: this._lifeBuffer,
+      updated: this._updatedBuffer,
+      temperature: this._temperatureBuffer,
+      width: this._width,
+      height: this._height,
+    }
+  }
+  
+  get width(): number { return this._width }
+  get height(): number { return this._height }
+  
+  // === Index conversion ===
+  index(x: number, y: number): number {
+    return y * this._width + x
+  }
+  
+  coords(idx: number): { x: number; y: number } {
+    return {
+      x: idx % this._width,
+      y: Math.floor(idx / this._width)
+    }
+  }
+  
+  // === Bounds checking ===
+  inBounds(x: number, y: number): boolean {
+    return x >= 0 && x < this._width && y >= 0 && y < this._height
+  }
+  
+  isEmpty(x: number, y: number): boolean {
+    if (!this.inBounds(x, y)) return false
+    return this.types[this.index(x, y)] === EL_EMPTY
+  }
+  
+  isEmptyIdx(idx: number): boolean {
+    return this.types[idx] === EL_EMPTY
+  }
+  
+  // === Type access ===
+  getType(x: number, y: number): ElementId {
+    if (!this.inBounds(x, y)) return EL_EMPTY
+    return this.types[this.index(x, y)]
+  }
+  
+  getTypeIdx(idx: number): ElementId {
+    return this.types[idx]
+  }
+  
+  setType(x: number, y: number, type: ElementId): void {
+    if (!this.inBounds(x, y)) return
+    this.types[this.index(x, y)] = type
+  }
+  
+  setTypeIdx(idx: number, type: ElementId): void {
+    this.types[idx] = type
+  }
+  
+  // === Color access ===
+  getColor(x: number, y: number): number {
+    if (!this.inBounds(x, y)) return BG_COLOR
+    return this.colors[this.index(x, y)]
+  }
+  
+  getColorIdx(idx: number): number {
+    return this.colors[idx]
+  }
+  
+  setColor(x: number, y: number, color: number): void {
+    if (!this.inBounds(x, y)) return
+    this.colors[this.index(x, y)] = color
+  }
+  
+  setColorIdx(idx: number, color: number): void {
+    this.colors[idx] = color
+  }
+  
+  // === Lifetime access ===
+  getLife(x: number, y: number): number {
+    if (!this.inBounds(x, y)) return 0
+    return this.life[this.index(x, y)]
+  }
+  
+  getLifeIdx(idx: number): number {
+    return this.life[idx]
+  }
+  
+  setLife(x: number, y: number, life: number): void {
+    if (!this.inBounds(x, y)) return
+    this.life[this.index(x, y)] = life
+  }
+  
+  setLifeIdx(idx: number, life: number): void {
+    this.life[idx] = life
+  }
+  
+  // === Updated flag ===
+  isUpdated(x: number, y: number): boolean {
+    if (!this.inBounds(x, y)) return true
+    return this.updated[this.index(x, y)] === 1
+  }
+  
+  isUpdatedIdx(idx: number): boolean {
+    return this.updated[idx] === 1
+  }
+  
+  setUpdated(x: number, y: number, upd: boolean): void {
+    if (!this.inBounds(x, y)) return
+    this.updated[this.index(x, y)] = upd ? 1 : 0
+  }
+  
+  setUpdatedIdx(idx: number, upd: boolean): void {
+    this.updated[idx] = upd ? 1 : 0
+  }
+  
+  resetUpdated(): void {
+    this.updated.fill(0)
+  }
+  
+  // === Temperature access ===
+  getTemp(x: number, y: number): number {
+    if (!this.inBounds(x, y)) return 20
+    return this.temperature[this.index(x, y)]
+  }
+  
+  getTempIdx(idx: number): number {
+    return this.temperature[idx]
+  }
+  
+  setTemp(x: number, y: number, temp: number): void {
+    if (!this.inBounds(x, y)) return
+    this.temperature[this.index(x, y)] = temp
+  }
+  
+  setTempIdx(idx: number, temp: number): void {
+    this.temperature[idx] = temp
+  }
+  
+  // === Swap two cells ===
+  swap(x1: number, y1: number, x2: number, y2: number): void {
+    if (!this.inBounds(x1, y1) || !this.inBounds(x2, y2)) return
+    this.swapIdx(this.index(x1, y1), this.index(x2, y2))
+  }
+  
+  swapIdx(idx1: number, idx2: number): void {
+    // Swap types
+    const t = this.types[idx1]
+    this.types[idx1] = this.types[idx2]
+    this.types[idx2] = t
+    
+    // Swap colors
+    const c = this.colors[idx1]
+    this.colors[idx1] = this.colors[idx2]
+    this.colors[idx2] = c
+    
+    // Swap life
+    const l = this.life[idx1]
+    this.life[idx1] = this.life[idx2]
+    this.life[idx2] = l
+    
+    // Swap updated
+    const u = this.updated[idx1]
+    this.updated[idx1] = this.updated[idx2]
+    this.updated[idx2] = u
+    
+    // Swap temperature
+    const temp = this.temperature[idx1]
+    this.temperature[idx1] = this.temperature[idx2]
+    this.temperature[idx2] = temp
+  }
+  
+  // === Set particle with all data ===
+  setParticle(x: number, y: number, type: ElementId, color: number, life: number, temp: number): void {
+    if (!this.inBounds(x, y)) return
+    const idx = this.index(x, y)
+    this.types[idx] = type
+    this.colors[idx] = color
+    this.life[idx] = life
+    this.temperature[idx] = temp
+    this.updated[idx] = 1
+  }
+  
+  // === Clear single cell ===
+  clearCell(x: number, y: number): void {
+    if (!this.inBounds(x, y)) return
+    const idx = this.index(x, y)
+    this.types[idx] = EL_EMPTY
+    this.colors[idx] = BG_COLOR
+    this.life[idx] = 0
+    this.temperature[idx] = 20
+  }
+  
+  // === Legacy compatibility ===
+  get(x: number, y: number): Particle | null {
+    if (!this.inBounds(x, y)) return null
+    const idx = this.index(x, y)
+    const type = this.types[idx]
+    if (type === EL_EMPTY) return null
+    
+    return {
+      element: ELEMENT_ID_TO_NAME[type],
+      color: this.colors[idx],
+      updated: this.updated[idx] === 1,
+      lifetime: this.life[idx]
+    }
+  }
+  
+  set(x: number, y: number, particle: Particle | null): void {
+    if (!this.inBounds(x, y)) return
+    const idx = this.index(x, y)
+    
+    if (particle === null) {
+      this.types[idx] = EL_EMPTY
+      this.colors[idx] = BG_COLOR
+      this.life[idx] = 0
+    } else {
+      this.types[idx] = ELEMENT_NAME_TO_ID[particle.element]
+      this.colors[idx] = particle.color
+      this.life[idx] = particle.lifetime
+      this.updated[idx] = particle.updated ? 1 : 0
+    }
+  }
+  
+  // === Clear entire grid ===
+  clear(): void {
+    this.types.fill(EL_EMPTY)
+    this.colors.fill(BG_COLOR)
+    this.life.fill(0)
+    this.updated.fill(0)
+    this.temperature.fill(20)
+  }
+  
+  // === Resize grid ===
+  resize(width: number, height: number): void {
+    const w = Math.max(1, Math.floor(width))
+    const h = Math.max(1, Math.floor(height))
+    const newSize = w * h
+    
+    // Allocate new SharedArrayBuffers
+    const newTypesBuffer = new SharedArrayBuffer(newSize)
+    const newColorsBuffer = new SharedArrayBuffer(newSize * 4)
+    const newLifeBuffer = new SharedArrayBuffer(newSize * 2)
+    const newUpdatedBuffer = new SharedArrayBuffer(newSize)
+    const newTempBuffer = new SharedArrayBuffer(newSize * 4)
+    
+    const newTypes = new Uint8Array(newTypesBuffer)
+    const newColors = new Uint32Array(newColorsBuffer)
+    const newLife = new Uint16Array(newLifeBuffer)
+    const newUpdated = new Uint8Array(newUpdatedBuffer)
+    const newTemp = new Float32Array(newTempBuffer)
+    
+    // Initialize with defaults
+    newColors.fill(BG_COLOR)
+    newTemp.fill(20)
+    
+    // Copy existing data that fits
+    const minH = Math.min(this._height, h)
+    const minW = Math.min(this._width, w)
+    
+    for (let y = 0; y < minH; y++) {
+      for (let x = 0; x < minW; x++) {
+        const oldIdx = y * this._width + x
+        const newIdx = y * w + x
+        
+        newTypes[newIdx] = this.types[oldIdx]
+        newColors[newIdx] = this.colors[oldIdx]
+        newLife[newIdx] = this.life[oldIdx]
+        newUpdated[newIdx] = this.updated[oldIdx]
+        newTemp[newIdx] = this.temperature[oldIdx]
+      }
+    }
+    
+    // Replace buffers and views
+    this._width = w
+    this._height = h
+    this._size = newSize
+    
+    this._typesBuffer = newTypesBuffer
+    this._colorsBuffer = newColorsBuffer
+    this._lifeBuffer = newLifeBuffer
+    this._updatedBuffer = newUpdatedBuffer
+    this._temperatureBuffer = newTempBuffer
+    
+    this.types = newTypes
+    this.colors = newColors
+    this.life = newLife
+    this.updated = newUpdated
+    this.temperature = newTemp
+  }
+  
+  // === Legacy iteration ===
+  forEach(callback: (particle: Particle | null, x: number, y: number, idx: number) => void): void {
+    for (let y = 0; y < this._height; y++) {
+      for (let x = 0; x < this._width; x++) {
+        const idx = this.index(x, y)
+        callback(this.get(x, y), x, y, idx)
+      }
+    }
+  }
+  
+  getCells(): (Particle | null)[] {
+    const cells: (Particle | null)[] = new Array(this._size)
+    for (let i = 0; i < this._size; i++) {
+      if (this.types[i] === EL_EMPTY) {
+        cells[i] = null
+      } else {
+        cells[i] = {
+          element: ELEMENT_ID_TO_NAME[this.types[i]],
+          color: this.colors[i],
+          updated: this.updated[i] === 1,
+          lifetime: this.life[i]
+        }
+      }
+    }
+    return cells
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/core/SharedGrid.ts ---
+
+
+--- File: apps/web/src/lib/engine/core/Simulation.ts ---
+
+/**
+ * Simulation - Orchestrates particle physics
+ * Single Responsibility: Manages simulation step, delegates physics to behaviors
+ * Open/Closed: New behaviors can be added without modifying this class
+ */
+
+import { ISimulation, Particle, ElementType, WorldSettings, ElementCategory, ELEMENT_ID_TO_NAME, EL_EMPTY } from '../types'
+import { ELEMENTS, getColorWithVariation, getElementCategory } from '../elements'
+import { REACTIONS, Reaction } from '../reactions'
+import { Grid } from './Grid'
+import { 
+  IBehavior, 
+  UpdateContext,
+  PowderBehavior, 
+  LiquidBehavior, 
+  GasBehavior, 
+  EnergyBehavior,
+  UtilityBehavior,
+  PlantBehavior
+} from '../behaviors'
+
+export class Simulation implements ISimulation {
+  private grid: Grid
+  private frame: number = 0
+  private settings: WorldSettings
+  private _particleCount: number = 0
+  
+  // Behavior registry - maps category to behavior handler
+  private behaviors: Map<ElementCategory, IBehavior>
+  
+  constructor(width: number, height: number) {
+    this.grid = new Grid(width, height)
+    this.settings = {
+      gravity: { x: 0, y: 0.5 },
+      ambientTemperature: 20,
+      speed: 1,
+    }
+    
+    // Register behaviors (OCP: add new behaviors here)
+    this.behaviors = new Map<ElementCategory, IBehavior>([
+      ['powder', new PowderBehavior()],
+      ['liquid', new LiquidBehavior()],
+      ['gas', new GasBehavior()],
+      ['energy', new EnergyBehavior()],
+      ['utility', new UtilityBehavior()],
+      ['bio', new PlantBehavior()],
+    ])
+  }
+  
+  // Public API
+  get width(): number { return this.grid.width }
+  get height(): number { return this.grid.height }
+  get particleCount(): number { return this._particleCount }
+  
+  // Legacy method - creates objects, USE SPARINGLY!
+  getGrid(): (Particle | null)[] { 
+    return this.grid.getCells() 
+  }
+  
+  // NEW: Direct TypedArray access - ZERO allocations!
+  getTypesArray(): Uint8Array {
+    return this.grid.types
+  }
+  
+  getColorsArray(): Uint32Array {
+    return this.grid.colors
+  }
+  
+  getTemperatureArray(): Float32Array {
+    return this.grid.temperature
+  }
+  
+  setSettings(settings: Partial<WorldSettings>): void {
+    Object.assign(this.settings, settings)
+  }
+  
+  // Particle management
+  addParticle(x: number, y: number, element: ElementType): boolean {
+    const ix = Math.floor(x)
+    const iy = Math.floor(y)
+    
+    if (!this.grid.inBounds(ix, iy)) return false
+    if (this.grid.get(ix, iy)) return false // Occupied
+    
+    const seed = (ix * 7 + iy * 13 + this.frame) & 31
+    const particle: Particle = {
+      element,
+      color: getColorWithVariation(element, seed),
+      updated: false,
+      lifetime: ELEMENTS[element].lifetime,
+    }
+    
+    this.grid.set(ix, iy, particle)
+    this.grid.setTemp(ix, iy, ELEMENTS[element].defaultTemp)  // Set temperature!
+    this._particleCount++
+    
+    return true
+  }
+  
+  addParticlesInRadius(cx: number, cy: number, radius: number, element: ElementType): void {
+    const r2 = radius * radius
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (dx * dx + dy * dy <= r2) {
+          this.addParticle(cx + dx, cy + dy, element)
+        }
+      }
+    }
+  }
+  
+  removeParticle(x: number, y: number): boolean {
+    const ix = Math.floor(x)
+    const iy = Math.floor(y)
+    
+    if (!this.grid.inBounds(ix, iy)) return false
+    
+    if (this.grid.get(ix, iy)) {
+      this.grid.set(ix, iy, null)
+      this._particleCount--
+      return true
+    }
+    return false
+  }
+  
+  removeParticlesInRadius(cx: number, cy: number, radius: number): void {
+    const r2 = radius * radius
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (dx * dx + dy * dy <= r2) {
+          this.removeParticle(cx + dx, cy + dy)
+        }
+      }
+    }
+  }
+  
+  clear(): void {
+    this.grid.clear()
+    this._particleCount = 0
+    this.frame = 0
+  }
+  
+  resize(width: number, height: number): void {
+    this.grid.resize(width, height)
+    
+    // Recount particles
+    this._particleCount = 0
+    this.grid.forEach((p) => {
+      if (p) this._particleCount++
+    })
+  }
+  
+  // Main simulation step
+  step(): void {
+    // Reset update flags - use TypedArray method, not legacy forEach!
+    this.grid.resetUpdated()
+    
+    // Process based on gravity direction
+    // Alternate left-right processing to prevent directional bias
+    const goRight = (this.frame & 1) === 0
+    const gravityDown = this.settings.gravity.y >= 0
+    
+    // Process from bottom to top (or top to bottom if gravity reversed)
+    // This ensures lower particles move first, freeing space for upper ones
+    if (gravityDown) {
+      for (let y = this.grid.height - 1; y >= 0; y--) {
+        this.processRow(y, goRight)
+      }
+    } else {
+      for (let y = 0; y < this.grid.height; y++) {
+        this.processRow(y, goRight)
+      }
+    }
+    
+    // Thermodynamics pass - run every other frame for performance
+    if (this.frame % 2 === 0) {
+      this.processTemperatureGrid()
+    }
+    
+    this.frame++
+  }
+  
+  /**
+   * Process temperature for entire grid (including air!)
+   * Uses stochastic approach - only check one random neighbor per cell
+   */
+  private processTemperatureGrid(): void {
+    const h = this.grid.height
+    const w = this.grid.width
+    
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        this.updateTemperature(x, y)
+      }
+    }
+  }
+  
+  /**
+   * Heat transfer using Newton's law of cooling (simplified)
+   * Stochastic: only check ONE random neighbor for performance
+   * Phase 1: Uses TypedArray access
+   */
+  private updateTemperature(x: number, y: number): void {
+    const myTemp = this.grid.getTemp(x, y)
+    const type = this.grid.getType(x, y)
+    
+    // Empty cells (air) tend towards ambient temperature
+    if (type === EL_EMPTY) {
+      const ambient = this.settings.ambientTemperature
+      const diff = ambient - myTemp
+      
+      if (Math.abs(diff) > 0.5) {
+        this.grid.setTemp(x, y, myTemp + diff * 0.02)
+      }
+    }
+    
+    // Get conductivity (air = 5 if empty)
+    const conductivity = type !== EL_EMPTY 
+      ? ELEMENTS[ELEMENT_ID_TO_NAME[type]].heatConductivity 
+      : 5
+    
+    // Skip if insulator (conductivity 0)
+    if (conductivity === 0) return
+    
+    // Pick random neighbor direction
+    const dir = Math.floor(Math.random() * 4)
+    let nx = x, ny = y
+    if (dir === 0) ny--      // Up
+    else if (dir === 1) ny++ // Down
+    else if (dir === 2) nx-- // Left
+    else nx++                // Right
+    
+    // Boundary: heat sink to ambient temperature
+    if (!this.grid.inBounds(nx, ny)) {
+      const ambient = this.settings.ambientTemperature
+      const diff = ambient - myTemp
+      // Slow heat loss at edges
+      this.grid.setTemp(x, y, myTemp + diff * 0.02)
+      return
+    }
+    
+    // Heat transfer with neighbor
+    const neighborTemp = this.grid.getTemp(nx, ny)
+    const diff = neighborTemp - myTemp
+    
+    // Optimization: skip if temperature difference is negligible
+    if (Math.abs(diff) < 0.5) return
+    
+    // Transfer rate based on conductivity (0-100 → 0.0-0.5)
+    const transferRate = (conductivity / 100) * 0.5
+    
+    // Exchange heat (conservation of energy)
+    this.grid.setTemp(x, y, myTemp + diff * transferRate)
+    this.grid.setTemp(nx, ny, neighborTemp - diff * transferRate)
+    
+    // Check phase changes for particles
+    if (type !== EL_EMPTY) {
+      this.checkPhaseChangeTyped(x, y, type, myTemp + diff * transferRate)
+    }
+  }
+  
+  /**
+   * Check if particle should change phase based on temperature
+   * Phase 1: Uses TypedArray access
+   */
+  private checkPhaseChangeTyped(x: number, y: number, type: number, temp: number): void {
+    const props = ELEMENTS[ELEMENT_ID_TO_NAME[type]]
+    if (!props.phaseChange) return
+    
+    // Check overheating (melting/boiling)
+    if (props.phaseChange.high && temp > props.phaseChange.high.temp) {
+      // Convert numeric ID to string ElementType
+      const newElement = ELEMENT_ID_TO_NAME[props.phaseChange.high.to]
+      if (newElement) this.transformParticle(x, y, newElement, temp)
+      return
+    }
+    
+    // Check overcooling (freezing/solidifying)
+    if (props.phaseChange.low && temp < props.phaseChange.low.temp) {
+      const newElement = ELEMENT_ID_TO_NAME[props.phaseChange.low.to]
+      if (newElement) this.transformParticle(x, y, newElement, temp)
+    }
+  }
+  
+  /**
+   * Transform particle to new element, preserving temperature
+   */
+  private transformParticle(x: number, y: number, newElement: ElementType, temp: number): void {
+    const seed = (x * 7 + y * 13 + this.frame) & 31
+    const newParticle: Particle = {
+      element: newElement,
+      color: getColorWithVariation(newElement, seed),
+      updated: true,
+      lifetime: ELEMENTS[newElement].lifetime,
+    }
+    this.grid.set(x, y, newParticle)
+    // Keep temperature! Hot stone from lava stays hot
+    this.grid.setTemp(x, y, temp)
+  }
+  
+  private processRow(y: number, goRight: boolean): void {
+    const w = this.grid.width
+    
+    if (goRight) {
+      for (let x = 0; x < w; x++) {
+        this.updateParticle(x, y)
+      }
+    } else {
+      for (let x = w - 1; x >= 0; x--) {
+        this.updateParticle(x, y)
+      }
+    }
+  }
+  
+  private updateParticle(x: number, y: number): void {
+    // Direct TypedArray access - no object creation!
+    const type = this.grid.getType(x, y)
+    if (type === EL_EMPTY) return
+    if (this.grid.isUpdated(x, y)) return
+    
+    this.grid.setUpdated(x, y, true)
+    
+    // Handle lifetime
+    const life = this.grid.getLife(x, y)
+    if (life > 0) {
+      this.grid.setLife(x, y, life - 1)
+      if (life - 1 <= 0) {
+        this.grid.clearCell(x, y)
+        this._particleCount--
+        return
+      }
+    }
+    
+    // Get behavior for this category using numeric ID
+    const category = getElementCategory(ELEMENT_ID_TO_NAME[type])
+    const behavior = this.behaviors.get(category)
+    
+    if (behavior) {
+      const ctx: UpdateContext = {
+        grid: this.grid,
+        x,
+        y,
+        settings: this.settings,
+        frame: this.frame
+      }
+      behavior.update(ctx)
+    }
+    
+    // Process chemical reactions AFTER movement
+    const currentType = this.grid.getType(x, y)
+    if (currentType !== EL_EMPTY) {
+      this.processReactionsTyped(x, y, currentType)
+    }
+  }
+  
+  /**
+   * Process chemical reactions using TypedArrays
+   * Direct numeric ID access - no object creation!
+   */
+  private processReactionsTyped(x: number, y: number, type: number): void {
+    // Convert numeric ID to string for REACTIONS lookup (legacy compatibility)
+    const elementName = ELEMENT_ID_TO_NAME[type]
+    const myReactions = REACTIONS[elementName]
+    if (!myReactions) return
+    
+    // Pick a random neighbor
+    const dir = Math.floor(Math.random() * 4)
+    let nx = x, ny = y
+    
+    if (dir === 0) ny--
+    else if (dir === 1) ny++
+    else if (dir === 2) nx--
+    else nx++
+    
+    if (!this.grid.inBounds(nx, ny)) return
+    
+    const neighborType = this.grid.getType(nx, ny)
+    if (neighborType === EL_EMPTY) return
+    
+    // Check if there's a reaction rule for this neighbor
+    const neighborName = ELEMENT_ID_TO_NAME[neighborType]
+    const reaction = myReactions[neighborName]
+    if (!reaction) return
+    
+    // Roll the dice
+    if (Math.random() > reaction.chance) return
+    
+    // Apply the reaction
+    this.applyReaction(x, y, nx, ny, reaction)
+  }
+  
+  /**
+   * Apply a bilateral reaction between source and target
+   * Both particles can be transformed (fixes "infinite lava" problem)
+   */
+  private applyReaction(srcX: number, srcY: number, targetX: number, targetY: number, reaction: Reaction): void {
+    // A. Transform the TARGET (victim)
+    if (reaction.targetBecomes === null) {
+      this.removeParticle(targetX, targetY)
+    } else {
+      this.replaceParticle(targetX, targetY, reaction.targetBecomes)
+    }
+    
+    // B. Transform the SOURCE (aggressor) - BILATERAL!
+    // undefined = no change, null = destroyed, ElementType = transform
+    if (reaction.sourceBecomes !== undefined) {
+      if (reaction.sourceBecomes === null) {
+        // Source is destroyed (e.g., fire extinguished by water)
+        this.removeParticle(srcX, srcY)
+      } else {
+        // Source transforms (e.g., lava -> stone, fire -> smoke)
+        this.replaceParticle(srcX, srcY, reaction.sourceBecomes)
+      }
+    }
+    
+    // C. Spawn byproduct (smoke, steam)
+    if (reaction.spawn) {
+      // Try to spawn above the reaction site
+      if (this.grid.isEmpty(srcX, srcY - 1)) {
+        this.addParticle(srcX, srcY - 1, reaction.spawn)
+      } else if (this.grid.isEmpty(targetX, targetY - 1)) {
+        this.addParticle(targetX, targetY - 1, reaction.spawn)
+      }
+    }
+  }
+  
+  /**
+   * Replace a particle with a new element type (keeps position)
+   */
+  private replaceParticle(x: number, y: number, element: ElementType): void {
+    const seed = (x * 7 + y * 13 + this.frame) & 31
+    const particle: Particle = {
+      element,
+      color: getColorWithVariation(element, seed),
+      updated: true, // Mark as updated so it doesn't process again this frame
+      lifetime: ELEMENTS[element].lifetime,
+    }
+    this.grid.set(x, y, particle)
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/core/Simulation.ts ---
+
+
+--- File: apps/web/src/lib/engine/core/index.ts ---
+
+/**
+ * Core module exports
+ */
+
+export { Grid } from './Grid'
+export type { IGrid } from './Grid'
+export { Simulation } from './Simulation'
+
+--- End of File: apps/web/src/lib/engine/core/index.ts ---
+
+
+--- File: apps/web/src/lib/engine/elements.ts ---
+
+/**
+ * Element definitions with all properties
+ * Phase 1: Data-Oriented Design with numeric IDs
+ * 
+ * Elements are stored in a flat array indexed by ElementId
+ * This allows O(1) access without hash lookups
+ */
+
+import { 
+  ElementType, 
+  ElementProperties,
+  ElementCategory,
+  CategoryId,
+  ElementId,
+  ELEMENT_COUNT,
+  ELEMENT_ID_TO_NAME,
+  // Element IDs
+  EL_EMPTY, EL_STONE, EL_SAND, EL_WOOD, EL_METAL, EL_ICE,
+  EL_WATER, EL_OIL, EL_LAVA, EL_ACID,
+  EL_STEAM, EL_SMOKE,
+  EL_FIRE, EL_SPARK, EL_ELECTRICITY,
+  EL_GUNPOWDER, EL_CLONE, EL_VOID,
+  EL_DIRT, EL_SEED, EL_PLANT,
+  // Category IDs
+  CAT_SOLID, CAT_POWDER, CAT_LIQUID, CAT_GAS, CAT_ENERGY, CAT_UTILITY, CAT_BIO
+} from './types'
+
+// Color helper - convert hex string to packed RGBA
+function rgba(hex: string, alpha = 255): number {
+  const num = parseInt(hex.replace('#', ''), 16)
+  return (alpha << 24) | num
+}
+
+// ============================================
+// ELEMENT DATA - Flat array indexed by ElementId
+// ============================================
+export const ELEMENT_DATA: ElementProperties[] = [
+  // 0: Empty
+  {
+    id: EL_EMPTY,
+    name: 'Empty',
+    category: CAT_SOLID,
+    color: rgba('#0a0a0a'),
+    density: 0,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 5,
+  },
+  // 1: Stone
+  {
+    id: EL_STONE,
+    name: 'Stone',
+    category: CAT_SOLID,
+    color: rgba('#808080'),
+    density: 2500,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 10,
+    phaseChange: { high: { temp: 900, to: EL_LAVA } },
+  },
+  // 2: Sand
+  {
+    id: EL_SAND,
+    name: 'Sand',
+    category: CAT_POWDER,
+    color: rgba('#C2B280'),
+    density: 1600,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 15,
+    phaseChange: { high: { temp: 1700, to: EL_LAVA } },
+  },
+  // 3: Wood
+  {
+    id: EL_WOOD,
+    name: 'Wood',
+    category: CAT_SOLID,
+    color: rgba('#8B4513'),
+    density: 600,
+    flammable: true,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 5,
+  },
+  // 4: Metal
+  {
+    id: EL_METAL,
+    name: 'Metal',
+    category: CAT_SOLID,
+    color: rgba('#A9A9A9'),
+    density: 7800,
+    flammable: false,
+    conductive: true,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 90,
+    phaseChange: { high: { temp: 1500, to: EL_LAVA } },
+  },
+  // 5: Ice
+  {
+    id: EL_ICE,
+    name: 'Ice',
+    category: CAT_SOLID,
+    color: rgba('#A5F2F3'),
+    density: 916,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: -10,
+    heatConductivity: 20,
+    phaseChange: { high: { temp: 0, to: EL_WATER } },
+  },
+  // 6: Water
+  {
+    id: EL_WATER,
+    name: 'Water',
+    category: CAT_LIQUID,
+    color: rgba('#4169E1'),
+    density: 1000,
+    flammable: false,
+    conductive: true,
+    lifetime: 0,
+    dispersion: 8,
+    defaultTemp: 20,
+    heatConductivity: 40,
+    phaseChange: {
+      high: { temp: 100, to: EL_STEAM },
+      low: { temp: 0, to: EL_ICE }
+    },
+  },
+  // 7: Oil
+  {
+    id: EL_OIL,
+    name: 'Oil',
+    category: CAT_LIQUID,
+    color: rgba('#4A4A2A'),
+    density: 800,
+    flammable: true,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 5,
+    defaultTemp: 20,
+    heatConductivity: 15,
+  },
+  // 8: Lava
+  {
+    id: EL_LAVA,
+    name: 'Lava',
+    category: CAT_LIQUID,
+    color: rgba('#FF4500'),
+    density: 2500,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 2,
+    defaultTemp: 1000,
+    heatConductivity: 30,
+    phaseChange: { low: { temp: 700, to: EL_STONE } },
+  },
+  // 9: Acid
+  {
+    id: EL_ACID,
+    name: 'Acid',
+    category: CAT_LIQUID,
+    color: rgba('#39FF14'),
+    density: 1050,
+    flammable: false,
+    conductive: true,
+    lifetime: 0,
+    dispersion: 5,
+    defaultTemp: 20,
+    heatConductivity: 35,
+  },
+  // 10: Steam
+  {
+    id: EL_STEAM,
+    name: 'Steam',
+    category: CAT_GAS,
+    color: rgba('#E0E0E0', 180),
+    density: 0.6,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 6,
+    defaultTemp: 100,
+    heatConductivity: 10,
+    phaseChange: { low: { temp: 90, to: EL_WATER } },
+  },
+  // 11: Smoke
+  {
+    id: EL_SMOKE,
+    name: 'Smoke',
+    category: CAT_GAS,
+    color: rgba('#3F3F3F', 200),
+    density: 1.1,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 4,
+    defaultTemp: 50,
+    heatConductivity: 5,
+  },
+  // 12: Fire
+  {
+    id: EL_FIRE,
+    name: 'Fire',
+    category: CAT_ENERGY,
+    color: rgba('#FF6600'),
+    density: 0.3,
+    flammable: false,
+    conductive: false,
+    lifetime: 60,
+    dispersion: 0,
+    defaultTemp: 800,
+    heatConductivity: 50,
+  },
+  // 13: Spark
+  {
+    id: EL_SPARK,
+    name: 'Spark',
+    category: CAT_ENERGY,
+    color: rgba('#FFFF00'),
+    density: 0.1,
+    flammable: false,
+    conductive: false,
+    lifetime: 10,
+    dispersion: 0,
+    defaultTemp: 500,
+    heatConductivity: 50,
+  },
+  // 14: Electricity
+  {
+    id: EL_ELECTRICITY,
+    name: 'Electric',
+    category: CAT_ENERGY,
+    color: rgba('#00FFFF'),
+    density: 0,
+    flammable: false,
+    conductive: false,
+    lifetime: 3,
+    dispersion: 0,
+    defaultTemp: 200,
+    heatConductivity: 80,
+  },
+  // 15: Gunpowder
+  {
+    id: EL_GUNPOWDER,
+    name: 'Gunpowder',
+    category: CAT_POWDER,
+    color: rgba('#404040'),
+    density: 1400,
+    flammable: true,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 10,
+  },
+  // 16: Clone
+  {
+    id: EL_CLONE,
+    name: 'Clone',
+    category: CAT_UTILITY,
+    color: rgba('#00FF00'),
+    density: Infinity,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 0,
+  },
+  // 17: Void
+  {
+    id: EL_VOID,
+    name: 'Void',
+    category: CAT_UTILITY,
+    color: rgba('#000000'),
+    density: Infinity,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 0,
+  },
+  // 18: Dirt
+  {
+    id: EL_DIRT,
+    name: 'Dirt',
+    category: CAT_POWDER,
+    color: rgba('#5C4033'),
+    density: 1200,
+    flammable: false,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 10,
+  },
+  // 19: Seed
+  {
+    id: EL_SEED,
+    name: 'Seed',
+    category: CAT_BIO,
+    color: rgba('#E2C489'),
+    density: 1100,
+    flammable: true,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 5,
+  },
+  // 20: Plant
+  {
+    id: EL_PLANT,
+    name: 'Plant',
+    category: CAT_BIO,
+    color: rgba('#228B22'),
+    density: 900,
+    flammable: true,
+    conductive: false,
+    lifetime: 0,
+    dispersion: 0,
+    defaultTemp: 20,
+    heatConductivity: 10,
+  },
+]
+
+// ============================================
+// LEGACY COMPATIBILITY - Record<ElementType, ElementProperties>
+// ============================================
+export const ELEMENTS: Record<ElementType, ElementProperties> = {} as Record<ElementType, ElementProperties>
+
+// Build ELEMENTS from ELEMENT_DATA
+for (let i = 0; i < ELEMENT_COUNT; i++) {
+  const name = ELEMENT_ID_TO_NAME[i]
+  if (name) {
+    ELEMENTS[name] = ELEMENT_DATA[i]
+  }
+}
+
+// ============================================
+// FAST LOOKUP FUNCTIONS (use numeric IDs)
+// ============================================
+
+// Get element properties by numeric ID - O(1), no hash lookup!
+export function getElement(id: ElementId): ElementProperties {
+  return ELEMENT_DATA[id] || ELEMENT_DATA[EL_EMPTY]
+}
+
+// Get category by element ID
+export function getCategoryById(id: ElementId): CategoryId {
+  return ELEMENT_DATA[id]?.category ?? CAT_SOLID
+}
+
+// Get density by element ID
+export function getDensityById(id: ElementId): number {
+  return ELEMENT_DATA[id]?.density ?? 0
+}
+
+// Get dispersion by element ID
+export function getDispersionById(id: ElementId): number {
+  return ELEMENT_DATA[id]?.dispersion ?? 0
+}
+
+// ============================================
+// COLOR VARIATIONS (pre-computed per element)
+// ============================================
+const COLOR_VARIATIONS_BY_ID: Uint32Array[] = new Array(ELEMENT_COUNT)
+
+// Pre-compute all color variations at load time!
+for (let elId = 0; elId < ELEMENT_COUNT; elId++) {
+  const base = ELEMENT_DATA[elId].color
+  const variations = new Uint32Array(32)
+  
+  for (let i = 0; i < 32; i++) {
+    const variation = (i - 16) * 2
+    const a = (base >> 24) & 0xFF
+    const r = Math.max(0, Math.min(255, ((base >> 16) & 0xFF) + variation))
+    const g = Math.max(0, Math.min(255, ((base >> 8) & 0xFF) + variation))
+    const b = Math.max(0, Math.min(255, (base & 0xFF) + variation))
+    variations[i] = (a << 24) | (r << 16) | (g << 8) | b
+  }
+  
+  COLOR_VARIATIONS_BY_ID[elId] = variations
+}
+
+// Get color variation by element ID - super fast!
+export function getColorById(id: ElementId, seed: number): number {
+  return COLOR_VARIATIONS_BY_ID[id][seed & 31]
+}
+
+// ============================================
+// LEGACY FUNCTIONS (use string ElementType)
+// ============================================
+const COLOR_VARIATIONS = new Map<ElementType, Uint32Array>()
+
+export function getColorWithVariation(element: ElementType, seed: number): number {
+  let variations = COLOR_VARIATIONS.get(element)
+  
+  if (!variations) {
+    const base = ELEMENTS[element].color
+    variations = new Uint32Array(32)
+    
+    for (let i = 0; i < 32; i++) {
+      const variation = (i - 16) * 2
+      const a = (base >> 24) & 0xFF
+      const r = Math.max(0, Math.min(255, ((base >> 16) & 0xFF) + variation))
+      const g = Math.max(0, Math.min(255, ((base >> 8) & 0xFF) + variation))
+      const b = Math.max(0, Math.min(255, (base & 0xFF) + variation))
+      variations[i] = (a << 24) | (r << 16) | (g << 8) | b
+    }
+    
+    COLOR_VARIATIONS.set(element, variations)
+  }
+  
+  return variations[seed & 31]
+}
+
+export function getElementCategory(element: ElementType): ElementCategory {
+  const cat = ELEMENTS[element].category
+  // Convert numeric category back to string for legacy code
+  const names: ElementCategory[] = ['solid', 'powder', 'liquid', 'gas', 'energy', 'utility', 'bio']
+  return names[cat] || 'solid'
+}
+
+export function getElementColor(element: ElementType): string {
+  const color = ELEMENTS[element].color
+  const r = (color >> 16) & 0xFF
+  const g = (color >> 8) & 0xFF
+  const b = color & 0xFF
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+}
+
+--- End of File: apps/web/src/lib/engine/elements.ts ---
+
+
+--- File: apps/web/src/lib/engine/index.ts ---
+
+/**
+ * Main engine export
+ * Combines Simulation + Renderer into easy-to-use class
+ * 
+ * Phase 2: Added WorkerParticleEngine for multi-threaded simulation
+ */
+
+import { Simulation } from './core/Simulation'
+import { CanvasRenderer, RenderMode } from './Renderer'
+import { ElementType, WorldSettings } from './types'
+
+export { ELEMENTS, getElementColor } from './elements'
+export type { ElementType, WorldSettings } from './types'
+export type { RenderMode } from './Renderer'
+
+// Phase 2: Multi-threaded engine
+export { WorkerParticleEngine } from './WorkerParticleEngine'
+export { isSharedArrayBufferAvailable } from './core/SharedGrid'
+
+export class ParticleEngine {
+  private simulation: Simulation
+  private renderer: CanvasRenderer | null = null
+  private ctx: CanvasRenderingContext2D | null = null
+
+  constructor(width: number, height: number) {
+    this.simulation = new Simulation(width, height)
+  }
+
+  // Attach renderer to canvas context
+  attachRenderer(ctx: CanvasRenderingContext2D): void {
+    this.ctx = ctx
+    this.renderer = new CanvasRenderer(ctx, this.simulation.width, this.simulation.height)
+  }
+
+  // Simulation passthrough
+  get width(): number { return this.simulation.width }
+  get height(): number { return this.simulation.height }
+  get particleCount(): number { return this.simulation.particleCount }
+
+  setSettings(settings: Partial<WorldSettings>): void {
+    this.simulation.setSettings(settings)
+  }
+
+  addParticle(x: number, y: number, element: ElementType): boolean {
+    return this.simulation.addParticle(x, y, element)
+  }
+
+  addParticlesInRadius(cx: number, cy: number, radius: number, element: ElementType): void {
+    this.simulation.addParticlesInRadius(cx, cy, radius, element)
+  }
+
+  removeParticle(x: number, y: number): boolean {
+    return this.simulation.removeParticle(x, y)
+  }
+
+  removeParticlesInRadius(cx: number, cy: number, radius: number): void {
+    this.simulation.removeParticlesInRadius(cx, cy, radius)
+  }
+
+  clear(): void {
+    this.simulation.clear()
+  }
+
+  step(): void {
+    this.simulation.step()
+  }
+
+  resize(width: number, height: number): void {
+    this.simulation.resize(width, height)
+    if (this.renderer && this.ctx) {
+      this.renderer.resize(width, height)
+    }
+  }
+
+  render(): void {
+    if (!this.renderer) return
+    // NEW: Pass TypedArrays directly to renderer - no object allocation!
+    this.renderer.render(
+      this.simulation.getTypesArray(),
+      this.simulation.getColorsArray(),
+      this.simulation.getTemperatureArray()
+    )
+  }
+
+  // Render mode control
+  setRenderMode(mode: RenderMode): void {
+    if (this.renderer) {
+      this.renderer.setMode(mode)
+    }
+  }
+
+  getRenderMode(): RenderMode {
+    return this.renderer?.getMode() ?? 'normal'
+  }
+
+  // Camera control for zoom/pan
+  setTransform(zoom: number, panX: number, panY: number): void {
+    this.renderer?.setTransform(zoom, panX, panY)
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/index.ts ---
+
+
+--- File: apps/web/src/lib/engine/reactions.ts ---
+
+/**
+ * Chemical Reactions - Data-Driven Bilateral Reaction System
+ * 
+ * Philosophy:
+ * - Rules are data, not code (OCP: Open for extension, Closed for modification)
+ * - BILATERAL: Both aggressor AND victim can transform
+ * - Solves "infinite lava" problem (conservation of energy)
+ * - Simple lookup: Aggressor -> Victim -> Result
+ */
+
+import { ElementType } from './types'
+
+export interface Reaction {
+  targetBecomes: ElementType | null   // What victim becomes (null = destroyed)
+  sourceBecomes?: ElementType | null  // What aggressor becomes (undefined = unchanged, null = destroyed)
+  chance: number                      // Probability 0.0 - 1.0
+  spawn?: ElementType                 // Spawn additional particle (smoke, steam)
+}
+
+// Structure: Aggressor -> Victim -> Reaction Result
+export const REACTIONS: Partial<Record<ElementType, Partial<Record<ElementType, Reaction>>>> = {
+  
+  // === FIRE ===
+  fire: {
+    wood: { 
+      targetBecomes: 'fire',   // Wood catches fire
+      sourceBecomes: 'smoke',  // Fire "burns out" into smoke
+      chance: 0.1,             // 10% per frame
+      spawn: 'smoke'
+    },
+    oil: {
+      targetBecomes: 'fire',
+      sourceBecomes: 'smoke',
+      chance: 0.2,             // Oil burns fast
+      spawn: 'smoke'
+    },
+    water: {
+      targetBecomes: 'steam',
+      sourceBecomes: null,     // Fire is EXTINGUISHED!
+      chance: 0.5
+    },
+    ice: {
+      targetBecomes: 'water',  // Ice melts
+      sourceBecomes: null,     // Fire dies
+      chance: 0.3,
+      spawn: 'steam'
+    },
+    gunpowder: {
+      targetBecomes: 'fire',   // EXPLODES!
+      sourceBecomes: 'fire',   // Chain reaction - both become fire
+      chance: 1.0,             // 100% instant ignition
+      spawn: 'smoke'
+    },
+    // Огонь сжигает растения и семена
+    plant: {
+      targetBecomes: 'fire',
+      sourceBecomes: 'smoke',
+      chance: 0.1,
+      spawn: 'smoke'
+    },
+    seed: {
+      targetBecomes: 'fire',
+      sourceBecomes: 'smoke',
+      chance: 0.2
+    }
+  },
+  
+  // === LAVA ===
+  lava: {
+    water: {
+      targetBecomes: 'steam',
+      sourceBecomes: 'stone',  // Lava COOLS into stone!
+      chance: 0.15,
+      spawn: 'steam'
+    },
+    wood: {
+      targetBecomes: 'fire',
+      chance: 0.3,
+      spawn: 'smoke'
+    },
+    oil: {
+      targetBecomes: 'fire',
+      chance: 0.4,
+      spawn: 'smoke'
+    },
+    ice: {
+      targetBecomes: 'steam',  // Ice instantly vaporizes
+      sourceBecomes: 'stone',  // Lava cools
+      chance: 0.3
+    },
+    gunpowder: {
+      targetBecomes: 'fire',   // Lava ignites gunpowder
+      chance: 1.0,
+      spawn: 'smoke'
+    },
+    // Лава сжигает растения
+    plant: {
+      targetBecomes: 'fire',
+      chance: 0.5,
+      spawn: 'smoke'
+    },
+    dirt: {
+      targetBecomes: 'stone',  // Земля спекается в камень
+      chance: 0.05
+    }
+  },
+  
+  // === ACID ===
+  acid: {
+    stone: { 
+      targetBecomes: null,     // Dissolves stone
+      sourceBecomes: null,     // Acid consumed
+      chance: 0.1, 
+      spawn: 'smoke' 
+    },
+    metal: { 
+      targetBecomes: null, 
+      sourceBecomes: null, 
+      chance: 0.05             // Metal resists better
+    },
+    wood: { 
+      targetBecomes: null, 
+      sourceBecomes: null, 
+      chance: 0.2 
+    },
+    ice: {
+      targetBecomes: 'water',  // Acid melts ice
+      sourceBecomes: null,     // Acid consumed
+      chance: 0.2
+    },
+    // Кислота растворяет органику
+    plant: {
+      targetBecomes: null,
+      sourceBecomes: null,
+      chance: 0.15
+    },
+    dirt: {
+      targetBecomes: null,
+      sourceBecomes: null,
+      chance: 0.05
+    }
+  },
+  
+  // === WATER (reverse reactions) ===
+  water: {
+    lava: {
+      targetBecomes: 'stone',  // Lava cools when water falls on it
+      sourceBecomes: 'steam',  // Water evaporates
+      chance: 0.15,
+      spawn: 'steam'
+    },
+    fire: {
+      targetBecomes: null,     // Fire is extinguished
+      sourceBecomes: 'steam',  // Some water evaporates
+      chance: 0.3
+    }
+  }
+  
+  // Future: acid, ice, etc.
+}
+
+/**
+ * Quick lookup - does this element have any reactions?
+ * Used for optimization (skip passive elements like stone)
+ */
+export function hasReactions(element: ElementType): boolean {
+  return element in REACTIONS
+}
+
+--- End of File: apps/web/src/lib/engine/reactions.ts ---
+
+
+--- File: apps/web/src/lib/engine/types.ts ---
+
+/**
+ * Core types for the particle simulation engine
+ * Phase 1: Data-Oriented Design with TypedArrays
+ * 
+ * Key changes:
+ * - ElementId is now a number (Uint8) for TypedArray storage
+ * - No more Particle objects - data stored in SoA (Structure of Arrays)
+ * - Zero GC pressure during simulation
+ */
+
+// ============================================
+// ELEMENT IDS - Numeric constants for TypedArrays
+// ============================================
+export const EL_EMPTY       = 0
+export const EL_STONE       = 1
+export const EL_SAND        = 2
+export const EL_WOOD        = 3
+export const EL_METAL       = 4
+export const EL_ICE         = 5
+export const EL_WATER       = 6
+export const EL_OIL         = 7
+export const EL_LAVA        = 8
+export const EL_ACID        = 9
+export const EL_STEAM       = 10
+export const EL_SMOKE       = 11
+export const EL_FIRE        = 12
+export const EL_SPARK       = 13
+export const EL_ELECTRICITY = 14
+export const EL_GUNPOWDER   = 15
+export const EL_CLONE       = 16
+export const EL_VOID        = 17
+export const EL_DIRT        = 18
+export const EL_SEED        = 19
+export const EL_PLANT       = 20
+
+export const ELEMENT_COUNT  = 21
+
+// ElementId type - the numeric ID
+export type ElementId = number
+
+// Legacy string type for backwards compatibility during transition
+export type ElementType = 
+  | 'empty'
+  | 'stone' | 'sand' | 'wood' | 'metal' | 'ice'
+  | 'water' | 'oil' | 'lava' | 'acid'
+  | 'steam' | 'smoke'
+  | 'fire' | 'spark' | 'electricity'
+  | 'gunpowder'
+  | 'clone' | 'void'
+  | 'dirt' | 'seed' | 'plant'
+
+// String to ID mapping
+export const ELEMENT_NAME_TO_ID: Record<ElementType, ElementId> = {
+  empty: EL_EMPTY,
+  stone: EL_STONE,
+  sand: EL_SAND,
+  wood: EL_WOOD,
+  metal: EL_METAL,
+  ice: EL_ICE,
+  water: EL_WATER,
+  oil: EL_OIL,
+  lava: EL_LAVA,
+  acid: EL_ACID,
+  steam: EL_STEAM,
+  smoke: EL_SMOKE,
+  fire: EL_FIRE,
+  spark: EL_SPARK,
+  electricity: EL_ELECTRICITY,
+  gunpowder: EL_GUNPOWDER,
+  clone: EL_CLONE,
+  void: EL_VOID,
+  dirt: EL_DIRT,
+  seed: EL_SEED,
+  plant: EL_PLANT,
+}
+
+// ID to string mapping (for debugging/UI)
+export const ELEMENT_ID_TO_NAME: ElementType[] = [
+  'empty', 'stone', 'sand', 'wood', 'metal', 'ice',
+  'water', 'oil', 'lava', 'acid',
+  'steam', 'smoke',
+  'fire', 'spark', 'electricity',
+  'gunpowder',
+  'clone', 'void',
+  'dirt', 'seed', 'plant'
+]
+
+// ============================================
+// CATEGORY IDS - Numeric for fast comparison
+// ============================================
+export const CAT_SOLID   = 0
+export const CAT_POWDER  = 1
+export const CAT_LIQUID  = 2
+export const CAT_GAS     = 3
+export const CAT_ENERGY  = 4
+export const CAT_UTILITY = 5
+export const CAT_BIO     = 6
+
+export type CategoryId = number
+export type ElementCategory = 'solid' | 'powder' | 'liquid' | 'gas' | 'energy' | 'utility' | 'bio'
+
+export const CATEGORY_NAME_TO_ID: Record<ElementCategory, CategoryId> = {
+  solid: CAT_SOLID,
+  powder: CAT_POWDER,
+  liquid: CAT_LIQUID,
+  gas: CAT_GAS,
+  energy: CAT_ENERGY,
+  utility: CAT_UTILITY,
+  bio: CAT_BIO,
+}
+
+// ============================================
+// ELEMENT PROPERTIES - Flat arrays for cache efficiency
+// ============================================
+export interface PhaseChange {
+  high?: { temp: number; to: ElementId }
+  low?: { temp: number; to: ElementId }
+}
+
+export interface ElementProperties {
+  id: ElementId
+  name: string
+  category: CategoryId
+  color: number
+  density: number
+  flammable: boolean
+  conductive: boolean
+  lifetime: number
+  dispersion: number
+  defaultTemp: number
+  heatConductivity: number
+  phaseChange?: PhaseChange
+}
+
+// ============================================
+// WORLD SETTINGS
+// ============================================
+export interface WorldSettings {
+  gravity: { x: number; y: number }
+  ambientTemperature: number
+  speed: number
+}
+
+// ============================================
+// LEGACY INTERFACES (for gradual migration)
+// ============================================
+export interface Particle {
+  element: ElementType
+  color: number
+  updated: boolean
+  lifetime: number
+}
+
+export interface IRenderer {
+  render(types: Uint8Array, colors: Uint32Array): void
+  resize(width: number, height: number): void
+}
+
+export interface ISimulation {
+  step(): void
+  addParticle(x: number, y: number, element: ElementType): boolean
+  removeParticle(x: number, y: number): boolean
+  clear(): void
+  resize(width: number, height: number): void
+  readonly particleCount: number
+  readonly width: number
+  readonly height: number
+}
+
+--- End of File: apps/web/src/lib/engine/types.ts ---
+
+
+--- File: apps/web/src/lib/engine/workers/index.ts ---
+
+/**
+ * Workers exports
+ */
+
+export type { WorkerMessage, WorkerResponse } from './simulation.worker'
+
+--- End of File: apps/web/src/lib/engine/workers/index.ts ---
+
+
+--- File: apps/web/src/lib/engine/workers/simulation.worker.ts ---
+
+/**
+ * SimulationWorker - Physics simulation in a separate thread
+ * 
+ * Phase 2: Multi-threaded simulation
+ * 
+ * This worker receives SharedArrayBuffers from Main Thread,
+ * runs physics simulation, and writes results directly to shared memory.
+ * Main Thread can read the updated data for rendering without any copying.
+ */
+
+import { SharedGrid, SharedGridBuffers } from '../core/SharedGrid'
+import { 
+  ElementType, 
+  WorldSettings, 
+  ElementCategory,
+  ELEMENT_ID_TO_NAME,
+  EL_EMPTY 
+} from '../types'
+import { ELEMENTS, getColorWithVariation, getElementCategory } from '../elements'
+import { REACTIONS, Reaction } from '../reactions'
+import { 
+  IBehavior, 
+  UpdateContext,
+  PowderBehavior, 
+  LiquidBehavior, 
+  GasBehavior, 
+  EnergyBehavior,
+  UtilityBehavior,
+  PlantBehavior
+} from '../behaviors'
+
+// ============================================
+// WORKER STATE
+// ============================================
+let grid: SharedGrid | null = null
+let frame = 0
+let settings: WorldSettings = {
+  gravity: { x: 0, y: 0.5 },
+  ambientTemperature: 20,
+  speed: 1,
+}
+let particleCount = 0
+let isRunning = false
+
+// Behavior registry
+const behaviors = new Map<ElementCategory, IBehavior>([
+  ['powder', new PowderBehavior()],
+  ['liquid', new LiquidBehavior()],
+  ['gas', new GasBehavior()],
+  ['energy', new EnergyBehavior()],
+  ['utility', new UtilityBehavior()],
+  ['bio', new PlantBehavior()],
+])
+
+// ============================================
+// MESSAGE HANDLERS
+// ============================================
+
+export type WorkerMessage = 
+  | { type: 'init'; buffers: SharedGridBuffers }
+  | { type: 'start' }
+  | { type: 'stop' }
+  | { type: 'step' }
+  | { type: 'setSettings'; settings: Partial<WorldSettings> }
+  | { type: 'addParticle'; x: number; y: number; element: ElementType }
+  | { type: 'addParticlesInRadius'; cx: number; cy: number; radius: number; element: ElementType }
+  | { type: 'removeParticle'; x: number; y: number }
+  | { type: 'removeParticlesInRadius'; cx: number; cy: number; radius: number }
+  | { type: 'clear' }
+  | { type: 'getStats' }
+
+export type WorkerResponse =
+  | { type: 'ready' }
+  | { type: 'stepped'; frame: number; particleCount: number }
+  | { type: 'stats'; frame: number; particleCount: number }
+  | { type: 'error'; message: string }
+
+self.onmessage = (e: MessageEvent<WorkerMessage>) => {
+  const msg = e.data
+  
+  try {
+    switch (msg.type) {
+      case 'init':
+        handleInit(msg.buffers)
+        break
+      case 'start':
+        isRunning = true
+        runSimulationLoop()
+        break
+      case 'stop':
+        isRunning = false
+        break
+      case 'step':
+        step()
+        respond({ type: 'stepped', frame, particleCount })
+        break
+      case 'setSettings':
+        Object.assign(settings, msg.settings)
+        break
+      case 'addParticle':
+        addParticle(msg.x, msg.y, msg.element)
+        break
+      case 'addParticlesInRadius':
+        addParticlesInRadius(msg.cx, msg.cy, msg.radius, msg.element)
+        break
+      case 'removeParticle':
+        removeParticle(msg.x, msg.y)
+        break
+      case 'removeParticlesInRadius':
+        removeParticlesInRadius(msg.cx, msg.cy, msg.radius)
+        break
+      case 'clear':
+        clear()
+        break
+      case 'getStats':
+        respond({ type: 'stats', frame, particleCount })
+        break
+    }
+  } catch (err) {
+    respond({ type: 'error', message: String(err) })
+  }
+}
+
+function respond(msg: WorkerResponse) {
+  self.postMessage(msg)
+}
+
+function handleInit(buffers: SharedGridBuffers) {
+  grid = SharedGrid.fromBuffers(buffers)
+  frame = 0
+  particleCount = 0
+  
+  // Count existing particles
+  for (let i = 0; i < grid.types.length; i++) {
+    if (grid.types[i] !== EL_EMPTY) particleCount++
+  }
+  
+  respond({ type: 'ready' })
+}
+
+// ============================================
+// SIMULATION LOOP
+// ============================================
+
+function runSimulationLoop() {
+  if (!isRunning || !grid) return
+  
+  step()
+  respond({ type: 'stepped', frame, particleCount })
+  
+  // Schedule next step (target ~60 FPS simulation)
+  setTimeout(runSimulationLoop, 16)
+}
+
+function step() {
+  if (!grid) return
+  
+  // Reset update flags
+  grid.resetUpdated()
+  
+  // Process based on gravity direction
+  const goRight = (frame & 1) === 0
+  const gravityDown = settings.gravity.y >= 0
+  
+  if (gravityDown) {
+    for (let y = grid.height - 1; y >= 0; y--) {
+      processRow(y, goRight)
+    }
+  } else {
+    for (let y = 0; y < grid.height; y++) {
+      processRow(y, goRight)
+    }
+  }
+  
+  // Thermodynamics pass every other frame
+  if (frame % 2 === 0) {
+    processTemperatureGrid()
+  }
+  
+  frame++
+}
+
+function processRow(y: number, goRight: boolean) {
+  if (!grid) return
+  const w = grid.width
+  
+  if (goRight) {
+    for (let x = 0; x < w; x++) {
+      updateParticle(x, y)
+    }
+  } else {
+    for (let x = w - 1; x >= 0; x--) {
+      updateParticle(x, y)
+    }
+  }
+}
+
+function updateParticle(x: number, y: number) {
+  if (!grid) return
+  
+  const type = grid.getType(x, y)
+  if (type === EL_EMPTY) return
+  if (grid.isUpdated(x, y)) return
+  
+  grid.setUpdated(x, y, true)
+  
+  // Handle lifetime
+  const life = grid.getLife(x, y)
+  if (life > 0) {
+    grid.setLife(x, y, life - 1)
+    if (life - 1 <= 0) {
+      grid.clearCell(x, y)
+      particleCount--
+      return
+    }
+  }
+  
+  // Get behavior for this category
+  const category = getElementCategory(ELEMENT_ID_TO_NAME[type])
+  const behavior = behaviors.get(category)
+  
+  if (behavior) {
+    const ctx: UpdateContext = {
+      grid,
+      x,
+      y,
+      settings,
+      frame
+    }
+    behavior.update(ctx)
+  }
+  
+  // Process reactions
+  const currentType = grid.getType(x, y)
+  if (currentType !== EL_EMPTY) {
+    processReactions(x, y, currentType)
+  }
+}
+
+function processReactions(x: number, y: number, type: number) {
+  if (!grid) return
+  
+  const elementName = ELEMENT_ID_TO_NAME[type]
+  const myReactions = REACTIONS[elementName]
+  if (!myReactions) return
+  
+  const dir = Math.floor(Math.random() * 4)
+  let nx = x, ny = y
+  
+  if (dir === 0) ny--
+  else if (dir === 1) ny++
+  else if (dir === 2) nx--
+  else nx++
+  
+  if (!grid.inBounds(nx, ny)) return
+  
+  const neighborType = grid.getType(nx, ny)
+  if (neighborType === EL_EMPTY) return
+  
+  const neighborName = ELEMENT_ID_TO_NAME[neighborType]
+  const reaction = myReactions[neighborName]
+  if (!reaction) return
+  
+  if (Math.random() > reaction.chance) return
+  
+  applyReaction(x, y, nx, ny, reaction)
+}
+
+function applyReaction(srcX: number, srcY: number, targetX: number, targetY: number, reaction: Reaction) {
+  if (!grid) return
+  
+  // Transform target
+  if (reaction.targetBecomes === null) {
+    removeParticle(targetX, targetY)
+  } else {
+    replaceParticle(targetX, targetY, reaction.targetBecomes)
+  }
+  
+  // Transform source
+  if (reaction.sourceBecomes !== undefined) {
+    if (reaction.sourceBecomes === null) {
+      removeParticle(srcX, srcY)
+    } else {
+      replaceParticle(srcX, srcY, reaction.sourceBecomes)
+    }
+  }
+  
+  // Spawn byproduct
+  if (reaction.spawn) {
+    if (grid.isEmpty(srcX, srcY - 1)) {
+      addParticle(srcX, srcY - 1, reaction.spawn)
+    } else if (grid.isEmpty(targetX, targetY - 1)) {
+      addParticle(targetX, targetY - 1, reaction.spawn)
+    }
+  }
+}
+
+// ============================================
+// TEMPERATURE
+// ============================================
+
+function processTemperatureGrid() {
+  if (!grid) return
+  
+  for (let y = 0; y < grid.height; y++) {
+    for (let x = 0; x < grid.width; x++) {
+      updateTemperature(x, y)
+    }
+  }
+}
+
+function updateTemperature(x: number, y: number) {
+  if (!grid) return
+  
+  const myTemp = grid.getTemp(x, y)
+  const type = grid.getType(x, y)
+  
+  if (type === EL_EMPTY) {
+    const ambient = settings.ambientTemperature
+    const diff = ambient - myTemp
+    if (Math.abs(diff) > 0.5) {
+      grid.setTemp(x, y, myTemp + diff * 0.02)
+    }
+  }
+  
+  const conductivity = type !== EL_EMPTY 
+    ? ELEMENTS[ELEMENT_ID_TO_NAME[type]].heatConductivity 
+    : 5
+  
+  if (conductivity === 0) return
+  
+  const dir = Math.floor(Math.random() * 4)
+  let nx = x, ny = y
+  if (dir === 0) ny--
+  else if (dir === 1) ny++
+  else if (dir === 2) nx--
+  else nx++
+  
+  if (!grid.inBounds(nx, ny)) {
+    const ambient = settings.ambientTemperature
+    const diff = ambient - myTemp
+    grid.setTemp(x, y, myTemp + diff * 0.02)
+    return
+  }
+  
+  const neighborTemp = grid.getTemp(nx, ny)
+  const diff = neighborTemp - myTemp
+  
+  if (Math.abs(diff) < 0.5) return
+  
+  const transferRate = (conductivity / 100) * 0.5
+  
+  grid.setTemp(x, y, myTemp + diff * transferRate)
+  grid.setTemp(nx, ny, neighborTemp - diff * transferRate)
+  
+  if (type !== EL_EMPTY) {
+    checkPhaseChange(x, y, type, myTemp + diff * transferRate)
+  }
+}
+
+function checkPhaseChange(x: number, y: number, type: number, temp: number) {
+  if (!grid) return
+  
+  const props = ELEMENTS[ELEMENT_ID_TO_NAME[type]]
+  if (!props.phaseChange) return
+  
+  if (props.phaseChange.high && temp > props.phaseChange.high.temp) {
+    const newElement = ELEMENT_ID_TO_NAME[props.phaseChange.high.to]
+    if (newElement) replaceParticle(x, y, newElement)
+    return
+  }
+  
+  if (props.phaseChange.low && temp < props.phaseChange.low.temp) {
+    const newElement = ELEMENT_ID_TO_NAME[props.phaseChange.low.to]
+    if (newElement) replaceParticle(x, y, newElement)
+  }
+}
+
+// ============================================
+// PARTICLE MANAGEMENT
+// ============================================
+
+function addParticle(x: number, y: number, element: ElementType): boolean {
+  if (!grid) return false
+  
+  const ix = Math.floor(x)
+  const iy = Math.floor(y)
+  
+  if (!grid.inBounds(ix, iy)) return false
+  if (grid.getType(ix, iy) !== EL_EMPTY) return false
+  
+  const seed = (ix * 7 + iy * 13 + frame) & 31
+  const props = ELEMENTS[element]
+  
+  grid.setParticle(
+    ix, iy,
+    props.id,
+    getColorWithVariation(element, seed),
+    props.lifetime,
+    props.defaultTemp
+  )
+  
+  particleCount++
+  return true
+}
+
+function addParticlesInRadius(cx: number, cy: number, radius: number, element: ElementType) {
+  const r2 = radius * radius
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (dx * dx + dy * dy <= r2) {
+        addParticle(cx + dx, cy + dy, element)
+      }
+    }
+  }
+}
+
+function removeParticle(x: number, y: number): boolean {
+  if (!grid) return false
+  
+  const ix = Math.floor(x)
+  const iy = Math.floor(y)
+  
+  if (!grid.inBounds(ix, iy)) return false
+  if (grid.getType(ix, iy) === EL_EMPTY) return false
+  
+  grid.clearCell(ix, iy)
+  particleCount--
+  return true
+}
+
+function removeParticlesInRadius(cx: number, cy: number, radius: number) {
+  const r2 = radius * radius
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (dx * dx + dy * dy <= r2) {
+        removeParticle(cx + dx, cy + dy)
+      }
+    }
+  }
+}
+
+function replaceParticle(x: number, y: number, element: ElementType) {
+  if (!grid) return
+  
+  const seed = (x * 7 + y * 13 + frame) & 31
+  const props = ELEMENTS[element]
+  
+  grid.setParticle(
+    x, y,
+    props.id,
+    getColorWithVariation(element, seed),
+    props.lifetime,
+    props.defaultTemp
+  )
+}
+
+function clear() {
+  if (!grid) return
+  grid.clear()
+  particleCount = 0
+  frame = 0
+}
+
+--- End of File: apps/web/src/lib/engine/workers/simulation.worker.ts ---
+
+
+--- File: apps/web/src/main.tsx ---
+
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App'
+import './styles/globals.css'
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+
+--- End of File: apps/web/src/main.tsx ---
+
+
+--- File: apps/web/src/stores/simulationStore.ts ---
+
+import { create } from 'zustand'
+import { getEngine } from '@/components/Canvas'
+import type { RenderMode } from '@/lib/engine'
+
+interface SimulationState {
+  // State
+  isPlaying: boolean
+  speed: 0.5 | 1 | 2 | 4
+  fps: number
+  particleCount: number
+  renderMode: RenderMode
+  
+  // World settings
+  gravity: { x: number; y: number }
+  ambientTemperature: number
+  
+  // Actions
+  play: () => void
+  pause: () => void
+  step: () => void
+  reset: () => void
+  setSpeed: (speed: 0.5 | 1 | 2 | 4) => void
+  setGravity: (gravity: { x: number; y: number }) => void
+  setAmbientTemperature: (temp: number) => void
+  setFps: (fps: number) => void
+  setParticleCount: (count: number) => void
+  toggleRenderMode: () => void
+}
+
+export const useSimulationStore = create<SimulationState>((set, get) => ({
+  // Initial state
+  isPlaying: false,
+  speed: 1,
+  fps: 60,
+  particleCount: 0,
+  renderMode: 'normal' as RenderMode,
+  gravity: { x: 0, y: 9.8 },
+  ambientTemperature: 20,
+  
+  // Actions
+  play: () => set({ isPlaying: true }),
+  pause: () => set({ isPlaying: false }),
+  step: () => {
+    const engine = getEngine()
+    if (engine) {
+      engine.step()
+    }
+  },
+  reset: () => {
+    const engine = getEngine()
+    if (engine) {
+      engine.clear()
+    }
+    set({ particleCount: 0, isPlaying: false })
+  },
+  setSpeed: (speed) => set({ speed }),
+  setGravity: (gravity) => set({ gravity }),
+  setAmbientTemperature: (ambientTemperature) => set({ ambientTemperature }),
+  setFps: (fps) => set({ fps }),
+  setParticleCount: (particleCount) => set({ particleCount }),
+  toggleRenderMode: () => {
+    const engine = getEngine()
+    const currentMode = get().renderMode
+    const newMode: RenderMode = currentMode === 'normal' ? 'thermal' : 'normal'
+    if (engine) {
+      engine.setRenderMode(newMode)
+    }
+    set({ renderMode: newMode })
+  },
+}))
+
+--- End of File: apps/web/src/stores/simulationStore.ts ---
+
+
+--- File: apps/web/src/stores/toolStore.ts ---
+
+import { create } from 'zustand'
+import type { ElementType } from '@/lib/engine'
+
+type ToolType = 'brush' | 'eraser' | 'pipette' | 'fill' | 'move'
+type BrushShape = 'circle' | 'square' | 'line'
+
+interface ToolState {
+  // Current tool
+  selectedTool: ToolType
+  brushShape: BrushShape
+  brushSize: number
+  
+  // Selected element
+  selectedElement: ElementType
+  
+  // Actions
+  setTool: (tool: ToolType) => void
+  setBrushShape: (shape: BrushShape) => void
+  setBrushSize: (size: number) => void
+  setElement: (element: ElementType) => void
+}
+
+export const useToolStore = create<ToolState>((set) => ({
+  // Initial state
+  selectedTool: 'brush',
+  brushShape: 'circle',
+  brushSize: 10,
+  selectedElement: 'sand',
+  
+  // Actions
+  setTool: (selectedTool) => set({ selectedTool }),
+  setBrushShape: (brushShape) => set({ brushShape }),
+  setBrushSize: (brushSize) => set({ brushSize: Math.min(50, Math.max(1, brushSize)) }),
+  setElement: (selectedElement) => set({ selectedElement, selectedTool: 'brush' }),
+}))
+
+--- End of File: apps/web/src/stores/toolStore.ts ---
+
+
+--- File: apps/web/src/styles/globals.css ---
+
+@import "tailwindcss";
+
+/* Custom theme */
+@theme {
+  --color-background: #0D0D0D;
+  --color-surface: #1A1A1A;
+  --color-surface-hover: #252525;
+  --color-border: #333333;
+  --color-text-primary: #FFFFFF;
+  --color-text-secondary: #A0A0A0;
+  --color-accent: #3B82F6;
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-danger: #EF4444;
+  
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+/* Base styles - MUST be in @layer base for Tailwind v4! */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background-color: #0D0D0D;
+    color: #FFFFFF;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1A1A1A;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333333;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #444444;
+}
+
+/* Hide scrollbar utility */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Canvas cursor */
+.canvas-cursor-brush {
+  cursor: crosshair;
+}
+
+.canvas-cursor-eraser {
+  cursor: cell;
+}
+
+.canvas-cursor-pipette {
+  cursor: copy;
+}
+
+--- End of File: apps/web/src/styles/globals.css ---
+
+
+--- File: apps/web/src/vite-env.d.ts ---
+
+/// <reference types="vite/client" />
+
+declare module '*.css' {
+  const content: string
+  export default content
+}
+
+--- End of File: apps/web/src/vite-env.d.ts ---
+
+
+--- File: apps/web/vite.config.ts ---
+
+import { defineConfig, Plugin } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import { fileURLToPath, URL } from 'node:url'
+
+/**
+ * Plugin to add Cross-Origin Isolation headers
+ * Required for SharedArrayBuffer to work in browsers
+ */
+function crossOriginIsolation(): Plugin {
+  return {
+    name: 'cross-origin-isolation',
+    configureServer(server) {
+      server.middlewares.use((_, res, next) => {
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+        res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+        next()
+      })
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((_, res, next) => {
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+        res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+        next()
+      })
+    },
+  }
+}
+
+export default defineConfig({
+  plugins: [
+    crossOriginIsolation(),  // Must be first!
+    tailwindcss(), 
+    react()
+  ],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
+  server: {
+    port: 3000,
+    host: true,
+  },
+  build: {
+    target: 'esnext',
+  },
+  optimizeDeps: {
+    exclude: ['@particula/engine-wasm'],
+  },
+  worker: {
+    format: 'es',  // Use ES modules for workers
+  },
+})
+
+--- End of File: apps/web/vite.config.ts ---
+
+
+--- File: packages/engine/src/elements.rs ---
+
+use wasm_bindgen::prelude::*;
+
+/// Element ID as u8 for compact storage
+pub type ElementId = u8;
+
+// Element constants matching TypeScript
+pub const EL_EMPTY: ElementId = 0;
+pub const EL_STONE: ElementId = 1;
+pub const EL_SAND: ElementId = 2;
+pub const EL_WOOD: ElementId = 3;
+pub const EL_METAL: ElementId = 4;
+pub const EL_ICE: ElementId = 5;
+pub const EL_WATER: ElementId = 6;
+pub const EL_OIL: ElementId = 7;
+pub const EL_LAVA: ElementId = 8;
+pub const EL_ACID: ElementId = 9;
+pub const EL_STEAM: ElementId = 10;
+pub const EL_SMOKE: ElementId = 11;
+pub const EL_FIRE: ElementId = 12;
+pub const EL_SPARK: ElementId = 13;
+pub const EL_ELECTRICITY: ElementId = 14;
+pub const EL_GUNPOWDER: ElementId = 15;
+pub const EL_CLONE: ElementId = 16;
+pub const EL_VOID: ElementId = 17;
+pub const EL_DIRT: ElementId = 18;
+pub const EL_SEED: ElementId = 19;
+pub const EL_PLANT: ElementId = 20;
+pub const ELEMENT_COUNT: usize = 21;
+
+// Category IDs
+pub type CategoryId = u8;
+pub const CAT_SOLID: CategoryId = 0;
+pub const CAT_POWDER: CategoryId = 1;
+pub const CAT_LIQUID: CategoryId = 2;
+pub const CAT_GAS: CategoryId = 3;
+pub const CAT_ENERGY: CategoryId = 4;
+pub const CAT_UTILITY: CategoryId = 5;
+pub const CAT_BIO: CategoryId = 6;
+
+/// Element properties struct
+#[derive(Clone, Copy)]
+pub struct ElementProps {
+    pub color: u32,
+    pub density: f32,
+    pub category: CategoryId,
+    pub dispersion: u8,
+    pub lifetime: u16,
+    pub default_temp: f32,
+    pub heat_conductivity: u8,
+    pub flammable: bool,
+    pub conductive: bool,
+}
+
+/// Static element data - indexed by ElementId
+pub static ELEMENT_DATA: [ElementProps; ELEMENT_COUNT] = [
+    // 0: Empty
+    ElementProps { color: 0xFF0A0A0A, density: 0.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 5, flammable: false, conductive: false },
+    // 1: Stone
+    ElementProps { color: 0xFF808080, density: 2500.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 10, flammable: false, conductive: false },
+    // 2: Sand
+    ElementProps { color: 0xFFC2B280, density: 1600.0, category: CAT_POWDER, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 15, flammable: false, conductive: false },
+    // 3: Wood
+    ElementProps { color: 0xFF8B4513, density: 600.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 5, flammable: true, conductive: false },
+    // 4: Metal
+    ElementProps { color: 0xFFA9A9A9, density: 7800.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 90, flammable: false, conductive: true },
+    // 5: Ice
+    ElementProps { color: 0xFFA5F2F3, density: 916.0, category: CAT_SOLID, dispersion: 0, lifetime: 0, default_temp: -10.0, heat_conductivity: 20, flammable: false, conductive: false },
+    // 6: Water
+    ElementProps { color: 0xFF4169E1, density: 1000.0, category: CAT_LIQUID, dispersion: 8, lifetime: 0, default_temp: 20.0, heat_conductivity: 40, flammable: false, conductive: true },
+    // 7: Oil
+    ElementProps { color: 0xFF4A4A2A, density: 800.0, category: CAT_LIQUID, dispersion: 5, lifetime: 0, default_temp: 20.0, heat_conductivity: 15, flammable: true, conductive: false },
+    // 8: Lava
+    ElementProps { color: 0xFFFF4500, density: 2500.0, category: CAT_LIQUID, dispersion: 2, lifetime: 0, default_temp: 1000.0, heat_conductivity: 30, flammable: false, conductive: false },
+    // 9: Acid
+    ElementProps { color: 0xFF39FF14, density: 1050.0, category: CAT_LIQUID, dispersion: 5, lifetime: 0, default_temp: 20.0, heat_conductivity: 35, flammable: false, conductive: true },
+    // 10: Steam
+    ElementProps { color: 0xB4E0E0E0, density: 0.6, category: CAT_GAS, dispersion: 6, lifetime: 0, default_temp: 100.0, heat_conductivity: 10, flammable: false, conductive: false },
+    // 11: Smoke
+    ElementProps { color: 0xC83F3F3F, density: 1.1, category: CAT_GAS, dispersion: 4, lifetime: 0, default_temp: 50.0, heat_conductivity: 5, flammable: false, conductive: false },
+    // 12: Fire
+    ElementProps { color: 0xFFFF6600, density: 0.3, category: CAT_ENERGY, dispersion: 0, lifetime: 60, default_temp: 800.0, heat_conductivity: 50, flammable: false, conductive: false },
+    // 13: Spark
+    ElementProps { color: 0xFFFFFF00, density: 0.1, category: CAT_ENERGY, dispersion: 0, lifetime: 10, default_temp: 500.0, heat_conductivity: 50, flammable: false, conductive: false },
+    // 14: Electricity
+    ElementProps { color: 0xFF00FFFF, density: 0.0, category: CAT_ENERGY, dispersion: 0, lifetime: 3, default_temp: 200.0, heat_conductivity: 80, flammable: false, conductive: false },
+    // 15: Gunpowder
+    ElementProps { color: 0xFF404040, density: 1400.0, category: CAT_POWDER, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 10, flammable: true, conductive: false },
+    // 16: Clone
+    ElementProps { color: 0xFF00FF00, density: f32::INFINITY, category: CAT_UTILITY, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 0, flammable: false, conductive: false },
+    // 17: Void
+    ElementProps { color: 0xFF000000, density: f32::INFINITY, category: CAT_UTILITY, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 0, flammable: false, conductive: false },
+    // 18: Dirt
+    ElementProps { color: 0xFF5C4033, density: 1200.0, category: CAT_POWDER, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 10, flammable: false, conductive: false },
+    // 19: Seed
+    ElementProps { color: 0xFFE2C489, density: 1100.0, category: CAT_BIO, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 5, flammable: true, conductive: false },
+    // 20: Plant
+    ElementProps { color: 0xFF228B22, density: 900.0, category: CAT_BIO, dispersion: 0, lifetime: 0, default_temp: 20.0, heat_conductivity: 10, flammable: true, conductive: false },
+];
+
+/// Get element properties by ID
+#[inline]
+pub fn get_props(id: ElementId) -> &'static ElementProps {
+    &ELEMENT_DATA[id as usize]
+}
+
+/// Get color with variation
+pub fn get_color_with_variation(id: ElementId, seed: u8) -> u32 {
+    let base = ELEMENT_DATA[id as usize].color;
+    let variation = ((seed as i32) % 20) - 10;
+    
+    let a = (base >> 24) & 0xFF;
+    let r = (((base >> 16) & 0xFF) as i32 + variation).clamp(0, 255) as u32;
+    let g = (((base >> 8) & 0xFF) as i32 + variation).clamp(0, 255) as u32;
+    let b = ((base & 0xFF) as i32 + variation).clamp(0, 255) as u32;
+    
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
+// Legacy enum for JS compatibility
+#[wasm_bindgen]
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ElementType {
+    Empty = 0,
+    Stone = 1,
+    Sand = 2,
+    Wood = 3,
+    Metal = 4,
+    Ice = 5,
+    Water = 6,
+    Oil = 7,
+    Lava = 8,
+    Acid = 9,
+    Steam = 10,
+    Smoke = 11,
+    Fire = 12,
+    Spark = 13,
+    Electricity = 14,
+    Gunpowder = 15,
+    Clone = 16,
+    Void = 17,
+    Dirt = 18,
+    Seed = 19,
+    Plant = 20,
+}
+
+impl ElementType {
+    /// Get base color for element (RGBA packed)
+    pub fn color(&self) -> u32 {
+        match self {
+            // Solids
+            ElementType::Stone => 0xFF808080,
+            ElementType::Sand => 0xFFC2B280,
+            ElementType::Wood => 0xFF8B4513,
+            ElementType::Metal => 0xFFA9A9A9,
+            
+            // Liquids
+            ElementType::Water => 0xFF4169E1,
+            ElementType::Oil => 0xFF4A4A2A,
+            ElementType::Lava => 0xFFFF4500,
+            
+            // Gases
+            ElementType::Steam => 0x80E0E0E0,
+            ElementType::Smoke => 0x802F2F2F,
+            
+            // Energy
+            ElementType::Fire => 0xFFFF6600,
+            ElementType::Spark => 0xFFFFFF00,
+            ElementType::Electricity => 0xFF00FFFF,
+            
+            // Utility
+            ElementType::Clone => 0xFF00FF00,
+            ElementType::Void => 0xFF000000,
+        }
+    }
+
+    /// Get density in kg/m³
+    pub fn density(&self) -> f32 {
+        match self {
+            ElementType::Stone => 2500.0,
+            ElementType::Sand => 1600.0,
+            ElementType::Wood => 600.0,
+            ElementType::Metal => 7800.0,
+            ElementType::Water => 1000.0,
+            ElementType::Oil => 800.0,
+            ElementType::Lava => 2500.0,
+            ElementType::Steam => 0.6,
+            ElementType::Smoke => 1.1,
+            ElementType::Fire => 0.3,
+            ElementType::Spark => 0.1,
+            ElementType::Electricity => 0.0,
+            ElementType::Clone => f32::INFINITY,
+            ElementType::Void => f32::INFINITY,
+        }
+    }
+
+    /// Is this element a solid?
+    pub fn is_solid(&self) -> bool {
+        matches!(self, 
+            ElementType::Stone | 
+            ElementType::Sand | 
+            ElementType::Wood | 
+            ElementType::Metal |
+            ElementType::Clone |
+            ElementType::Void
+        )
+    }
+
+    /// Is this element a liquid?
+    pub fn is_liquid(&self) -> bool {
+        matches!(self,
+            ElementType::Water |
+            ElementType::Oil |
+            ElementType::Lava
+        )
+    }
+
+    /// Is this element a gas?
+    pub fn is_gas(&self) -> bool {
+        matches!(self,
+            ElementType::Steam |
+            ElementType::Smoke |
+            ElementType::Fire
+        )
+    }
+
+    /// Is this element flammable?
+    pub fn is_flammable(&self) -> bool {
+        matches!(self,
+            ElementType::Wood |
+            ElementType::Oil
+        )
+    }
+
+    /// Does this element conduct electricity?
+    pub fn is_conductive(&self) -> bool {
+        matches!(self,
+            ElementType::Metal |
+            ElementType::Water
+        )
+    }
+}
+
+--- End of File: packages/engine/src/elements.rs ---
+
+
+--- File: packages/engine/src/lib.rs ---
+
+mod particle;
+mod world;
+mod elements;
+
+use wasm_bindgen::prelude::*;
+
+// Better error messages in debug mode
+#[cfg(feature = "console_error_panic_hook")]
+pub fn set_panic_hook() {
+    console_error_panic_hook::set_once();
+}
+
+/// Initialize the engine
+#[wasm_bindgen]
+pub fn init() {
+    #[cfg(feature = "console_error_panic_hook")]
+    set_panic_hook();
+    
+    web_sys::console::log_1(&"Particula Engine initialized!".into());
+}
+
+/// Get engine version
+#[wasm_bindgen]
+pub fn version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+// Re-export main types
+pub use world::World;
+pub use particle::Particle;
+pub use elements::ElementType;
+
+--- End of File: packages/engine/src/lib.rs ---
+
+
+--- File: packages/engine/src/particle.rs ---
+
+use crate::elements::ElementType;
+
+/// Represents a single particle in the simulation
+#[derive(Clone, Copy, Debug)]
+pub struct Particle {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    pub element: ElementType,
+    pub temperature: f32,
+    pub pressure: f32,
+    pub lifetime: f32,
+    pub flags: u8,
+}
+
+impl Particle {
+    pub const FLAG_ALIVE: u8 = 0b00000001;
+    pub const FLAG_UPDATED: u8 = 0b00000010;
+    pub const FLAG_BURNING: u8 = 0b00000100;
+    pub const FLAG_ELECTRIFIED: u8 = 0b00001000;
+
+    pub fn new(x: f32, y: f32, element: ElementType) -> Self {
+        Self {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            element,
+            temperature: 20.0, // Room temperature
+            pressure: 0.0,
+            lifetime: 0.0,
+            flags: Self::FLAG_ALIVE,
+        }
+    }
+
+    #[inline]
+    pub fn is_alive(&self) -> bool {
+        self.flags & Self::FLAG_ALIVE != 0
+    }
+
+    #[inline]
+    pub fn kill(&mut self) {
+        self.flags &= !Self::FLAG_ALIVE;
+    }
+
+    #[inline]
+    pub fn is_updated(&self) -> bool {
+        self.flags & Self::FLAG_UPDATED != 0
+    }
+
+    #[inline]
+    pub fn set_updated(&mut self, updated: bool) {
+        if updated {
+            self.flags |= Self::FLAG_UPDATED;
+        } else {
+            self.flags &= !Self::FLAG_UPDATED;
+        }
+    }
+}
+
+impl Default for Particle {
+    fn default() -> Self {
+        Self::new(0.0, 0.0, ElementType::Sand)
+    }
+}
+
+--- End of File: packages/engine/src/particle.rs ---
+
+
+--- File: packages/engine/src/world.rs ---
+
+use wasm_bindgen::prelude::*;
+use crate::particle::Particle;
+use crate::elements::ElementType;
+
+/// The simulation world containing all particles
+#[wasm_bindgen]
+pub struct World {
+    width: u32,
+    height: u32,
+    
+    // Particle grid (None = empty cell)
+    grid: Vec<Option<Particle>>,
+    
+    // World settings
+    gravity_x: f32,
+    gravity_y: f32,
+    ambient_temperature: f32,
+    
+    // Statistics
+    particle_count: u32,
+    frame: u64,
+}
+
+#[wasm_bindgen]
+impl World {
+    /// Create a new world with given dimensions
+    #[wasm_bindgen(constructor)]
+    pub fn new(width: u32, height: u32) -> Self {
+        let size = (width * height) as usize;
+        Self {
+            width,
+            height,
+            grid: vec![None; size],
+            gravity_x: 0.0,
+            gravity_y: 9.8,
+            ambient_temperature: 20.0,
+            particle_count: 0,
+            frame: 0,
+        }
+    }
+
+    /// Get world width
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Get world height
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Get particle count
+    #[wasm_bindgen(getter)]
+    pub fn particle_count(&self) -> u32 {
+        self.particle_count
+    }
+
+    /// Get current frame
+    #[wasm_bindgen(getter)]
+    pub fn frame(&self) -> u64 {
+        self.frame
+    }
+
+    /// Set gravity
+    pub fn set_gravity(&mut self, x: f32, y: f32) {
+        self.gravity_x = x;
+        self.gravity_y = y;
+    }
+
+    /// Set ambient temperature
+    pub fn set_ambient_temperature(&mut self, temp: f32) {
+        self.ambient_temperature = temp;
+    }
+
+    /// Add a particle at position
+    pub fn add_particle(&mut self, x: u32, y: u32, element: ElementType) -> bool {
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        
+        let idx = self.index(x, y);
+        if self.grid[idx].is_some() {
+            return false; // Cell occupied
+        }
+        
+        self.grid[idx] = Some(Particle::new(x as f32, y as f32, element));
+        self.particle_count += 1;
+        true
+    }
+
+    /// Remove particle at position
+    pub fn remove_particle(&mut self, x: u32, y: u32) -> bool {
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        
+        let idx = self.index(x, y);
+        if self.grid[idx].is_some() {
+            self.grid[idx] = None;
+            self.particle_count -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear all particles
+    pub fn clear(&mut self) {
+        self.grid.fill(None);
+        self.particle_count = 0;
+        self.frame = 0;
+    }
+
+    /// Step the simulation forward
+    pub fn step(&mut self) {
+        // Reset updated flags
+        for cell in self.grid.iter_mut() {
+            if let Some(p) = cell {
+                p.set_updated(false);
+            }
+        }
+
+        // Process from bottom to top, alternating left-right direction
+        let go_right = self.frame % 2 == 0;
+        
+        for y in (0..self.height).rev() {
+            let x_range: Box<dyn Iterator<Item = u32>> = if go_right {
+                Box::new(0..self.width)
+            } else {
+                Box::new((0..self.width).rev())
+            };
+            
+            for x in x_range {
+                self.update_particle(x, y);
+            }
+        }
+
+        self.frame += 1;
+    }
+
+    /// Get pixel data for rendering (RGBA)
+    pub fn get_pixels(&self) -> Vec<u8> {
+        let size = (self.width * self.height * 4) as usize;
+        let mut pixels = vec![0u8; size];
+        
+        for (i, cell) in self.grid.iter().enumerate() {
+            let base = i * 4;
+            if let Some(p) = cell {
+                let color = self.particle_color(p);
+                pixels[base] = ((color >> 16) & 0xFF) as u8;     // R
+                pixels[base + 1] = ((color >> 8) & 0xFF) as u8;  // G
+                pixels[base + 2] = (color & 0xFF) as u8;         // B
+                pixels[base + 3] = ((color >> 24) & 0xFF) as u8; // A
+            } else {
+                // Empty cell - dark background
+                pixels[base] = 10;
+                pixels[base + 1] = 10;
+                pixels[base + 2] = 10;
+                pixels[base + 3] = 255;
+            }
+        }
+        
+        pixels
+    }
+}
+
+// Private methods
+impl World {
+    #[inline]
+    fn index(&self, x: u32, y: u32) -> usize {
+        (y * self.width + x) as usize
+    }
+
+    #[inline]
+    fn in_bounds(&self, x: i32, y: i32) -> bool {
+        x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32
+    }
+
+    #[inline]
+    fn get(&self, x: i32, y: i32) -> Option<&Particle> {
+        if self.in_bounds(x, y) {
+            self.grid[self.index(x as u32, y as u32)].as_ref()
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn is_empty(&self, x: i32, y: i32) -> bool {
+        if !self.in_bounds(x, y) {
+            return false;
+        }
+        self.grid[self.index(x as u32, y as u32)].is_none()
+    }
+
+    fn swap(&mut self, x1: u32, y1: u32, x2: u32, y2: u32) {
+        let idx1 = self.index(x1, y1);
+        let idx2 = self.index(x2, y2);
+        self.grid.swap(idx1, idx2);
+        
+        // Update positions
+        if let Some(p) = &mut self.grid[idx1] {
+            p.x = x1 as f32;
+            p.y = y1 as f32;
+        }
+        if let Some(p) = &mut self.grid[idx2] {
+            p.x = x2 as f32;
+            p.y = y2 as f32;
+        }
+    }
+
+    fn update_particle(&mut self, x: u32, y: u32) {
+        let idx = self.index(x, y);
+        
+        let particle = match &self.grid[idx] {
+            Some(p) if !p.is_updated() => p.clone(),
+            _ => return,
+        };
+
+        // Mark as updated
+        if let Some(p) = &mut self.grid[idx] {
+            p.set_updated(true);
+        }
+
+        match particle.element {
+            ElementType::Sand => self.update_sand(x, y),
+            ElementType::Water => self.update_water(x, y),
+            ElementType::Stone => {}, // Static
+            _ => {}, // TODO: Implement other elements
+        }
+    }
+
+    fn update_sand(&mut self, x: u32, y: u32) {
+        let xi = x as i32;
+        let yi = y as i32;
+        
+        // Try to fall down
+        if self.is_empty(xi, yi + 1) {
+            self.swap(x, y, x, y + 1);
+            return;
+        }
+        
+        // Try to fall diagonally
+        let go_left = self.frame % 2 == 0;
+        let (dx1, dx2) = if go_left { (-1, 1) } else { (1, -1) };
+        
+        if self.is_empty(xi + dx1, yi + 1) {
+            self.swap(x, y, (xi + dx1) as u32, y + 1);
+            return;
+        }
+        
+        if self.is_empty(xi + dx2, yi + 1) {
+            self.swap(x, y, (xi + dx2) as u32, y + 1);
+        }
+    }
+
+    fn update_water(&mut self, x: u32, y: u32) {
+        let xi = x as i32;
+        let yi = y as i32;
+        
+        // Try to fall down
+        if self.is_empty(xi, yi + 1) {
+            self.swap(x, y, x, y + 1);
+            return;
+        }
+        
+        // Try to fall diagonally
+        let go_left = self.frame % 2 == 0;
+        let (dx1, dx2) = if go_left { (-1, 1) } else { (1, -1) };
+        
+        if self.is_empty(xi + dx1, yi + 1) {
+            self.swap(x, y, (xi + dx1) as u32, y + 1);
+            return;
+        }
+        
+        if self.is_empty(xi + dx2, yi + 1) {
+            self.swap(x, y, (xi + dx2) as u32, y + 1);
+            return;
+        }
+        
+        // Try to flow sideways
+        if self.is_empty(xi + dx1, yi) {
+            self.swap(x, y, (xi + dx1) as u32, y);
+            return;
+        }
+        
+        if self.is_empty(xi + dx2, yi) {
+            self.swap(x, y, (xi + dx2) as u32, y);
+        }
+    }
+
+    fn particle_color(&self, particle: &Particle) -> u32 {
+        let base = particle.element.color();
+        
+        // Add slight variation based on position
+        let variation = ((particle.x as u32 * 7 + particle.y as u32 * 13) % 20) as i32 - 10;
+        
+        let r = (((base >> 16) & 0xFF) as i32 + variation).clamp(0, 255) as u32;
+        let g = (((base >> 8) & 0xFF) as i32 + variation).clamp(0, 255) as u32;
+        let b = ((base & 0xFF) as i32 + variation).clamp(0, 255) as u32;
+        let a = (base >> 24) & 0xFF;
+        
+        (a << 24) | (r << 16) | (g << 8) | b
+    }
+}
+
+--- End of File: packages/engine/src/world.rs ---
