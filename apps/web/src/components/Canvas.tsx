@@ -1,72 +1,120 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { useSimulationStore } from '@/stores/simulationStore'
 import { useToolStore } from '@/stores/toolStore'
+import { WorkerBridge, isWorkerSupported } from '@/lib/engine/WorkerBridge'
 import { WasmParticleEngine } from '@/lib/engine'
-import { FpsCounter } from '@/lib/FpsCounter'
+import { screenToWorld as invertTransform, solvePanForZoom } from '@/lib/engine/transform'
 
-// Global engine instance for external access (reset, etc.)
-let globalEngine: WasmParticleEngine | null = null
+// Global bridge for external access (reset, etc.)
+let globalBridge: WorkerBridge | null = null
+let globalEngine: WasmParticleEngine | null = null // Fallback
+
 export function getEngine(): WasmParticleEngine | null { return globalEngine }
+export function getBridge(): WorkerBridge | null { return globalBridge }
 
-// Camera reset callback (set by Canvas component)
+// Camera reset callback
 let resetCameraCallback: (() => void) | null = null
 export function resetCamera(): void { resetCameraCallback?.() }
 
+// Clear simulation callback
+let clearSimulationCallback: (() => void) | null = null
+export function clearSimulation(): void { clearSimulationCallback?.() }
+
+/**
+ * Canvas Component - Phase 1: WebWorker Architecture
+ * 
+ * Main thread only handles:
+ * - User input (mouse events)
+ * - Camera state
+ * - React state updates (FPS, particle count)
+ * 
+ * Worker handles:
+ * - WASM engine
+ * - Physics simulation
+ * - Rendering to OffscreenCanvas
+ */
 export function Canvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const engineRef = useRef<WasmParticleEngine | null>(null)
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
+  const bridgeRef = useRef<WorkerBridge | null>(null)
+  const engineRef = useRef<WasmParticleEngine | null>(null) // Fallback
+  
+  // Input state
   const isDrawing = useRef(false)
   const isDragging = useRef(false)
   const lastPos = useRef<{ x: number; y: number } | null>(null)
   const lastMousePos = useRef({ x: 0, y: 0 })
-  const animationRef = useRef<number>(0)
-  const lastTimeRef = useRef<number>(0)
-  // Phase 4: Zero-allocation FPS counter
-  const fpsCounter = useRef(new FpsCounter(20))
   
   // Loading state
   const [isLoading, setIsLoading] = useState(true)
+  const [useWorker, setUseWorker] = useState(true)
   
-  // Camera state (refs to avoid re-renders)
+  // Camera state (stored on main thread for coordinate conversion)
   const cameraRef = useRef({ x: 0, y: 0, zoom: 1 })
   
-  const { isPlaying, speed, gravity, ambientTemperature, setFps, setParticleCount } = useSimulationStore()
+  // FIX 2: Достаем renderMode из стора
+  const { isPlaying, speed, gravity, ambientTemperature, renderMode, setFps, setParticleCount } = useSimulationStore()
   const { selectedElement, brushSize, selectedTool } = useToolStore()
 
-  // Use refs for values accessed in render loop to avoid recreating the loop
-  const isPlayingRef = useRef(isPlaying)
-  const speedRef = useRef(speed)
-  isPlayingRef.current = isPlaying
-  speedRef.current = speed
-
-  // Register camera reset callback
+  // Register callbacks
   useEffect(() => {
     resetCameraCallback = () => {
       cameraRef.current = { x: 0, y: 0, zoom: 1 }
-      engineRef.current?.setTransform(1, 0, 0)
+      if (bridgeRef.current) {
+        bridgeRef.current.setTransform(1, 0, 0)
+      } else if (engineRef.current) {
+        engineRef.current.setTransform(1, 0, 0)
+      }
     }
-    return () => { resetCameraCallback = null }
+    
+    clearSimulationCallback = () => {
+      if (bridgeRef.current) {
+        bridgeRef.current.clear()
+      } else if (engineRef.current) {
+        engineRef.current.clear()
+      }
+    }
+    
+    return () => { 
+      resetCameraCallback = null 
+      clearSimulationCallback = null
+    }
   }, [])
 
-  // Sync physics settings with engine
+  // Sync play/pause state with worker
   useEffect(() => {
-    const engine = engineRef.current
-    if (engine) {
-      engine.setSettings({ gravity, ambientTemperature })
+    if (bridgeRef.current) {
+      if (isPlaying) {
+        bridgeRef.current.play()
+      } else {
+        bridgeRef.current.pause()
+      }
     }
-  }, [gravity, ambientTemperature])
+  }, [isPlaying])
 
-  // Initialize engine and start render loop
+  // FIX 2: Sync renderMode (Thermal Vision)
+  useEffect(() => {
+    if (bridgeRef.current) {
+      bridgeRef.current.setRenderMode(renderMode)
+    } else if (engineRef.current) {
+      engineRef.current.setRenderMode(renderMode)
+    }
+  }, [renderMode])
+
+  // Sync physics settings
+  useEffect(() => {
+    if (bridgeRef.current) {
+      bridgeRef.current.setSettings({ gravity, ambientTemperature, speed })
+    } else if (engineRef.current) {
+      engineRef.current.setSettings({ gravity, ambientTemperature })
+    }
+  }, [gravity, ambientTemperature, speed])
+
+  // Initialize engine (Worker or Fallback)
   useEffect(() => {
     const canvas = canvasRef.current
     const container = containerRef.current
     if (!canvas || !container) return
-
-    const ctx = canvas.getContext('2d', { alpha: false })
-    if (!ctx) return
-    ctxRef.current = ctx
 
     const { width, height } = container.getBoundingClientRect()
     if (width <= 0 || height <= 0) return
@@ -74,98 +122,141 @@ export function Canvas() {
     canvas.width = width
     canvas.height = height
     
-    // Throttle state updates
-    let lastStatsUpdate = 0
-    const STATS_UPDATE_INTERVAL = 200
-
-    // Render loop
-    const startRenderLoop = () => {
-      const render = (time: number) => {
-        const eng = engineRef.current
-        if (!eng) return
-
-        // Calculate smoothed FPS (Phase 4: Zero-allocation)
-        const delta = time - lastTimeRef.current
-        if (delta > 0) {
-          fpsCounter.current.add(1000 / delta)
-        }
-        lastTimeRef.current = time
-
-        // Step simulation
-        if (isPlayingRef.current) {
-          const steps = speedRef.current >= 1 ? Math.floor(speedRef.current) : 1
-          for (let i = 0; i < steps; i++) {
-            eng.step()
-          }
-        }
-
-        // Render using Smart Rendering (Phase 3: Dirty Rectangles)
-        const renderer = eng.getRenderer()
-        const memory = eng.memory
-        if (renderer && memory) {
-          renderer.renderSmart(eng, memory)
-        } else {
-          // Fallback to full render
-          eng.render()
-        }
-
-        // Throttle React state updates
-        if (time - lastStatsUpdate > STATS_UPDATE_INTERVAL) {
-          const avgFps = fpsCounter.current.getAverage() // Zero allocations!
-          setFps(avgFps)
-          setParticleCount(eng.particleCount)
-          lastStatsUpdate = time
-        }
-
-        animationRef.current = requestAnimationFrame(render)
+    const workerSupported = isWorkerSupported()
+    setUseWorker(workerSupported)
+    
+    if (workerSupported) {
+      // === PHASE 1: WORKER MODE ===
+      const bridge = new WorkerBridge()
+      bridgeRef.current = bridge
+      globalBridge = bridge
+      
+      // Setup callbacks
+      bridge.onStats = (stats) => {
+        setFps(stats.fps)
+        setParticleCount(stats.particleCount)
       }
       
-      animationRef.current = requestAnimationFrame(render)
-    }
-    
-    // Initialize WASM engine
-    const initEngine = async () => {
-      try {
-        console.log('🦀 Loading WASM engine...')
-        const engine = await WasmParticleEngine.create(width, height)
-        engine.attachRenderer(ctx)
-        
-        engineRef.current = engine
-        globalEngine = engine
+      bridge.onReady = () => {
+        console.log('🚀 Worker ready! Physics runs in separate thread.')
         setIsLoading(false)
-        console.log('🦀 WasmParticleEngine ready!')
-        
-        // Start render loop
-        startRenderLoop()
-      } catch (err) {
-        console.error('Failed to load WASM engine:', err)
-        setIsLoading(false)
+        // Auto-play on ready
+        if (isPlaying) {
+          bridge.play()
+        }
       }
+      
+      bridge.onError = (msg) => {
+        console.error('Worker error:', msg)
+        // Fall back to main thread mode
+        setUseWorker(false)
+        initFallbackEngine(canvas, width, height)
+      }
+      
+      // Initialize worker with canvas
+      bridge.init(canvas, width, height).catch((err) => {
+        console.warn('Worker init failed, falling back:', err)
+        setUseWorker(false)
+        initFallbackEngine(canvas, width, height)
+      })
+      
+    } else {
+      // === FALLBACK: MAIN THREAD MODE ===
+      initFallbackEngine(canvas, width, height)
     }
-    
-    initEngine()
 
     return () => {
-      cancelAnimationFrame(animationRef.current)
+      if (bridgeRef.current) {
+        bridgeRef.current.destroy()
+        bridgeRef.current = null
+        globalBridge = null
+      }
       if (engineRef.current) {
         engineRef.current.destroy()
+        engineRef.current = null
+        globalEngine = null
       }
-      globalEngine = null
     }
-  }, [setFps, setParticleCount])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Fallback engine initialization (main thread)
+  const initFallbackEngine = async (canvas: HTMLCanvasElement, width: number, height: number) => {
+    try {
+      console.log('🦀 Fallback: Loading WASM in main thread...')
+      const ctx = canvas.getContext('2d', { alpha: false })
+      if (!ctx) throw new Error('No 2d context')
+      
+      const engine = await WasmParticleEngine.create(width, height)
+      engine.attachRenderer(ctx)
+      
+      engineRef.current = engine
+      globalEngine = engine
+      setIsLoading(false)
+      console.log('🦀 Fallback engine ready!')
+      
+      // Start main thread render loop
+      startFallbackRenderLoop(engine, ctx)
+    } catch (err) {
+      console.error('Failed to load WASM engine:', err)
+      setIsLoading(false)
+    }
+  }
+  
+  // Main thread render loop (fallback)
+  const startFallbackRenderLoop = (engine: WasmParticleEngine, _ctx: CanvasRenderingContext2D) => {
+    let lastStatsUpdate = 0
+    const STATS_INTERVAL = 200
+    
+    const render = (time: number) => {
+      if (!engineRef.current) return
+      
+      // Step simulation
+      if (isPlaying) {
+        const steps = speed >= 1 ? Math.floor(speed) : 1
+        for (let i = 0; i < steps; i++) {
+          engine.step()
+        }
+      }
+      
+      // Render
+      const renderer = engine.getRenderer()
+      const memory = engine.memory
+      if (renderer && memory) {
+        renderer.renderSmart(engine, memory)
+      } else {
+        engine.render()
+      }
+      
+      // Stats update
+      if (time - lastStatsUpdate > STATS_INTERVAL) {
+        setFps(60) // Approximate
+        setParticleCount(engine.particleCount)
+        lastStatsUpdate = time
+      }
+      
+      requestAnimationFrame(render)
+    }
+    
+    requestAnimationFrame(render)
+  }
 
   // Handle resize
   useEffect(() => {
     const handleResize = () => {
-      const canvas = canvasRef.current
       const container = containerRef.current
-      if (!canvas || !container) return
+      if (!container) return
 
       const { width, height } = container.getBoundingClientRect()
-      canvas.width = width
-      canvas.height = height
-
-      if (engineRef.current) {
+      
+      if (bridgeRef.current) {
+        bridgeRef.current.resize(width, height)
+      } else if (engineRef.current) {
+        const canvas = canvasRef.current
+        if (canvas) {
+          canvas.width = width
+          canvas.height = height
+        }
         engineRef.current.resize(width, height)
       }
     }
@@ -174,7 +265,8 @@ export function Canvas() {
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
-  // Get canvas position (screen coordinates)
+  // === INPUT HANDLERS ===
+
   const getCanvasPosition = useCallback((e: React.MouseEvent) => {
     const canvas = canvasRef.current
     if (!canvas) return { x: 0, y: 0 }
@@ -186,59 +278,97 @@ export function Canvas() {
     }
   }, [])
 
-  // Screen -> World coordinate conversion
   const screenToWorld = useCallback((sx: number, sy: number) => {
+    const canvas = canvasRef.current
+    if (!canvas) return { x: 0, y: 0 }
     const cam = cameraRef.current
+    const viewport = { width: canvas.width, height: canvas.height }
+
+    const world = invertTransform(
+      sx,
+      sy,
+      { zoom: cam.zoom, panX: cam.x, panY: cam.y },
+      viewport
+    )
+
     return {
-      x: Math.floor((sx - cam.x) / cam.zoom),
-      y: Math.floor((sy - cam.y) / cam.zoom)
+      x: Math.floor(world.x),
+      y: Math.floor(world.y)
     }
   }, [])
 
-  // Zoom handler (mouse wheel)
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    const eng = engineRef.current
-    if (!eng) return
+  // Draw particles (send to worker or call engine directly)
+  const draw = useCallback((screenX: number, screenY: number) => {
+    const radius = Math.floor(brushSize / 2)
+    
+    if (bridgeRef.current) {
+      const cam = cameraRef.current
+      
+      bridgeRef.current.setTransform(cam.zoom, cam.x, cam.y)
+
+      // Worker mode: send screen coordinates, worker converts to world
+      bridgeRef.current.handleInput(screenX, screenY, radius, selectedElement, selectedTool)
+    } else if (engineRef.current) {
+      // Fallback: convert to world and call engine
+      const worldPos = screenToWorld(screenX, screenY)
+      if (selectedTool === 'eraser') {
+        engineRef.current.removeParticlesInRadius(worldPos.x, worldPos.y, radius)
+      } else if (selectedTool === 'brush') {
+        engineRef.current.addParticlesInRadius(worldPos.x, worldPos.y, radius, selectedElement)
+      }
+    }
+  }, [brushSize, selectedElement, selectedTool, screenToWorld])
+
+  // Zoom handler - uses native event (not React) to allow preventDefault
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault()
 
     const delta = e.deltaY > 0 ? 0.9 : 1.1
     const cam = cameraRef.current
-    const newZoom = Math.min(Math.max(cam.zoom * delta, 1), 10) // Min 1x, Max 10x
+    const newZoom = Math.min(Math.max(cam.zoom * delta, 0.1), 10)
 
-    // Zoom toward cursor position
-    const rect = canvasRef.current!.getBoundingClientRect()
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const rect = canvas.getBoundingClientRect()
     const mouseX = e.clientX - rect.left
     const mouseY = e.clientY - rect.top
 
-    // Adjust pan so point under cursor stays fixed
-    const scale = newZoom / cam.zoom
-    cam.x = mouseX - (mouseX - cam.x) * scale
-    cam.y = mouseY - (mouseY - cam.y) * scale
-    cam.zoom = newZoom
+    const viewport = { width: canvas.width, height: canvas.height }
+    const nextCam = solvePanForZoom(
+      mouseX,
+      mouseY,
+      newZoom,
+      { zoom: cam.zoom, panX: cam.x, panY: cam.y },
+      viewport
+    )
 
-    eng.setTransform(cam.zoom, cam.x, cam.y)
+    cam.x = nextCam.panX
+    cam.y = nextCam.panY
+    cam.zoom = nextCam.zoom
+    
+    if (bridgeRef.current) {
+      bridgeRef.current.setTransform(cam.zoom, cam.x, cam.y)
+    } else if (engineRef.current) {
+      engineRef.current.setTransform(cam.zoom, cam.x, cam.y)
+    }
   }, [])
 
-  // Draw particles
-  const draw = useCallback((x: number, y: number) => {
-    const engine = engineRef.current
-    if (!engine) return
-
-    const radius = Math.floor(brushSize / 2)
-
-    if (selectedTool === 'eraser') {
-      engine.removeParticlesInRadius(x, y, radius)
-    } else if (selectedTool === 'brush') {
-      engine.addParticlesInRadius(x, y, radius, selectedElement)
-    }
-  }, [brushSize, selectedElement, selectedTool])
+  // Attach wheel listener with passive: false (React can't do this)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheel)
+  }, [handleWheel])
 
   // Mouse handlers
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const pos = getCanvasPosition(e)
     lastMousePos.current = { x: e.clientX, y: e.clientY }
 
-    // Middle mouse button (1) or move tool -> pan
+    // Pan mode
     if (selectedTool === 'move' || e.button === 1) {
       isDragging.current = true
       e.preventDefault()
@@ -247,10 +377,9 @@ export function Canvas() {
 
     // Drawing
     isDrawing.current = true
-    const worldPos = screenToWorld(pos.x, pos.y)
-    lastPos.current = worldPos
-    draw(worldPos.x, worldPos.y)
-  }, [getCanvasPosition, screenToWorld, draw, selectedTool])
+    lastPos.current = pos
+    draw(pos.x, pos.y)
+  }, [getCanvasPosition, draw, selectedTool])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const pos = getCanvasPosition(e)
@@ -264,7 +393,9 @@ export function Canvas() {
       cam.x += dx
       cam.y += dy
       
-      if (engineRef.current) {
+      if (bridgeRef.current) {
+        bridgeRef.current.setTransform(cam.zoom, cam.x, cam.y)
+      } else if (engineRef.current) {
         engineRef.current.setTransform(cam.zoom, cam.x, cam.y)
       }
       
@@ -275,39 +406,32 @@ export function Canvas() {
     // Drawing mode
     if (!isDrawing.current) return
     
-    const worldPos = screenToWorld(pos.x, pos.y)
-    
-    // Interpolate between last position and current (in world space)
-    if (lastPos.current) {
-      const dx = worldPos.x - lastPos.current.x
-      const dy = worldPos.y - lastPos.current.y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      const steps = Math.max(1, Math.floor(dist))
-      
-      for (let i = 0; i <= steps; i++) {
-        const t = i / steps
-        const x = Math.floor(lastPos.current.x + dx * t)
-        const y = Math.floor(lastPos.current.y + dy * t)
-        draw(x, y)
-      }
-    }
-    
-    lastPos.current = worldPos
-  }, [getCanvasPosition, screenToWorld, draw])
+    // Phase 5: Send raw events to Worker. Worker does Bresenham interpolation!
+    // No need for client-side interpolation anymore.
+    draw(pos.x, pos.y)
+    lastPos.current = pos
+  }, [getCanvasPosition, draw])
 
   const handleMouseUp = useCallback(() => {
+    // CRITICAL: Reset Bresenham tracking in Worker to prevent lines between strokes!
+    if (isDrawing.current && bridgeRef.current) {
+      bridgeRef.current.endStroke()
+    }
     isDrawing.current = false
     isDragging.current = false
     lastPos.current = null
   }, [])
 
   const handleMouseLeave = useCallback(() => {
+    // Also reset Bresenham on mouse leave
+    if (isDrawing.current && bridgeRef.current) {
+      bridgeRef.current.endStroke()
+    }
     isDrawing.current = false
     isDragging.current = false
     lastPos.current = null
   }, [])
 
-  // Get cursor class
   const getCursorClass = () => {
     switch (selectedTool) {
       case 'eraser': return 'cursor-cell'
@@ -325,7 +449,16 @@ export function Canvas() {
       {/* Loading overlay */}
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-[#0a0a0a] z-10">
-          <div className="text-white text-lg">🦀 Loading WASM engine...</div>
+          <div className="text-white text-lg">
+            {useWorker ? '🚀 Starting WebWorker...' : '🦀 Loading WASM engine...'}
+          </div>
+        </div>
+      )}
+      
+      {/* Worker mode indicator (dev only) */}
+      {!isLoading && process.env.NODE_ENV === 'development' && (
+        <div className="absolute top-2 right-2 text-xs text-gray-500 z-10">
+          {useWorker ? '🚀 Worker' : '🦀 Main Thread'}
         </div>
       )}
       
@@ -336,7 +469,6 @@ export function Canvas() {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
-        onWheel={handleWheel}
         onContextMenu={(e) => e.preventDefault()}
       />
     </div>

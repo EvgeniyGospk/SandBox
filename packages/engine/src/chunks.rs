@@ -1,53 +1,47 @@
-//! Chunk System - Spatial optimization for particle simulation
+//! Chunk System - Phase 5: BitSet Optimization
 //! 
-//! Phase 4: Divide world into chunks (32x32) for:
-//! - Skip processing of inactive/sleeping chunks
-//! - O(active_chunks) instead of O(W*H)
-//! - Wake neighbors when particles cross boundaries
+//! Optimization:
+//! - Vec<bool> (1 byte per chunk) -> Vec<u64> (1 bit per chunk)
+//! - 64x memory reduction for dirty flags
+//! - L1 Cache friendly iteration
 
 /// Chunk size in pixels (32x32 is cache-friendly)
 pub const CHUNK_SIZE: u32 = 32;
 
 /// Number of frames before a chunk goes to sleep
-/// Higher value = less aggressive sleeping, more correct behavior
-const SLEEP_THRESHOLD: u32 = 30;
+const SLEEP_THRESHOLD: u32 = 60;
 
 /// Chunk state
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChunkState {
-    /// Chunk has active particles that moved recently
     Active,
-    /// Chunk is dormant - no movement for SLEEP_THRESHOLD frames
     Sleeping,
 }
 
 /// Manages chunk-based spatial optimization
 pub struct ChunkGrid {
-    /// Number of chunks horizontally
     chunks_x: u32,
-    /// Number of chunks vertically  
     chunks_y: u32,
-    /// Total number of chunks
     chunk_count: usize,
     
-    /// Current state of each chunk
+    /// Number of u64 words needed for BitSet
+    u64_count: usize,
+    
     state: Vec<ChunkState>,
-    /// Dirty flag - chunk needs processing this frame
-    dirty: Vec<bool>,
-    /// Frames since last activity (for sleep detection)
+    
+    // === BITSET OPTIMIZATION (Phase 5) ===
+    // 1 bit = 1 chunk. u64 stores 64 chunks.
+    dirty_bits: Vec<u64>,
+    visual_dirty_bits: Vec<u64>,
+    
     idle_frames: Vec<u32>,
-    /// Number of non-empty cells in chunk (for quick empty check)
     particle_count: Vec<u32>,
     
-    // === Lazy Hydration System ===
-    /// Virtual temperature of air in each chunk (updated every frame, even sleeping)
+    // Lazy Hydration
     pub virtual_temp: Vec<f32>,
-    /// Flag: chunk just woke up from sleep, needs temperature hydration
     pub just_woke_up: Vec<bool>,
     
-    // === Visual Dirty (Phase 3 Fix: State Desync) ===
-    /// Visual dirty flag - chunk needs RENDERING (separate from physics dirty)
-    /// Cleared only when JS fetches the dirty list, not during physics!
+    // Legacy compatibility (world.rs uses visual_dirty[idx])
     pub visual_dirty: Vec<bool>,
 }
 
@@ -58,20 +52,52 @@ impl ChunkGrid {
         let chunks_y = (world_height + CHUNK_SIZE - 1) / CHUNK_SIZE;
         let chunk_count = (chunks_x * chunks_y) as usize;
         
+        // How many u64 needed to store chunk_count bits?
+        let u64_count = (chunk_count + 63) / 64;
+        
         Self {
             chunks_x,
             chunks_y,
             chunk_count,
-            state: vec![ChunkState::Active; chunk_count],  // Start active
-            dirty: vec![true; chunk_count],                 // All dirty initially
+            u64_count,
+            state: vec![ChunkState::Active; chunk_count],
+            // BitSet: all bits set = all dirty initially
+            dirty_bits: vec![!0u64; u64_count],
+            visual_dirty_bits: vec![!0u64; u64_count],
             idle_frames: vec![0; chunk_count],
             particle_count: vec![0; chunk_count],
-            // Lazy Hydration: init with room temperature
             virtual_temp: vec![20.0; chunk_count],
             just_woke_up: vec![false; chunk_count],
-            // Visual dirty: TRUE initially so first frame draws everything
+            // Legacy compatibility
             visual_dirty: vec![true; chunk_count],
         }
+    }
+    
+    // === BitSet Helpers ===
+    
+    #[inline(always)]
+    fn set_bit(bits: &mut [u64], idx: usize) {
+        let word = idx >> 6;  // idx / 64
+        let bit = idx & 63;   // idx % 64
+        if word < bits.len() {
+            bits[word] |= 1u64 << bit;
+        }
+    }
+
+    #[inline(always)]
+    fn clear_bit(bits: &mut [u64], idx: usize) {
+        let word = idx >> 6;
+        let bit = idx & 63;
+        if word < bits.len() {
+            bits[word] &= !(1u64 << bit);
+        }
+    }
+
+    #[inline(always)]
+    fn check_bit(bits: &[u64], idx: usize) -> bool {
+        let word = idx >> 6;
+        let bit = idx & 63;
+        word < bits.len() && (bits[word] & (1u64 << bit)) != 0
     }
     
     // === Chunk indexing ===
@@ -102,44 +128,37 @@ impl ChunkGrid {
         cx >= 0 && cx < self.chunks_x as i32 && cy >= 0 && cy < self.chunks_y as i32
     }
     
-    // === Dirty flag management ===
+    // === Dirty flag management (BitSet) ===
     
     /// Mark chunk as dirty (needs processing)
-    /// Lazy Hydration: detects Sleep -> Active transition
     #[inline]
     pub fn mark_dirty(&mut self, x: u32, y: u32) {
         let idx = self.chunk_index(x, y);
-        // Catch the wake-up moment for temperature hydration!
+        self.mark_dirty_idx(idx);
+    }
+    
+    /// Mark chunk as dirty by chunk index (BitSet version)
+    #[inline]
+    pub fn mark_dirty_idx(&mut self, idx: usize) {
+        if idx >= self.chunk_count { return; }
+        
         if self.state[idx] == ChunkState::Sleeping {
             self.just_woke_up[idx] = true;
         }
-        self.dirty[idx] = true;
+        
+        Self::set_bit(&mut self.dirty_bits, idx);
+        Self::set_bit(&mut self.visual_dirty_bits, idx);
+        self.visual_dirty[idx] = true; // Legacy compatibility
+        
         self.idle_frames[idx] = 0;
         self.state[idx] = ChunkState::Active;
     }
     
-    /// Mark chunk as dirty by chunk index
-    /// Lazy Hydration: detects Sleep -> Active transition
-    /// Also marks visual_dirty for renderer!
-    #[inline]
-    pub fn mark_dirty_idx(&mut self, idx: usize) {
-        if idx < self.chunk_count {
-            // Catch the wake-up moment for temperature hydration!
-            if self.state[idx] == ChunkState::Sleeping {
-                self.just_woke_up[idx] = true;
-            }
-            self.dirty[idx] = true;
-            self.visual_dirty[idx] = true; // IMPORTANT: Mark for rendering too!
-            self.idle_frames[idx] = 0;
-            self.state[idx] = ChunkState::Active;
-        }
-    }
-    
-    /// Check if chunk needs processing
+    /// Check if chunk needs processing (BitSet)
     #[inline]
     pub fn is_dirty(&self, cx: u32, cy: u32) -> bool {
         let idx = self.chunk_idx_from_coords(cx, cy);
-        self.dirty[idx]
+        Self::check_bit(&self.dirty_bits, idx)
     }
     
     /// Check if chunk is sleeping
@@ -149,15 +168,11 @@ impl ChunkGrid {
         self.state[idx] == ChunkState::Sleeping
     }
     
-    /// Should we process this chunk?
-    /// Phase 4.1: Now properly tracks particle movements!
+    /// Should we process this chunk? (BitSet version)
     #[inline]
     pub fn should_process(&self, cx: u32, cy: u32) -> bool {
         let idx = self.chunk_idx_from_coords(cx, cy);
-        // Process if:
-        // 1. Dirty (explicitly marked for update - e.g., neighbor woke us)
-        // 2. Has particles (they might need to move)
-        self.dirty[idx] || self.particle_count[idx] > 0
+        Self::check_bit(&self.dirty_bits, idx) || self.particle_count[idx] > 0
     }
     
     // === Wake neighbors ===
@@ -252,51 +267,51 @@ impl ChunkGrid {
         // They get cleared as chunks are processed
     }
     
-    /// Called after processing a chunk
-    /// Sets visual_dirty if movement occurred (for renderer to pick up)
+    /// Called after processing a chunk (BitSet version)
     pub fn end_chunk_update(&mut self, cx: u32, cy: u32, had_movement: bool) {
         let idx = self.chunk_idx_from_coords(cx, cy);
         
         if had_movement {
             self.idle_frames[idx] = 0;
             self.state[idx] = ChunkState::Active;
-            self.visual_dirty[idx] = true; // CRITICAL: Mark for render!
+            Self::set_bit(&mut self.visual_dirty_bits, idx);
+            self.visual_dirty[idx] = true; // Legacy
             
-            // CRITICAL: Wake chunk BELOW us (particles fall down!)
-            let cyi = cy as i32;
-            if self.chunk_in_bounds(cx as i32, cyi + 1) {
+            // Wake chunk below (particles fall)
+            if cy + 1 < self.chunks_y {
                 let below_idx = self.chunk_idx_from_coords(cx, cy + 1);
-                self.dirty[below_idx] = true;
-                self.visual_dirty[below_idx] = true; // Also mark below for render
+                Self::set_bit(&mut self.dirty_bits, below_idx);
+                Self::set_bit(&mut self.visual_dirty_bits, below_idx);
+                self.visual_dirty[below_idx] = true;
                 self.state[below_idx] = ChunkState::Active;
                 self.idle_frames[below_idx] = 0;
             }
         } else {
             self.idle_frames[idx] += 1;
-            // Only sleep if no particles in chunk
             if self.idle_frames[idx] >= SLEEP_THRESHOLD && self.particle_count[idx] == 0 {
                 self.state[idx] = ChunkState::Sleeping;
             }
         }
         
-        // Clear PHYSICS dirty flag after processing
-        // NOTE: visual_dirty is NOT cleared here - it waits for JS to fetch it!
-        self.dirty[idx] = false;
+        // Clear physics dirty bit
+        Self::clear_bit(&mut self.dirty_bits, idx);
     }
     
-    /// Clear visual dirty flag (called by World when JS fetches dirty list)
+    /// Clear visual dirty flag
     #[inline]
     pub fn clear_visual_dirty(&mut self, idx: usize) {
         if idx < self.chunk_count {
+            Self::clear_bit(&mut self.visual_dirty_bits, idx);
             self.visual_dirty[idx] = false;
         }
     }
     
-    /// Reset all chunks to active (e.g., after clear)
+    /// Reset all chunks (BitSet version)
     pub fn reset(&mut self) {
         self.state.fill(ChunkState::Active);
-        self.dirty.fill(true);
-        self.visual_dirty.fill(true); // Reset visual dirty for full redraw
+        self.dirty_bits.fill(!0u64);  // All dirty
+        self.visual_dirty_bits.fill(!0u64);
+        self.visual_dirty.fill(true);
         self.idle_frames.fill(0);
         self.particle_count.fill(0);
         self.virtual_temp.fill(20.0);
@@ -344,9 +359,10 @@ impl ChunkGrid {
         self.state.iter().filter(|&&s| s == ChunkState::Active).count()
     }
     
-    /// Get number of dirty chunks
+    /// Get number of dirty chunks (BitSet version)
     pub fn dirty_chunk_count(&self) -> usize {
-        self.dirty.iter().filter(|&&d| d).count()
+        // Count set bits across all words
+        self.dirty_bits.iter().map(|w| w.count_ones() as usize).sum()
     }
     
     /// Get total chunk count
@@ -360,21 +376,12 @@ impl ChunkGrid {
     }
 }
 
-/// Iterator over chunks that need processing
-pub struct ActiveChunkIterator {
-    chunks_x: u32,
-    chunks_y: u32,
-    current: usize,
-    dirty: Vec<bool>,
-    active: Vec<bool>,
-}
-
 impl ChunkGrid {
-    /// Get iterator over chunks that should be processed
+    /// Get iterator over chunks that should be processed (BitSet version)
     pub fn active_chunks(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         let chunks_x = self.chunks_x;
         (0..self.chunk_count).filter_map(move |idx| {
-            if self.dirty[idx] || (self.particle_count[idx] > 0 && self.state[idx] == ChunkState::Active) {
+            if Self::check_bit(&self.dirty_bits, idx) || (self.particle_count[idx] > 0 && self.state[idx] == ChunkState::Active) {
                 let cx = (idx as u32) % chunks_x;
                 let cy = (idx as u32) / chunks_x;
                 Some((cx, cy))

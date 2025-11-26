@@ -59,72 +59,120 @@ export default App
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { useSimulationStore } from '@/stores/simulationStore'
 import { useToolStore } from '@/stores/toolStore'
+import { WorkerBridge, isWorkerSupported } from '@/lib/engine/WorkerBridge'
 import { WasmParticleEngine } from '@/lib/engine'
-import { FpsCounter } from '@/lib/FpsCounter'
+import { screenToWorld as invertTransform, solvePanForZoom } from '@/lib/engine/transform'
 
-// Global engine instance for external access (reset, etc.)
-let globalEngine: WasmParticleEngine | null = null
+// Global bridge for external access (reset, etc.)
+let globalBridge: WorkerBridge | null = null
+let globalEngine: WasmParticleEngine | null = null // Fallback
+
 export function getEngine(): WasmParticleEngine | null { return globalEngine }
+export function getBridge(): WorkerBridge | null { return globalBridge }
 
-// Camera reset callback (set by Canvas component)
+// Camera reset callback
 let resetCameraCallback: (() => void) | null = null
 export function resetCamera(): void { resetCameraCallback?.() }
 
+// Clear simulation callback
+let clearSimulationCallback: (() => void) | null = null
+export function clearSimulation(): void { clearSimulationCallback?.() }
+
+/**
+ * Canvas Component - Phase 1: WebWorker Architecture
+ * 
+ * Main thread only handles:
+ * - User input (mouse events)
+ * - Camera state
+ * - React state updates (FPS, particle count)
+ * 
+ * Worker handles:
+ * - WASM engine
+ * - Physics simulation
+ * - Rendering to OffscreenCanvas
+ */
 export function Canvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const engineRef = useRef<WasmParticleEngine | null>(null)
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
+  const bridgeRef = useRef<WorkerBridge | null>(null)
+  const engineRef = useRef<WasmParticleEngine | null>(null) // Fallback
+  
+  // Input state
   const isDrawing = useRef(false)
   const isDragging = useRef(false)
   const lastPos = useRef<{ x: number; y: number } | null>(null)
   const lastMousePos = useRef({ x: 0, y: 0 })
-  const animationRef = useRef<number>(0)
-  const lastTimeRef = useRef<number>(0)
-  // Phase 4: Zero-allocation FPS counter
-  const fpsCounter = useRef(new FpsCounter(20))
   
   // Loading state
   const [isLoading, setIsLoading] = useState(true)
+  const [useWorker, setUseWorker] = useState(true)
   
-  // Camera state (refs to avoid re-renders)
+  // Camera state (stored on main thread for coordinate conversion)
   const cameraRef = useRef({ x: 0, y: 0, zoom: 1 })
   
-  const { isPlaying, speed, gravity, ambientTemperature, setFps, setParticleCount } = useSimulationStore()
+  // FIX 2: Достаем renderMode из стора
+  const { isPlaying, speed, gravity, ambientTemperature, renderMode, setFps, setParticleCount } = useSimulationStore()
   const { selectedElement, brushSize, selectedTool } = useToolStore()
 
-  // Use refs for values accessed in render loop to avoid recreating the loop
-  const isPlayingRef = useRef(isPlaying)
-  const speedRef = useRef(speed)
-  isPlayingRef.current = isPlaying
-  speedRef.current = speed
-
-  // Register camera reset callback
+  // Register callbacks
   useEffect(() => {
     resetCameraCallback = () => {
       cameraRef.current = { x: 0, y: 0, zoom: 1 }
-      engineRef.current?.setTransform(1, 0, 0)
+      if (bridgeRef.current) {
+        bridgeRef.current.setTransform(1, 0, 0)
+      } else if (engineRef.current) {
+        engineRef.current.setTransform(1, 0, 0)
+      }
     }
-    return () => { resetCameraCallback = null }
+    
+    clearSimulationCallback = () => {
+      if (bridgeRef.current) {
+        bridgeRef.current.clear()
+      } else if (engineRef.current) {
+        engineRef.current.clear()
+      }
+    }
+    
+    return () => { 
+      resetCameraCallback = null 
+      clearSimulationCallback = null
+    }
   }, [])
 
-  // Sync physics settings with engine
+  // Sync play/pause state with worker
   useEffect(() => {
-    const engine = engineRef.current
-    if (engine) {
-      engine.setSettings({ gravity, ambientTemperature })
+    if (bridgeRef.current) {
+      if (isPlaying) {
+        bridgeRef.current.play()
+      } else {
+        bridgeRef.current.pause()
+      }
     }
-  }, [gravity, ambientTemperature])
+  }, [isPlaying])
 
-  // Initialize engine and start render loop
+  // FIX 2: Sync renderMode (Thermal Vision)
+  useEffect(() => {
+    if (bridgeRef.current) {
+      bridgeRef.current.setRenderMode(renderMode)
+    } else if (engineRef.current) {
+      engineRef.current.setRenderMode(renderMode)
+    }
+  }, [renderMode])
+
+  // Sync physics settings
+  useEffect(() => {
+    if (bridgeRef.current) {
+      bridgeRef.current.setSettings({ gravity, ambientTemperature, speed })
+    } else if (engineRef.current) {
+      engineRef.current.setSettings({ gravity, ambientTemperature })
+    }
+  }, [gravity, ambientTemperature, speed])
+
+  // Initialize engine (Worker or Fallback)
   useEffect(() => {
     const canvas = canvasRef.current
     const container = containerRef.current
     if (!canvas || !container) return
-
-    const ctx = canvas.getContext('2d', { alpha: false })
-    if (!ctx) return
-    ctxRef.current = ctx
 
     const { width, height } = container.getBoundingClientRect()
     if (width <= 0 || height <= 0) return
@@ -132,98 +180,141 @@ export function Canvas() {
     canvas.width = width
     canvas.height = height
     
-    // Throttle state updates
-    let lastStatsUpdate = 0
-    const STATS_UPDATE_INTERVAL = 200
-
-    // Render loop
-    const startRenderLoop = () => {
-      const render = (time: number) => {
-        const eng = engineRef.current
-        if (!eng) return
-
-        // Calculate smoothed FPS (Phase 4: Zero-allocation)
-        const delta = time - lastTimeRef.current
-        if (delta > 0) {
-          fpsCounter.current.add(1000 / delta)
-        }
-        lastTimeRef.current = time
-
-        // Step simulation
-        if (isPlayingRef.current) {
-          const steps = speedRef.current >= 1 ? Math.floor(speedRef.current) : 1
-          for (let i = 0; i < steps; i++) {
-            eng.step()
-          }
-        }
-
-        // Render using Smart Rendering (Phase 3: Dirty Rectangles)
-        const renderer = eng.getRenderer()
-        const memory = eng.memory
-        if (renderer && memory) {
-          renderer.renderSmart(eng, memory)
-        } else {
-          // Fallback to full render
-          eng.render()
-        }
-
-        // Throttle React state updates
-        if (time - lastStatsUpdate > STATS_UPDATE_INTERVAL) {
-          const avgFps = fpsCounter.current.getAverage() // Zero allocations!
-          setFps(avgFps)
-          setParticleCount(eng.particleCount)
-          lastStatsUpdate = time
-        }
-
-        animationRef.current = requestAnimationFrame(render)
+    const workerSupported = isWorkerSupported()
+    setUseWorker(workerSupported)
+    
+    if (workerSupported) {
+      // === PHASE 1: WORKER MODE ===
+      const bridge = new WorkerBridge()
+      bridgeRef.current = bridge
+      globalBridge = bridge
+      
+      // Setup callbacks
+      bridge.onStats = (stats) => {
+        setFps(stats.fps)
+        setParticleCount(stats.particleCount)
       }
       
-      animationRef.current = requestAnimationFrame(render)
-    }
-    
-    // Initialize WASM engine
-    const initEngine = async () => {
-      try {
-        console.log('🦀 Loading WASM engine...')
-        const engine = await WasmParticleEngine.create(width, height)
-        engine.attachRenderer(ctx)
-        
-        engineRef.current = engine
-        globalEngine = engine
+      bridge.onReady = () => {
+        console.log('🚀 Worker ready! Physics runs in separate thread.')
         setIsLoading(false)
-        console.log('🦀 WasmParticleEngine ready!')
-        
-        // Start render loop
-        startRenderLoop()
-      } catch (err) {
-        console.error('Failed to load WASM engine:', err)
-        setIsLoading(false)
+        // Auto-play on ready
+        if (isPlaying) {
+          bridge.play()
+        }
       }
+      
+      bridge.onError = (msg) => {
+        console.error('Worker error:', msg)
+        // Fall back to main thread mode
+        setUseWorker(false)
+        initFallbackEngine(canvas, width, height)
+      }
+      
+      // Initialize worker with canvas
+      bridge.init(canvas, width, height).catch((err) => {
+        console.warn('Worker init failed, falling back:', err)
+        setUseWorker(false)
+        initFallbackEngine(canvas, width, height)
+      })
+      
+    } else {
+      // === FALLBACK: MAIN THREAD MODE ===
+      initFallbackEngine(canvas, width, height)
     }
-    
-    initEngine()
 
     return () => {
-      cancelAnimationFrame(animationRef.current)
+      if (bridgeRef.current) {
+        bridgeRef.current.destroy()
+        bridgeRef.current = null
+        globalBridge = null
+      }
       if (engineRef.current) {
         engineRef.current.destroy()
+        engineRef.current = null
+        globalEngine = null
       }
-      globalEngine = null
     }
-  }, [setFps, setParticleCount])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Fallback engine initialization (main thread)
+  const initFallbackEngine = async (canvas: HTMLCanvasElement, width: number, height: number) => {
+    try {
+      console.log('🦀 Fallback: Loading WASM in main thread...')
+      const ctx = canvas.getContext('2d', { alpha: false })
+      if (!ctx) throw new Error('No 2d context')
+      
+      const engine = await WasmParticleEngine.create(width, height)
+      engine.attachRenderer(ctx)
+      
+      engineRef.current = engine
+      globalEngine = engine
+      setIsLoading(false)
+      console.log('🦀 Fallback engine ready!')
+      
+      // Start main thread render loop
+      startFallbackRenderLoop(engine, ctx)
+    } catch (err) {
+      console.error('Failed to load WASM engine:', err)
+      setIsLoading(false)
+    }
+  }
+  
+  // Main thread render loop (fallback)
+  const startFallbackRenderLoop = (engine: WasmParticleEngine, _ctx: CanvasRenderingContext2D) => {
+    let lastStatsUpdate = 0
+    const STATS_INTERVAL = 200
+    
+    const render = (time: number) => {
+      if (!engineRef.current) return
+      
+      // Step simulation
+      if (isPlaying) {
+        const steps = speed >= 1 ? Math.floor(speed) : 1
+        for (let i = 0; i < steps; i++) {
+          engine.step()
+        }
+      }
+      
+      // Render
+      const renderer = engine.getRenderer()
+      const memory = engine.memory
+      if (renderer && memory) {
+        renderer.renderSmart(engine, memory)
+      } else {
+        engine.render()
+      }
+      
+      // Stats update
+      if (time - lastStatsUpdate > STATS_INTERVAL) {
+        setFps(60) // Approximate
+        setParticleCount(engine.particleCount)
+        lastStatsUpdate = time
+      }
+      
+      requestAnimationFrame(render)
+    }
+    
+    requestAnimationFrame(render)
+  }
 
   // Handle resize
   useEffect(() => {
     const handleResize = () => {
-      const canvas = canvasRef.current
       const container = containerRef.current
-      if (!canvas || !container) return
+      if (!container) return
 
       const { width, height } = container.getBoundingClientRect()
-      canvas.width = width
-      canvas.height = height
-
-      if (engineRef.current) {
+      
+      if (bridgeRef.current) {
+        bridgeRef.current.resize(width, height)
+      } else if (engineRef.current) {
+        const canvas = canvasRef.current
+        if (canvas) {
+          canvas.width = width
+          canvas.height = height
+        }
         engineRef.current.resize(width, height)
       }
     }
@@ -232,7 +323,8 @@ export function Canvas() {
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
-  // Get canvas position (screen coordinates)
+  // === INPUT HANDLERS ===
+
   const getCanvasPosition = useCallback((e: React.MouseEvent) => {
     const canvas = canvasRef.current
     if (!canvas) return { x: 0, y: 0 }
@@ -244,59 +336,101 @@ export function Canvas() {
     }
   }, [])
 
-  // Screen -> World coordinate conversion
   const screenToWorld = useCallback((sx: number, sy: number) => {
+    const canvas = canvasRef.current
+    if (!canvas) return { x: 0, y: 0 }
     const cam = cameraRef.current
+    const viewport = { width: canvas.width, height: canvas.height }
+
+    const world = invertTransform(
+      sx,
+      sy,
+      { zoom: cam.zoom, panX: cam.x, panY: cam.y },
+      viewport
+    )
+
     return {
-      x: Math.floor((sx - cam.x) / cam.zoom),
-      y: Math.floor((sy - cam.y) / cam.zoom)
+      x: Math.floor(world.x),
+      y: Math.floor(world.y)
     }
   }, [])
 
-  // Zoom handler (mouse wheel)
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    const eng = engineRef.current
-    if (!eng) return
+  // Draw particles (send to worker or call engine directly)
+  const draw = useCallback((screenX: number, screenY: number) => {
+    const radius = Math.floor(brushSize / 2)
+    
+    if (bridgeRef.current) {
+      // FIX 1: FORCE SYNC TRANSFORM BEFORE INPUT
+      const cam = cameraRef.current
+      
+      // DEBUG: Log coordinate chain
+      console.log(`🎨 Canvas.draw: screen(${screenX.toFixed(0)}, ${screenY.toFixed(0)}) | cam: zoom=${cam.zoom.toFixed(2)} pan=(${cam.x.toFixed(0)}, ${cam.y.toFixed(0)})`)
+      
+      bridgeRef.current.setTransform(cam.zoom, cam.x, cam.y)
+
+      // Worker mode: send screen coordinates, worker converts to world
+      bridgeRef.current.handleInput(screenX, screenY, radius, selectedElement, selectedTool)
+    } else if (engineRef.current) {
+      // Fallback: convert to world and call engine
+      const worldPos = screenToWorld(screenX, screenY)
+      if (selectedTool === 'eraser') {
+        engineRef.current.removeParticlesInRadius(worldPos.x, worldPos.y, radius)
+      } else if (selectedTool === 'brush') {
+        engineRef.current.addParticlesInRadius(worldPos.x, worldPos.y, radius, selectedElement)
+      }
+    }
+  }, [brushSize, selectedElement, selectedTool, screenToWorld])
+
+  // Zoom handler - uses native event (not React) to allow preventDefault
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault()
 
     const delta = e.deltaY > 0 ? 0.9 : 1.1
     const cam = cameraRef.current
-    const newZoom = Math.min(Math.max(cam.zoom * delta, 1), 10) // Min 1x, Max 10x
+    const newZoom = Math.min(Math.max(cam.zoom * delta, 0.1), 10)
 
-    // Zoom toward cursor position
-    const rect = canvasRef.current!.getBoundingClientRect()
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const rect = canvas.getBoundingClientRect()
     const mouseX = e.clientX - rect.left
     const mouseY = e.clientY - rect.top
 
-    // Adjust pan so point under cursor stays fixed
-    const scale = newZoom / cam.zoom
-    cam.x = mouseX - (mouseX - cam.x) * scale
-    cam.y = mouseY - (mouseY - cam.y) * scale
-    cam.zoom = newZoom
+    const viewport = { width: canvas.width, height: canvas.height }
+    const nextCam = solvePanForZoom(
+      mouseX,
+      mouseY,
+      newZoom,
+      { zoom: cam.zoom, panX: cam.x, panY: cam.y },
+      viewport
+    )
 
-    eng.setTransform(cam.zoom, cam.x, cam.y)
+    cam.x = nextCam.panX
+    cam.y = nextCam.panY
+    cam.zoom = nextCam.zoom
+    
+    if (bridgeRef.current) {
+      bridgeRef.current.setTransform(cam.zoom, cam.x, cam.y)
+    } else if (engineRef.current) {
+      engineRef.current.setTransform(cam.zoom, cam.x, cam.y)
+    }
   }, [])
 
-  // Draw particles
-  const draw = useCallback((x: number, y: number) => {
-    const engine = engineRef.current
-    if (!engine) return
-
-    const radius = Math.floor(brushSize / 2)
-
-    if (selectedTool === 'eraser') {
-      engine.removeParticlesInRadius(x, y, radius)
-    } else if (selectedTool === 'brush') {
-      engine.addParticlesInRadius(x, y, radius, selectedElement)
-    }
-  }, [brushSize, selectedElement, selectedTool])
+  // Attach wheel listener with passive: false (React can't do this)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheel)
+  }, [handleWheel])
 
   // Mouse handlers
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const pos = getCanvasPosition(e)
     lastMousePos.current = { x: e.clientX, y: e.clientY }
 
-    // Middle mouse button (1) or move tool -> pan
+    // Pan mode
     if (selectedTool === 'move' || e.button === 1) {
       isDragging.current = true
       e.preventDefault()
@@ -305,10 +439,9 @@ export function Canvas() {
 
     // Drawing
     isDrawing.current = true
-    const worldPos = screenToWorld(pos.x, pos.y)
-    lastPos.current = worldPos
-    draw(worldPos.x, worldPos.y)
-  }, [getCanvasPosition, screenToWorld, draw, selectedTool])
+    lastPos.current = pos
+    draw(pos.x, pos.y)
+  }, [getCanvasPosition, draw, selectedTool])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const pos = getCanvasPosition(e)
@@ -322,7 +455,9 @@ export function Canvas() {
       cam.x += dx
       cam.y += dy
       
-      if (engineRef.current) {
+      if (bridgeRef.current) {
+        bridgeRef.current.setTransform(cam.zoom, cam.x, cam.y)
+      } else if (engineRef.current) {
         engineRef.current.setTransform(cam.zoom, cam.x, cam.y)
       }
       
@@ -333,39 +468,32 @@ export function Canvas() {
     // Drawing mode
     if (!isDrawing.current) return
     
-    const worldPos = screenToWorld(pos.x, pos.y)
-    
-    // Interpolate between last position and current (in world space)
-    if (lastPos.current) {
-      const dx = worldPos.x - lastPos.current.x
-      const dy = worldPos.y - lastPos.current.y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      const steps = Math.max(1, Math.floor(dist))
-      
-      for (let i = 0; i <= steps; i++) {
-        const t = i / steps
-        const x = Math.floor(lastPos.current.x + dx * t)
-        const y = Math.floor(lastPos.current.y + dy * t)
-        draw(x, y)
-      }
-    }
-    
-    lastPos.current = worldPos
-  }, [getCanvasPosition, screenToWorld, draw])
+    // Phase 5: Send raw events to Worker. Worker does Bresenham interpolation!
+    // No need for client-side interpolation anymore.
+    draw(pos.x, pos.y)
+    lastPos.current = pos
+  }, [getCanvasPosition, draw])
 
   const handleMouseUp = useCallback(() => {
+    // CRITICAL: Reset Bresenham tracking in Worker to prevent lines between strokes!
+    if (isDrawing.current && bridgeRef.current) {
+      bridgeRef.current.endStroke()
+    }
     isDrawing.current = false
     isDragging.current = false
     lastPos.current = null
   }, [])
 
   const handleMouseLeave = useCallback(() => {
+    // Also reset Bresenham on mouse leave
+    if (isDrawing.current && bridgeRef.current) {
+      bridgeRef.current.endStroke()
+    }
     isDrawing.current = false
     isDragging.current = false
     lastPos.current = null
   }, [])
 
-  // Get cursor class
   const getCursorClass = () => {
     switch (selectedTool) {
       case 'eraser': return 'cursor-cell'
@@ -383,7 +511,16 @@ export function Canvas() {
       {/* Loading overlay */}
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-[#0a0a0a] z-10">
-          <div className="text-white text-lg">🦀 Loading WASM engine...</div>
+          <div className="text-white text-lg">
+            {useWorker ? '🚀 Starting WebWorker...' : '🦀 Loading WASM engine...'}
+          </div>
+        </div>
+      )}
+      
+      {/* Worker mode indicator (dev only) */}
+      {!isLoading && process.env.NODE_ENV === 'development' && (
+        <div className="absolute top-2 right-2 text-xs text-gray-500 z-10">
+          {useWorker ? '🚀 Worker' : '🦀 Main Thread'}
         </div>
       )}
       
@@ -394,7 +531,6 @@ export function Canvas() {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
-        onWheel={handleWheel}
         onContextMenu={(e) => e.preventDefault()}
       />
     </div>
@@ -1001,58 +1137,207 @@ function ToolButton({ icon, isActive, onClick, tooltip }: ToolButtonProps) {
 --- End of File: apps/web/src/components/panels/TopToolbar.tsx ---
 
 
---- File: apps/web/src/lib/FpsCounter.ts ---
+--- File: apps/web/src/lib/InputBuffer.ts ---
 
 /**
- * Zero-allocation FPS counter using Ring Buffer
+ * SharedInputBuffer - Lock-free Ring Buffer for Mouse Input
  * 
- * Phase 4: Eliminates Array.push/shift allocations that cause GC stuttering
- * Uses Float32Array as fixed-size ring buffer
+ * Phase 5: "Telemetry" - Zero-latency input via SharedArrayBuffer
+ * 
+ * Instead of postMessage (async, serialization overhead), we write
+ * mouse events directly to shared memory. Worker reads every frame.
+ * 
+ * Buffer Layout:
+ * [0] = Write Head (Main Thread writes here)
+ * [1] = Read Head (Worker reads here)
+ * [2..] = Events: [x, y, type, brushSize] * INPUT_BUFFER_SIZE
+ * 
+ * Total size: (2 + 4 * 100) * 4 = 1608 bytes
  */
 
-export class FpsCounter {
-  private buffer: Float32Array
-  private index: number = 0
-  private size: number
-  private count: number = 0 // How many slots are actually filled
+export const INPUT_BUFFER_SIZE = 100 // Max events in queue
+export const EVENT_SIZE = 4 // Int32 per event: x, y, type, brushSize
+const HEAD_OFFSET = 2 // First 2 slots are write/read heads
 
-  constructor(size: number = 20) {
-    this.size = size
-    this.buffer = new Float32Array(size) // Single allocation at startup
+// Input event types (matches ToolType + element encoding)
+export const INPUT_TYPE_BRUSH = 0
+export const INPUT_TYPE_ERASE = 1
+export const INPUT_TYPE_END_STROKE = 254 // Sentinel: reset Bresenham tracking
+export const INPUT_TYPE_NONE = 255 // No-op / skip
+export const INPUT_TYPE_BRUSH_OFFSET = 100 // Keep brush payload distinct from erase sentinel
+
+/**
+ * Calculate required buffer size in bytes
+ */
+export function getInputBufferSize(): number {
+  return (HEAD_OFFSET + INPUT_BUFFER_SIZE * EVENT_SIZE) * 4 // Int32 = 4 bytes
+}
+
+/**
+ * Check if SharedArrayBuffer is available
+ */
+export function isSharedArrayBufferAvailable(): boolean {
+  return typeof SharedArrayBuffer !== 'undefined'
+}
+
+/**
+ * Shared Input Buffer for Main Thread <-> Worker communication
+ * 
+ * Uses Atomics for thread-safe read/write without locks.
+ * Lock-free SPSC (Single Producer Single Consumer) queue.
+ */
+export class SharedInputBuffer {
+  private buffer: Int32Array
+  
+  constructor(sharedBuffer: SharedArrayBuffer) {
+    this.buffer = new Int32Array(sharedBuffer)
+    // Initialize heads to 0
+    Atomics.store(this.buffer, 0, 0) // Write head
+    Atomics.store(this.buffer, 1, 0) // Read head
   }
-
+  
   /**
-   * Add FPS sample - zero allocations!
+   * Get the underlying SharedArrayBuffer for transfer to Worker
    */
-  add(fps: number): void {
-    this.buffer[this.index] = fps
-    this.index = (this.index + 1) % this.size
-    if (this.count < this.size) this.count++
+  getBuffer(): SharedArrayBuffer {
+    return this.buffer.buffer as SharedArrayBuffer
   }
-
+  
+  // === MAIN THREAD API ===
+  
   /**
-   * Get smoothed average FPS - zero allocations!
+   * Push input event to buffer (called from Main Thread)
+   * 
+   * @param x Screen X coordinate
+   * @param y Screen Y coordinate
+   * @param type INPUT_TYPE_BRUSH or INPUT_TYPE_ERASE
+   * @param val Brush size or element ID
+   * @returns true if pushed, false if buffer full
    */
-  getAverage(): number {
-    if (this.count === 0) return 0
+  push(x: number, y: number, type: number, val: number): boolean {
+    const writeIndex = Atomics.load(this.buffer, 0)
+    const readIndex = Atomics.load(this.buffer, 1)
     
-    let sum = 0
-    for (let i = 0; i < this.count; i++) {
-      sum += this.buffer[i]
+    // Calculate next write position (ring buffer wrap)
+    const nextWriteIndex = (writeIndex + 1) % INPUT_BUFFER_SIZE
+    
+    // Check if buffer is full (writer caught up to reader)
+    if (nextWriteIndex === readIndex) {
+      // Buffer full - drop event (1 frame desync is invisible)
+      return false
     }
-    return Math.round(sum / this.count)
+    
+    // Write event data
+    const offset = HEAD_OFFSET + writeIndex * EVENT_SIZE
+    this.buffer[offset + 0] = Math.floor(x)
+    this.buffer[offset + 1] = Math.floor(y)
+    this.buffer[offset + 2] = type
+    this.buffer[offset + 3] = Math.floor(val)
+    
+    // Atomically update write head (makes event visible to worker)
+    Atomics.store(this.buffer, 0, nextWriteIndex)
+    
+    return true
   }
-
+  
   /**
-   * Reset counter
+   * Push brush event
    */
-  reset(): void {
-    this.count = 0
-    this.index = 0
+  pushBrush(x: number, y: number, brushSize: number, elementId: number): boolean {
+    // Encode element ID in type field (offset to avoid colliding with erase sentinel)
+    return this.push(x, y, INPUT_TYPE_BRUSH_OFFSET + elementId, brushSize)
+  }
+  
+  /**
+   * Push erase event
+   */
+  pushErase(x: number, y: number, brushSize: number): boolean {
+    return this.push(x, y, INPUT_TYPE_ERASE, brushSize)
+  }
+  
+  /**
+   * Push end-stroke sentinel (resets Bresenham tracking in worker)
+   * CRITICAL: Must go through same channel as brush events to prevent race conditions!
+   */
+  pushEndStroke(): boolean {
+    return this.push(0, 0, INPUT_TYPE_END_STROKE, 0)
+  }
+  
+  // === WORKER THREAD API ===
+  
+  /**
+   * Read all pending events (called from Worker Thread)
+   * Returns array of events to process this frame
+   */
+  readAll(): Array<{ x: number; y: number; type: number; val: number }> {
+    const writeIndex = Atomics.load(this.buffer, 0)
+    let readIndex = Atomics.load(this.buffer, 1)
+    
+    const events: Array<{ x: number; y: number; type: number; val: number }> = []
+    
+    // Read all events between read head and write head
+    while (readIndex !== writeIndex) {
+      const offset = HEAD_OFFSET + readIndex * EVENT_SIZE
+      
+      events.push({
+        x: this.buffer[offset + 0],
+        y: this.buffer[offset + 1],
+        type: this.buffer[offset + 2],
+        val: this.buffer[offset + 3]
+      })
+      
+      // Move to next slot (ring wrap)
+      readIndex = (readIndex + 1) % INPUT_BUFFER_SIZE
+    }
+    
+    // Atomically update read head (marks events as consumed)
+    Atomics.store(this.buffer, 1, readIndex)
+    
+    return events
+  }
+  
+  /**
+   * Process events directly without allocation (zero-GC version)
+   * Calls callback for each event
+   */
+  processAll(callback: (x: number, y: number, type: number, val: number) => void): number {
+    const writeIndex = Atomics.load(this.buffer, 0)
+    let readIndex = Atomics.load(this.buffer, 1)
+    let count = 0
+    
+    while (readIndex !== writeIndex) {
+      const offset = HEAD_OFFSET + readIndex * EVENT_SIZE
+      
+      callback(
+        this.buffer[offset + 0],
+        this.buffer[offset + 1],
+        this.buffer[offset + 2],
+        this.buffer[offset + 3]
+      )
+      
+      readIndex = (readIndex + 1) % INPUT_BUFFER_SIZE
+      count++
+    }
+    
+    Atomics.store(this.buffer, 1, readIndex)
+    return count
+  }
+  
+  /**
+   * Get number of pending events (for debugging)
+   */
+  pendingCount(): number {
+    const writeIndex = Atomics.load(this.buffer, 0)
+    const readIndex = Atomics.load(this.buffer, 1)
+    
+    if (writeIndex >= readIndex) {
+      return writeIndex - readIndex
+    }
+    return INPUT_BUFFER_SIZE - readIndex + writeIndex
   }
 }
 
---- End of File: apps/web/src/lib/FpsCounter.ts ---
+--- End of File: apps/web/src/lib/InputBuffer.ts ---
 
 
 --- File: apps/web/src/lib/elements.ts ---
@@ -1387,9 +1672,12 @@ export class CanvasRenderer {
     this.ctx.fillRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
     
     this.ctx.save()
-    // Apply Pan then Zoom
-    this.ctx.translate(this.panX, this.panY)
+    // Match WebGL transform: scale around viewport center, then apply screen-space pan
+    const centerX = this.ctx.canvas.width / 2
+    const centerY = this.ctx.canvas.height / 2
+    this.ctx.translate(centerX + this.panX, centerY + this.panY)
     this.ctx.scale(this.zoom, this.zoom)
+    this.ctx.translate(-centerX, -centerY)
     
     // Draw buffer image
     this.ctx.drawImage(this.bufferCanvas, 0, 0)
@@ -1929,6 +2217,845 @@ export class WasmParticleEngine {
 --- End of File: apps/web/src/lib/engine/WasmParticleEngine.ts ---
 
 
+--- File: apps/web/src/lib/engine/WebGLRenderer.ts ---
+
+/**
+ * WebGLRenderer - Production Grade
+ * 
+ * Phase 3: WebGL Revolution + Border Rendering
+ * 
+ * Features:
+ * - Zero-copy upload (WASM -> GPU via texSubImage2D)
+ * - Hardware accelerated Zoom & Pan (Vertex Shader)
+ * - Dirty Rectangles support (only upload changed chunks)
+ * - Neon Border rendering (Line Shader)
+ */
+
+const CHUNK_SIZE = 32;
+
+export class WebGLRenderer {
+  private gl: WebGL2RenderingContext;
+  
+  // === Texture Pass (World) ===
+  private texProgram: WebGLProgram;
+  private texture: WebGLTexture;
+  private quadBuffer: WebGLBuffer;
+  private uTexTransform: WebGLUniformLocation | null = null;
+  private uTexWorldSize: WebGLUniformLocation | null = null;
+  private uTexViewportSize: WebGLUniformLocation | null = null;
+  
+  // === Border Pass (Lines) ===
+  private lineProgram: WebGLProgram;
+  private lineBuffer: WebGLBuffer;
+  private uLineTransform: WebGLUniformLocation | null = null;
+  private uLineWorldSize: WebGLUniformLocation | null = null;
+  private uLineViewportSize: WebGLUniformLocation | null = null;
+  private uLineColor: WebGLUniformLocation | null = null;
+  
+  // Memory view (reused)
+  private memoryView: Uint8Array | null = null;
+  
+  // Dimensions (MUST be integers!)
+  private worldWidth: number;
+  private worldHeight: number;
+  private viewportWidth: number;
+  private viewportHeight: number;
+
+  constructor(canvas: OffscreenCanvas, worldWidth: number, worldHeight: number) {
+    // CRITICAL: Force integer sizes to prevent "falling through" bug
+    this.worldWidth = Math.floor(worldWidth);
+    this.worldHeight = Math.floor(worldHeight);
+    this.viewportWidth = canvas.width;
+    this.viewportHeight = canvas.height;
+
+    const gl = canvas.getContext('webgl2', {
+      alpha: false,
+      desynchronized: true,
+      powerPreference: 'high-performance',
+      antialias: false
+    });
+
+    if (!gl) throw new Error('WebGL 2 not supported');
+    this.gl = gl;
+
+    // Enable blending for border glow
+    this.gl.enable(this.gl.BLEND);
+    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
+
+    // === Setup Texture Shader ===
+    this.texProgram = this.createProgram(TEX_VERTEX_SHADER, TEX_FRAGMENT_SHADER);
+    this.quadBuffer = this.createQuadBuffer();
+
+    // Setup Texture
+    const tex = this.gl.createTexture();
+    if (!tex) throw new Error('Failed to create texture');
+    this.texture = tex;
+    
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.NEAREST);
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.NEAREST);
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
+
+    this.gl.texImage2D(
+      this.gl.TEXTURE_2D, 0, this.gl.RGBA, 
+      this.worldWidth, this.worldHeight, 0, 
+      this.gl.RGBA, this.gl.UNSIGNED_BYTE, null
+    );
+
+    this.uTexTransform = this.gl.getUniformLocation(this.texProgram, 'u_transform');
+    this.uTexWorldSize = this.gl.getUniformLocation(this.texProgram, 'u_worldSize');
+    this.uTexViewportSize = this.gl.getUniformLocation(this.texProgram, 'u_viewportSize');
+
+    // === Setup Line Shader (Border) ===
+    this.lineProgram = this.createProgram(LINE_VERTEX_SHADER, LINE_FRAGMENT_SHADER);
+    this.lineBuffer = this.createBorderBuffer();
+    
+    this.uLineTransform = this.gl.getUniformLocation(this.lineProgram, 'u_transform');
+    this.uLineWorldSize = this.gl.getUniformLocation(this.lineProgram, 'u_worldSize');
+    this.uLineViewportSize = this.gl.getUniformLocation(this.lineProgram, 'u_viewportSize');
+    this.uLineColor = this.gl.getUniformLocation(this.lineProgram, 'u_color');
+    
+    console.log(`🎮 WebGLRenderer: ${this.worldWidth}x${this.worldHeight} world, WebGL2 + Border`);
+  }
+
+  /**
+   * Render with Dirty Rectangles optimization
+   */
+  renderWithDirtyRects(
+    engine: any,
+    memory: WebAssembly.Memory,
+    transform: { zoom: number; panX: number; panY: number }
+  ): void {
+    if (!this.memoryView || this.memoryView.buffer !== memory.buffer) {
+      this.memoryView = new Uint8Array(memory.buffer);
+    }
+
+    // 1. Clear
+    this.gl.viewport(0, 0, this.viewportWidth, this.viewportHeight);
+    this.gl.clearColor(0.04, 0.04, 0.04, 1.0);
+    this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+
+    // 2. Upload texture data
+    this.uploadTexture(engine, memory);
+
+    // 3. Draw World
+    this.drawTexturePass(transform);
+
+    // 4. Draw Border (Neon Style)
+    this.drawBorderPass(transform);
+  }
+
+  private uploadTexture(engine: any, memory: WebAssembly.Memory): void {
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+
+    const dirtyCount = engine.collect_dirty_chunks();
+    
+    if (dirtyCount === 0) return;
+
+    const chunksX = engine.chunks_x();
+    const chunksY = engine.chunks_y();
+    const totalChunks = chunksX * chunksY;
+    
+    // Check if world size is not aligned to chunk size (has edge chunks)
+    const hasEdgeChunksX = (this.worldWidth % CHUNK_SIZE) !== 0;
+    const hasEdgeChunksY = (this.worldHeight % CHUNK_SIZE) !== 0;
+    const hasEdgeChunks = hasEdgeChunksX || hasEdgeChunksY;
+
+    // Heuristic: Full upload if > 40% dirty OR if we have edge chunks (to avoid black bars)
+    if (dirtyCount > totalChunks * 0.4 || (hasEdgeChunks && dirtyCount > 0)) {
+      const colorsPtr = engine.colors_ptr();
+      this.gl.texSubImage2D(
+        this.gl.TEXTURE_2D, 0, 0, 0,
+        this.worldWidth, this.worldHeight,
+        this.gl.RGBA, this.gl.UNSIGNED_BYTE,
+        this.memoryView!, colorsPtr
+      );
+    } else {
+      // Upload only dirty chunks
+      const dirtyListPtr = engine.get_dirty_list_ptr();
+      const dirtyList = new Uint32Array(memory.buffer, dirtyListPtr, dirtyCount);
+      
+      // Calculate max valid chunk positions to avoid overflow
+      const maxChunkX = Math.floor(this.worldWidth / CHUNK_SIZE);
+      const maxChunkY = Math.floor(this.worldHeight / CHUNK_SIZE);
+
+      for (let i = 0; i < dirtyCount; i++) {
+        const chunkIdx = dirtyList[i];
+        
+        const cx = chunkIdx % chunksX;
+        const cy = (chunkIdx / chunksX) | 0;
+        
+        // Skip edge chunks that would overflow texture bounds
+        // These will be updated on next full upload
+        if (cx >= maxChunkX || cy >= maxChunkY) continue;
+        
+        const pixelsPtr = engine.extract_chunk_pixels(chunkIdx);
+        
+        this.gl.texSubImage2D(
+          this.gl.TEXTURE_2D, 0,
+          cx * CHUNK_SIZE, cy * CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE,
+          this.gl.RGBA, this.gl.UNSIGNED_BYTE,
+          this.memoryView!, pixelsPtr
+        );
+      }
+    }
+  }
+
+  private drawTexturePass(transform: { zoom: number; panX: number; panY: number }): void {
+    this.gl.useProgram(this.texProgram);
+    
+    this.gl.uniform4f(this.uTexTransform, transform.zoom, transform.panX, transform.panY, 0);
+    this.gl.uniform2f(this.uTexWorldSize, this.worldWidth, this.worldHeight);
+    this.gl.uniform2f(this.uTexViewportSize, this.viewportWidth, this.viewportHeight);
+
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.quadBuffer);
+    const posLoc = this.gl.getAttribLocation(this.texProgram, 'a_position');
+    this.gl.enableVertexAttribArray(posLoc);
+    this.gl.vertexAttribPointer(posLoc, 2, this.gl.FLOAT, false, 0, 0);
+    
+    this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  private drawBorderPass(transform: { zoom: number; panX: number; panY: number }): void {
+    this.gl.useProgram(this.lineProgram);
+
+    this.gl.uniform4f(this.uLineTransform, transform.zoom, transform.panX, transform.panY, 0);
+    this.gl.uniform2f(this.uLineWorldSize, this.worldWidth, this.worldHeight);
+    this.gl.uniform2f(this.uLineViewportSize, this.viewportWidth, this.viewportHeight);
+
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.lineBuffer);
+    const posLoc = this.gl.getAttribLocation(this.lineProgram, 'a_position');
+    this.gl.enableVertexAttribArray(posLoc);
+    this.gl.vertexAttribPointer(posLoc, 2, this.gl.FLOAT, false, 0, 0);
+
+    // Outer Glow (transparent blue)
+    this.gl.lineWidth(3.0);
+    this.gl.uniform4f(this.uLineColor, 0.2, 0.5, 1.0, 0.4);
+    this.gl.drawArrays(this.gl.LINE_LOOP, 0, 4);
+
+    // Inner Sharp Line (bright blue)
+    this.gl.lineWidth(1.0);
+    this.gl.uniform4f(this.uLineColor, 0.4, 0.7, 1.0, 0.9);
+    this.gl.drawArrays(this.gl.LINE_LOOP, 0, 4);
+  }
+
+  /**
+   * Resize both viewport and world
+   */
+  resize(width: number, height: number): void {
+    this.worldWidth = Math.floor(width);
+    this.worldHeight = Math.floor(height);
+    this.viewportWidth = this.worldWidth;
+    this.viewportHeight = this.worldHeight;
+    
+    // Resize texture
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    this.gl.texImage2D(
+      this.gl.TEXTURE_2D, 0, this.gl.RGBA,
+      this.worldWidth, this.worldHeight, 0,
+      this.gl.RGBA, this.gl.UNSIGNED_BYTE, null
+    );
+    
+    // Update border geometry
+    this.updateBorderBuffer();
+    
+    console.log(`🎮 WebGLRenderer resized: ${this.worldWidth}x${this.worldHeight}`);
+  }
+
+  /**
+   * Render thermal mode: upload ImageData to texture and draw
+   */
+  renderThermal(imageData: ImageData, transform: { zoom: number; panX: number; panY: number }): void {
+    const gl = this.gl;
+    
+    // Clear with dark background
+    gl.clearColor(0.04, 0.04, 0.04, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    
+    // Upload thermal image data to texture
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D, 0, 0, 0,
+      gl.RGBA, gl.UNSIGNED_BYTE,
+      imageData
+    );
+    
+    // Draw texture with transform
+    this.drawTexturePass(transform);
+    
+    // Draw border
+    this.drawBorderPass(transform);
+  }
+
+  // === Buffer Helpers ===
+
+  private createQuadBuffer(): WebGLBuffer {
+    const buffer = this.gl.createBuffer()!;
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
+    const positions = new Float32Array([
+      -1, -1,
+       1, -1,
+      -1,  1,
+       1,  1,
+    ]);
+    this.gl.bufferData(this.gl.ARRAY_BUFFER, positions, this.gl.STATIC_DRAW);
+    return buffer;
+  }
+
+  private createBorderBuffer(): WebGLBuffer {
+    const buffer = this.gl.createBuffer()!;
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
+    // Border coordinates in world pixels (0,0) -> (W,0) -> (W,H) -> (0,H)
+    const vertices = new Float32Array([
+      0, 0,
+      this.worldWidth, 0,
+      this.worldWidth, this.worldHeight,
+      0, this.worldHeight
+    ]);
+    this.gl.bufferData(this.gl.ARRAY_BUFFER, vertices, this.gl.DYNAMIC_DRAW);
+    return buffer;
+  }
+
+  private updateBorderBuffer(): void {
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.lineBuffer);
+    const vertices = new Float32Array([
+      0, 0,
+      this.worldWidth, 0,
+      this.worldWidth, this.worldHeight,
+      0, this.worldHeight
+    ]);
+    this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 0, vertices);
+  }
+
+  private createProgram(vs: string, fs: string): WebGLProgram {
+    const p = this.gl.createProgram()!;
+    const v = this.compileShader(this.gl.VERTEX_SHADER, vs);
+    const f = this.compileShader(this.gl.FRAGMENT_SHADER, fs);
+    this.gl.attachShader(p, v);
+    this.gl.attachShader(p, f);
+    this.gl.linkProgram(p);
+    if (!this.gl.getProgramParameter(p, this.gl.LINK_STATUS)) {
+      throw new Error(this.gl.getProgramInfoLog(p)!);
+    }
+    return p;
+  }
+
+  private compileShader(type: number, src: string): WebGLShader {
+    const s = this.gl.createShader(type)!;
+    this.gl.shaderSource(s, src);
+    this.gl.compileShader(s);
+    if (!this.gl.getShaderParameter(s, this.gl.COMPILE_STATUS)) {
+      throw new Error(this.gl.getShaderInfoLog(s)!);
+    }
+    return s;
+  }
+
+  destroy(): void {
+    this.gl.deleteTexture(this.texture);
+    this.gl.deleteProgram(this.texProgram);
+    this.gl.deleteProgram(this.lineProgram);
+    this.gl.deleteBuffer(this.quadBuffer);
+    this.gl.deleteBuffer(this.lineBuffer);
+  }
+}
+
+// === SHADERS ===
+
+// Texture shader - renders world pixels
+const TEX_VERTEX_SHADER = `#version 300 es
+precision highp float;
+
+in vec2 a_position;
+out vec2 v_texCoord;
+
+uniform vec4 u_transform;     // x=zoom, y=panX, z=panY
+uniform vec2 u_worldSize;
+uniform vec2 u_viewportSize;
+
+void main() {
+  v_texCoord = a_position * 0.5 + 0.5;
+  v_texCoord.y = 1.0 - v_texCoord.y;
+  
+  vec2 pos = a_position;
+  
+  // Aspect ratio correction
+  float worldAspect = u_worldSize.x / u_worldSize.y;
+  float viewportAspect = u_viewportSize.x / u_viewportSize.y;
+  
+  if (worldAspect > viewportAspect) {
+    pos.y *= viewportAspect / worldAspect;
+  } else {
+    pos.x *= worldAspect / viewportAspect;
+  }
+  
+  // Transform (clip): zoom around viewport center, then apply screen-space pan
+  
+  // 1. Zoom FIRST (scale from origin)
+  pos *= u_transform.x;
+  
+  // 2. Pan SECOND (translate in clip space)
+  vec2 panClip = (u_transform.yz / u_viewportSize) * 2.0;
+  panClip.y = -panClip.y;
+  pos += panClip;
+  
+  gl_Position = vec4(pos, 0.0, 1.0);
+}`;
+
+// Phase 5: Fragment shader with Bloom/Glow post-processing
+const TEX_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+in vec2 v_texCoord;
+out vec4 outColor;
+
+uniform sampler2D u_image;
+uniform vec2 u_worldSize;
+
+// Pseudo-Bloom: sample neighbors for glow effect
+vec3 getBloom(vec2 uv) {
+    vec3 sum = vec3(0.0);
+    vec2 pixel = 1.0 / u_worldSize;
+    
+    // 8-direction sampling for glow
+    sum += texture(u_image, uv + vec2(-pixel.x, 0.0)).rgb;
+    sum += texture(u_image, uv + vec2(pixel.x, 0.0)).rgb;
+    sum += texture(u_image, uv + vec2(0.0, -pixel.y)).rgb;
+    sum += texture(u_image, uv + vec2(0.0, pixel.y)).rgb;
+    sum += texture(u_image, uv + vec2(-pixel.x, -pixel.y)).rgb * 0.7;
+    sum += texture(u_image, uv + vec2(pixel.x, -pixel.y)).rgb * 0.7;
+    sum += texture(u_image, uv + vec2(-pixel.x, pixel.y)).rgb * 0.7;
+    sum += texture(u_image, uv + vec2(pixel.x, pixel.y)).rgb * 0.7;
+    
+    return sum * 0.12; // Glow intensity
+}
+
+void main() {
+    vec4 color = texture(u_image, v_texCoord);
+    
+    // 1. Brightness threshold - only hot pixels glow (Fire/Lava/Spark)
+    // Fire is orange/red, Lava is red/yellow - high R channel
+    float brightness = max(color.r, max(color.g * 0.8, color.b * 0.3));
+    
+    vec3 glow = vec3(0.0);
+    if (brightness > 0.6) {
+        glow = getBloom(v_texCoord) * (brightness - 0.5);
+    }
+    
+    // 2. Additive blending
+    vec3 finalColor = color.rgb + glow;
+    
+    // 3. Subtle vignette (darken edges)
+    vec2 uv = v_texCoord * (1.0 - v_texCoord.yx);
+    float vig = uv.x * uv.y * 20.0;
+    vig = clamp(pow(vig, 0.15), 0.6, 1.0);
+    finalColor *= vig;
+    
+    // 4. Tone mapping (Reinhard) - prevents oversaturation
+    finalColor = finalColor / (finalColor + vec3(1.0));
+    
+    // 5. Slight contrast boost
+    finalColor = pow(finalColor, vec3(0.95));
+    
+    outColor = vec4(finalColor, color.a);
+}`;
+
+// Line shader - renders border
+const LINE_VERTEX_SHADER = `#version 300 es
+precision highp float;
+
+in vec2 a_position;  // In world pixels
+
+uniform vec4 u_transform;
+uniform vec2 u_worldSize;
+uniform vec2 u_viewportSize;
+
+void main() {
+  // Convert world pixels to normalized (0..1)
+  vec2 norm = a_position / u_worldSize;
+  
+  // Convert to clip space (-1..1)
+  vec2 clip = norm * 2.0 - 1.0;
+  clip.y = -clip.y;
+  
+  // Aspect ratio correction (same as texture)
+  float worldAspect = u_worldSize.x / u_worldSize.y;
+  float viewportAspect = u_viewportSize.x / u_viewportSize.y;
+  
+  if (worldAspect > viewportAspect) {
+    clip.y *= viewportAspect / worldAspect;
+  } else {
+    clip.x *= worldAspect / viewportAspect;
+  }
+  
+  // Transform (clip): zoom around viewport center, then apply screen-space pan
+  // 1. Zoom FIRST
+  clip *= u_transform.x;
+  
+  // 2. Pan SECOND
+  vec2 panClip = (u_transform.yz / u_viewportSize) * 2.0;
+  panClip.y = -panClip.y;
+  clip += panClip;
+  
+  gl_Position = vec4(clip, 0.0, 1.0);
+}`;
+
+const LINE_FRAGMENT_SHADER = `#version 300 es
+precision mediump float;
+
+uniform vec4 u_color;
+out vec4 outColor;
+
+void main() {
+  outColor = u_color;
+}`;
+
+--- End of File: apps/web/src/lib/engine/WebGLRenderer.ts ---
+
+
+--- File: apps/web/src/lib/engine/WorkerBridge.ts ---
+
+/**
+ * WorkerBridge - Main thread interface to simulation worker
+ * 
+ * Phase 5: Uses SharedArrayBuffer Ring Buffer for zero-latency input!
+ * 
+ * Provides the same API as WasmParticleEngine but delegates to worker.
+ * Main thread never touches WASM directly.
+ */
+
+import type { ElementType, RenderMode, ToolType } from './types'
+import { screenToWorld as invertTransform } from './transform'
+import { 
+  SharedInputBuffer, 
+  getInputBufferSize, 
+  isSharedArrayBufferAvailable
+} from '../InputBuffer'
+
+// Create worker with Vite's ?worker import
+import SimulationWorker from '@/workers/simulation.worker.ts?worker'
+
+export interface SimulationStats {
+  fps: number
+  particleCount: number
+}
+
+export type StatsCallback = (stats: SimulationStats) => void
+export type ReadyCallback = (width: number, height: number) => void
+export type ErrorCallback = (message: string) => void
+
+/**
+ * Bridge between Main Thread and Simulation Worker
+ * 
+ * Usage:
+ * ```ts
+ * const bridge = new WorkerBridge()
+ * bridge.onStats = (stats) => setFps(stats.fps)
+ * await bridge.init(canvas, width, height)
+ * bridge.play()
+ * bridge.addParticles(x, y, radius, element)
+ * ```
+ */
+// Element name to ID mapping (must match Rust elements.rs)
+const ELEMENT_TO_ID: Record<ElementType, number> = {
+  'empty': 0, 'stone': 1, 'sand': 2, 'wood': 3, 'metal': 4, 'ice': 5,
+  'water': 6, 'oil': 7, 'lava': 8, 'acid': 9, 'steam': 10, 'smoke': 11,
+  'fire': 12, 'spark': 13, 'electricity': 14, 'gunpowder': 15,
+  'clone': 16, 'void': 17, 'dirt': 18, 'seed': 19, 'plant': 20
+}
+
+export class WorkerBridge {
+  private worker: Worker | null = null
+  private _width: number = 0
+  private _height: number = 0
+  private _isReady: boolean = false
+  
+  // Phase 5: Shared input buffer for zero-latency input
+  private inputBuffer: SharedInputBuffer | null = null
+  private useSharedInput: boolean = false
+  
+  // Callbacks
+  public onStats: StatsCallback | null = null
+  public onReady: ReadyCallback | null = null
+  public onError: ErrorCallback | null = null
+  
+  // Camera state (stored on main thread for coordinate conversion)
+  private zoom: number = 1
+  private panX: number = 0
+  private panY: number = 0
+  
+  constructor() {
+    // Worker will be created on init
+  }
+  
+  /**
+   * Initialize the simulation worker with an OffscreenCanvas
+   */
+  async init(canvas: HTMLCanvasElement, width: number, height: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        // Create worker
+        this.worker = new SimulationWorker()
+        this._width = width
+        this._height = height
+        
+        // Setup message handler
+        this.worker.onmessage = (e) => {
+          const msg = e.data
+          
+          switch (msg.type) {
+            case 'READY':
+              this._isReady = true
+              this._width = msg.width
+              this._height = msg.height
+              this.onReady?.(msg.width, msg.height)
+              resolve()
+              break
+              
+            case 'STATS':
+              this.onStats?.({
+                fps: msg.fps,
+                particleCount: msg.particleCount
+              })
+              break
+              
+            case 'ERROR':
+              this.onError?.(msg.message)
+              reject(new Error(msg.message))
+              break
+          }
+        }
+        
+        this.worker.onerror = (e) => {
+          this.onError?.(e.message)
+          reject(e)
+        }
+        
+        // Transfer canvas control to worker
+        const offscreen = canvas.transferControlToOffscreen()
+        
+        // Phase 5: Create shared input buffer if available
+        let inputBufferData: SharedArrayBuffer | null = null
+        if (isSharedArrayBufferAvailable()) {
+          try {
+            inputBufferData = new SharedArrayBuffer(getInputBufferSize())
+            this.inputBuffer = new SharedInputBuffer(inputBufferData)
+            this.useSharedInput = true
+            console.log('🚀 WorkerBridge: Using SharedArrayBuffer for input (zero-latency)')
+          } catch (e) {
+            console.warn('SharedArrayBuffer not available, falling back to postMessage')
+          }
+        }
+        
+        // Send init message with canvas and optional input buffer
+        this.worker.postMessage(
+          {
+            type: 'INIT',
+            canvas: offscreen,
+            width,
+            height,
+            inputBuffer: inputBufferData // May be null
+          },
+          [offscreen] // Transfer list (SAB is not transferred, just shared)
+        )
+        
+      } catch (error) {
+        reject(error)
+      }
+    })
+  }
+  
+  // === Getters ===
+  
+  get width(): number { return this._width }
+  get height(): number { return this._height }
+  get isReady(): boolean { return this._isReady }
+  
+  // === Playback Control ===
+  
+  play(): void {
+    this.worker?.postMessage({ type: 'PLAY' })
+  }
+  
+  pause(): void {
+    this.worker?.postMessage({ type: 'PAUSE' })
+  }
+  
+  clear(): void {
+    this.worker?.postMessage({ type: 'CLEAR' })
+  }
+  
+  // === Input ===
+  
+  /**
+   * Add/remove particles (screen coordinates are converted to world)
+   * Phase 5: Uses SharedArrayBuffer when available for zero-latency!
+   */
+  handleInput(screenX: number, screenY: number, radius: number, element: ElementType, tool: ToolType): void {
+    const viewport = { width: this._width, height: this._height }
+    const world = invertTransform(
+      screenX,
+      screenY,
+      { zoom: this.zoom, panX: this.panX, panY: this.panY },
+      viewport
+    )
+    const worldX = Math.floor(world.x)
+    const worldY = Math.floor(world.y)
+    
+    // DEBUG: Log coordinate conversion
+    console.log(`🎯 Bridge.handleInput: screen(${screenX.toFixed(0)}, ${screenY.toFixed(0)}) → world(${worldX}, ${worldY}) | bridge.zoom=${this.zoom.toFixed(2)} bridge.pan=(${this.panX.toFixed(0)}, ${this.panY.toFixed(0)})`)
+    
+    // Phase 5: Use shared buffer for instant input (no postMessage delay!)
+    if (this.useSharedInput && this.inputBuffer) {
+      if (tool === 'eraser') {
+        this.inputBuffer.pushErase(worldX, worldY, radius)
+      } else if (tool === 'brush') {
+        const elementId = ELEMENT_TO_ID[element] ?? 0
+        if (elementId !== 0) { // Don't push empty
+          this.inputBuffer.pushBrush(worldX, worldY, radius, elementId)
+        }
+      }
+      return
+    }
+    
+    // Fallback: postMessage (slower but always works)
+    this.worker?.postMessage({
+      type: 'INPUT',
+      x: screenX,
+      y: screenY,
+      radius,
+      element,
+      tool
+    })
+  }
+  
+  /**
+   * Shorthand for brush tool
+   */
+  addParticles(screenX: number, screenY: number, radius: number, element: ElementType): void {
+    this.handleInput(screenX, screenY, radius, element, 'brush')
+  }
+  
+  /**
+   * Shorthand for eraser tool
+   */
+  removeParticles(screenX: number, screenY: number, radius: number): void {
+    this.handleInput(screenX, screenY, radius, 'empty', 'eraser')
+  }
+  
+  /**
+   * Signal end of stroke (mouseUp) - resets Bresenham interpolation
+   * CRITICAL: Must be called on mouseUp to prevent lines between strokes!
+   * Uses SAB sentinel when available to prevent race conditions!
+   */
+  endStroke(): void {
+    // Use SAB channel for end stroke (same channel as brush events = no race condition!)
+    if (this.useSharedInput && this.inputBuffer) {
+      this.inputBuffer.pushEndStroke()
+      return
+    }
+    // Fallback: postMessage
+    this.worker?.postMessage({ type: 'INPUT_END' })
+  }
+  
+  // === Camera ===
+  
+  setTransform(zoom: number, panX: number, panY: number): void {
+    this.zoom = zoom
+    this.panX = panX
+    this.panY = panY
+    
+    this.worker?.postMessage({
+      type: 'TRANSFORM',
+      zoom,
+      panX,
+      panY
+    })
+  }
+  
+  getTransform(): { zoom: number; panX: number; panY: number } {
+    return { zoom: this.zoom, panX: this.panX, panY: this.panY }
+  }
+  
+  /**
+   * Convert screen coordinates to world coordinates
+   */
+  screenToWorld(screenX: number, screenY: number): { x: number; y: number } {
+    const viewport = { width: this._width, height: this._height }
+    const world = invertTransform(
+      screenX,
+      screenY,
+      { zoom: this.zoom, panX: this.panX, panY: this.panY },
+      viewport
+    )
+    return {
+      x: Math.floor(world.x),
+      y: Math.floor(world.y)
+    }
+  }
+  
+  // === Settings ===
+  
+  setSettings(settings: {
+    gravity?: { x: number; y: number }
+    ambientTemperature?: number
+    speed?: number
+  }): void {
+    this.worker?.postMessage({
+      type: 'SETTINGS',
+      ...settings
+    })
+  }
+  
+  setRenderMode(mode: RenderMode): void {
+    this.worker?.postMessage({
+      type: 'SET_RENDER_MODE',
+      mode
+    })
+  }
+  
+  // === Lifecycle ===
+  
+  resize(width: number, height: number): void {
+    this._width = width
+    this._height = height
+    
+    this.worker?.postMessage({
+      type: 'RESIZE',
+      width,
+      height
+    })
+  }
+  
+  destroy(): void {
+    this.worker?.terminate()
+    this.worker = null
+    this._isReady = false
+  }
+}
+
+/**
+ * Check if WebWorkers with OffscreenCanvas are supported
+ */
+export function isWorkerSupported(): boolean {
+  return (
+    typeof Worker !== 'undefined' &&
+    typeof OffscreenCanvas !== 'undefined' &&
+    // Check if we can transfer canvas control
+    typeof HTMLCanvasElement.prototype.transferControlToOffscreen === 'function'
+  )
+}
+
+/**
+ * Check if SharedArrayBuffer is available (COOP/COEP headers set)
+ */
+export function isSharedMemorySupported(): boolean {
+  return typeof SharedArrayBuffer !== 'undefined'
+}
+
+--- End of File: apps/web/src/lib/engine/WorkerBridge.ts ---
+
+
 --- File: apps/web/src/lib/engine/elements.ts ---
 
 /**
@@ -2406,6 +3533,148 @@ export { WasmParticleEngine as ParticleEngine } from './WasmParticleEngine'
 --- End of File: apps/web/src/lib/engine/index.ts ---
 
 
+--- File: apps/web/src/lib/engine/transform.ts ---
+
+export interface Dimensions {
+  width: number
+  height: number
+}
+
+export interface CameraTransform {
+  zoom: number
+  panX: number
+  panY: number
+}
+
+function screenToClip(
+  sx: number,
+  sy: number,
+  viewport: Dimensions
+): { x: number; y: number } {
+  return {
+    x: (sx / viewport.width) * 2 - 1,
+    y: 1 - (sy / viewport.height) * 2
+  }
+}
+
+function applyAspectCorrection(
+  clip: { x: number; y: number },
+  world: Dimensions,
+  viewport: Dimensions,
+  invert: boolean
+): { x: number; y: number } {
+  const worldAspect = world.width / world.height
+  const viewportAspect = viewport.width / viewport.height
+
+  // Shader scales the dominant axis to preserve aspect ratio.
+  // When inverting, we need to apply the reciprocal scale.
+  if (worldAspect > viewportAspect) {
+    const factor = viewportAspect / worldAspect
+    return invert ? { x: clip.x, y: clip.y * (worldAspect / viewportAspect) } : { x: clip.x, y: clip.y * factor }
+  } else {
+    const factor = worldAspect / viewportAspect
+    return invert ? { x: clip.x * (viewportAspect / worldAspect), y: clip.y } : { x: clip.x * factor, y: clip.y }
+  }
+}
+
+export function worldToClip(
+  worldX: number,
+  worldY: number,
+  camera: CameraTransform,
+  viewport: Dimensions,
+  world?: Dimensions
+): { x: number; y: number } {
+  const worldSize = world ?? viewport
+
+  let cx = (worldX / worldSize.width) * 2 - 1
+  let cy = -((worldY / worldSize.height) * 2 - 1)
+
+  const aspect = applyAspectCorrection({ x: cx, y: cy }, worldSize, viewport, false)
+  cx = aspect.x
+  cy = aspect.y
+
+  const panClipX = (camera.panX / viewport.width) * 2
+  const panClipY = -(camera.panY / viewport.height) * 2
+
+  return {
+    x: cx * camera.zoom + panClipX,
+    y: cy * camera.zoom + panClipY
+  }
+}
+
+/**
+ * Exact inverse of the shader transform.
+ */
+export function screenToWorld(
+  sx: number,
+  sy: number,
+  camera: CameraTransform,
+  viewport: Dimensions,
+  world?: Dimensions
+): { x: number; y: number } {
+  const worldSize = world ?? viewport
+
+  if (
+    viewport.width === 0 ||
+    viewport.height === 0 ||
+    worldSize.width === 0 ||
+    worldSize.height === 0
+  ) {
+    return { x: 0, y: 0 }
+  }
+
+  const clip = screenToClip(sx, sy, viewport)
+
+  const panClipX = (camera.panX / viewport.width) * 2
+  const panClipY = -(camera.panY / viewport.height) * 2
+
+  let cx = (clip.x - panClipX) / camera.zoom
+  let cy = (clip.y - panClipY) / camera.zoom
+
+  const aspect = applyAspectCorrection({ x: cx, y: cy }, worldSize, viewport, true)
+  cx = aspect.x
+  cy = aspect.y
+
+  cy = -cy
+
+  return {
+    x: ((cx + 1) * 0.5) * worldSize.width,
+    y: ((cy + 1) * 0.5) * worldSize.height
+  }
+}
+
+/**
+ * Compute pan needed to keep the world point under the cursor fixed
+ * when zooming to `newZoom`.
+ */
+export function solvePanForZoom(
+  pivotScreenX: number,
+  pivotScreenY: number,
+  newZoom: number,
+  camera: CameraTransform,
+  viewport: Dimensions,
+  world?: Dimensions
+): CameraTransform {
+  const worldSize = world ?? viewport
+
+  const targetClip = screenToClip(pivotScreenX, pivotScreenY, viewport)
+  const worldPoint = screenToWorld(pivotScreenX, pivotScreenY, camera, viewport, worldSize)
+
+  const baseClip = worldToClip(worldPoint.x, worldPoint.y, { zoom: newZoom, panX: 0, panY: 0 }, viewport, worldSize)
+
+  const panClipX = targetClip.x - baseClip.x
+  const panClipY = targetClip.y - baseClip.y
+
+  return {
+    zoom: newZoom,
+    panX: (panClipX / 2) * viewport.width,
+    panY: -(panClipY / 2) * viewport.height
+  }
+}
+
+--- End of File: apps/web/src/lib/engine/transform.ts ---
+
+
 --- File: apps/web/src/lib/engine/types.ts ---
 
 /**
@@ -2577,6 +3846,12 @@ export interface ISimulation {
   readonly height: number
 }
 
+// ============================================
+// RENDER & TOOL TYPES
+// ============================================
+export type RenderMode = 'normal' | 'thermal'
+export type ToolType = 'brush' | 'eraser' | 'pipette' | 'fill' | 'move'
+
 --- End of File: apps/web/src/lib/engine/types.ts ---
 
 
@@ -2706,6 +3981,685 @@ export const useToolStore = create<ToolState>((set) => ({
 }))
 
 --- End of File: apps/web/src/stores/toolStore.ts ---
+
+
+--- File: apps/web/src/workers/simulation.worker.ts ---
+
+/**
+ * Simulation Worker - Runs WASM physics in separate thread
+ * 
+ * Phase 1 (WebWorker): UI never blocks, physics runs independently
+ * Phase 2 (Zero-Copy): Direct memory access via SharedArrayBuffer views
+ * 
+ * Message Protocol:
+ * - Main → Worker: INIT, PLAY, PAUSE, SET_TOOL, INPUT, TRANSFORM, SETTINGS, CLEAR, RESIZE
+ * - Worker → Main: READY, STATS, ERROR
+ */
+
+// Worker-side types (can't import from main - workers are isolated)
+// MUST match types.ts ElementType exactly!
+type ElementType = 
+  | 'empty'
+  | 'stone' | 'sand' | 'wood' | 'metal' | 'ice'
+  | 'water' | 'oil' | 'lava' | 'acid'
+  | 'steam' | 'smoke'
+  | 'fire' | 'spark' | 'electricity'
+  | 'gunpowder'
+  | 'clone' | 'void'
+  | 'dirt' | 'seed' | 'plant'
+
+type RenderMode = 'normal' | 'thermal'
+type ToolType = 'brush' | 'eraser' | 'pipette' | 'move'
+
+// Phase 5: Import SharedInputBuffer for zero-latency input
+import { SharedInputBuffer, INPUT_TYPE_ERASE, INPUT_TYPE_END_STROKE, INPUT_TYPE_BRUSH_OFFSET } from '../lib/InputBuffer'
+import { screenToWorld as invertTransform } from '../lib/engine/transform'
+
+// Phase 3: WebGL Renderer for GPU-accelerated rendering
+import { WebGLRenderer } from '../lib/engine/WebGLRenderer'
+
+// Message types
+interface InitMessage {
+  type: 'INIT'
+  canvas: OffscreenCanvas
+  width: number
+  height: number
+  inputBuffer?: SharedArrayBuffer // Phase 5: Optional shared input buffer
+}
+
+interface InputMessage {
+  type: 'INPUT'
+  x: number
+  y: number
+  radius: number
+  element: ElementType
+  tool: ToolType
+}
+
+interface TransformMessage {
+  type: 'TRANSFORM'
+  zoom: number
+  panX: number
+  panY: number
+}
+
+interface SettingsMessage {
+  type: 'SETTINGS'
+  gravity?: { x: number; y: number }
+  ambientTemperature?: number
+  speed?: number
+}
+
+interface RenderModeMessage {
+  type: 'SET_RENDER_MODE'
+  mode: RenderMode
+}
+
+interface ResizeMessage {
+  type: 'RESIZE'
+  width: number
+  height: number
+}
+
+type WorkerMessage = 
+  | InitMessage
+  | InputMessage
+  | TransformMessage
+  | SettingsMessage
+  | RenderModeMessage
+  | ResizeMessage
+  | { type: 'PLAY' }
+  | { type: 'PAUSE' }
+  | { type: 'CLEAR' }
+  | { type: 'INPUT_END' }  // Phase 5: Reset Bresenham tracking
+
+// Worker state
+let engine: any = null
+let wasmModule: any = null
+let wasmMemory: WebAssembly.Memory | null = null
+let canvas: OffscreenCanvas | null = null
+
+// Phase 3: WebGL Renderer (replaces Canvas2D)
+let renderer: WebGLRenderer | null = null
+let useWebGL = true // Feature flag for fallback
+
+// Phase 5: Shared input buffer for zero-latency input
+let sharedInputBuffer: SharedInputBuffer | null = null
+
+// Canvas2D for thermal mode (and fallback)
+let thermalCanvas: OffscreenCanvas | null = null
+let ctx: OffscreenCanvasRenderingContext2D | null = null
+let imageData: ImageData | null = null
+let pixels: Uint8ClampedArray | null = null
+let pixels32: Uint32Array | null = null
+
+// Memory views (zero-copy into WASM)
+let typesView: Uint8Array | null = null
+let colorsView: Uint32Array | null = null
+let temperatureView: Float32Array | null = null
+
+// Simulation state
+let isPlaying = false
+let speed = 1
+let renderMode: RenderMode = 'normal'
+
+// Camera state
+let zoom = 1
+let panX = 0
+let panY = 0
+
+// Animation
+// Note: animationFrameId stored but only used for potential future cancellation
+let lastTime = 0
+
+// FPS tracking (zero-allocation ring buffer)
+const FPS_SAMPLES = 20
+const fpsBuffer = new Float32Array(FPS_SAMPLES)
+let fpsIndex = 0
+let fpsCount = 0
+
+// Stats update throttling
+let lastStatsUpdate = 0
+const STATS_INTERVAL = 200 // ms
+
+// Constants
+const BG_COLOR_32 = 0xFF0A0A0A
+const EL_EMPTY = 0
+
+// Element mapping - MUST match Rust elements.rs exactly!
+const ELEMENT_MAP: Record<ElementType, number> = {
+  empty: 0,
+  stone: 1,
+  sand: 2,
+  wood: 3,
+  metal: 4,
+  ice: 5,
+  water: 6,
+  oil: 7,
+  lava: 8,
+  acid: 9,
+  steam: 10,
+  smoke: 11,
+  fire: 12,
+  spark: 13,
+  electricity: 14,
+  gunpowder: 15,
+  clone: 16,
+  void: 17,
+  dirt: 18,
+  seed: 19,
+  plant: 20
+}
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
+
+async function initEngine(initCanvas: OffscreenCanvas, width: number, height: number, inputBuffer?: SharedArrayBuffer) {
+  try {
+    canvas = initCanvas
+    
+    // CRITICAL: Set canvas size! OffscreenCanvas doesn't inherit from HTMLCanvasElement
+    canvas.width = width
+    canvas.height = height
+    
+    // Phase 5: Setup shared input buffer if provided
+    if (inputBuffer) {
+      sharedInputBuffer = new SharedInputBuffer(inputBuffer)
+      console.log('🚀 Worker: Using SharedArrayBuffer for input (zero-latency)')
+    }
+    
+    // Import WASM module dynamically
+    // @ts-ignore - Dynamic import in worker
+    const wasm = await import('@particula/engine-wasm')
+    const wasmExports = await wasm.default()
+    
+    wasmModule = wasm
+    // CRITICAL: memory is returned from default(), not wasm.memory!
+    wasmMemory = wasmExports.memory
+    
+    if (!wasmMemory) {
+      console.error('WASM memory not found! Exports:', Object.keys(wasmExports))
+      throw new Error('WASM memory not available')
+    }
+    
+    console.log(`🚀 Worker: WASM memory size: ${wasmMemory.buffer.byteLength} bytes`)
+    
+    // Create world
+    engine = new wasm.World(width, height)
+    
+    // Phase 3: Try WebGL first (GPU-accelerated)
+    try {
+      renderer = new WebGLRenderer(canvas, width, height)
+      useWebGL = true
+      console.log('🎮 Worker: WebGL 2.0 Renderer active!')
+    } catch (e) {
+      console.warn('WebGL not available, falling back to Canvas2D:', e)
+      useWebGL = false
+    }
+    
+    // ALWAYS create Canvas2D resources for thermal mode fallback
+    // Create a separate OffscreenCanvas for thermal rendering
+    thermalCanvas = new OffscreenCanvas(width, height)
+    ctx = thermalCanvas.getContext('2d', { 
+      alpha: false,
+      desynchronized: true
+    }) as OffscreenCanvasRenderingContext2D
+    
+    if (ctx) {
+      ctx.imageSmoothingEnabled = false
+      imageData = new ImageData(width, height)
+      pixels = imageData.data
+      pixels32 = new Uint32Array(pixels.buffer)
+      console.log('🌡️ Worker: Thermal mode canvas ready')
+    }
+    
+    console.log(`🚀 Worker: Canvas ${width}x${height}, Mode: ${useWebGL ? 'WebGL' : 'Canvas2D'}`)
+    
+    // Setup zero-copy memory views
+    updateMemoryViews()
+    
+    console.log('🚀 Worker: Engine initialized!')
+    
+    // Notify main thread
+    self.postMessage({ type: 'READY', width, height })
+    
+    // Start render loop
+    requestAnimationFrame(renderLoop)
+    
+  } catch (error) {
+    console.error('Worker init error:', error)
+    self.postMessage({ type: 'ERROR', message: String(error) })
+  }
+}
+
+function updateMemoryViews() {
+  if (!engine || !wasmMemory) return
+  
+  const size = engine.types_len()
+  const typesPtr = engine.types_ptr()
+  const colorsPtr = engine.colors_ptr()
+  const tempPtr = engine.temperature_ptr()
+  
+  typesView = new Uint8Array(wasmMemory.buffer, typesPtr, size)
+  colorsView = new Uint32Array(wasmMemory.buffer, colorsPtr, size)
+  temperatureView = new Float32Array(wasmMemory.buffer, tempPtr, size)
+}
+
+// ============================================================================
+// RENDER LOOP
+// ============================================================================
+
+function renderLoop(time: number) {
+  // Check if we have everything needed for rendering
+  const hasWebGL = useWebGL && renderer && engine && canvas && wasmMemory
+  const hasCanvas2D = !useWebGL && ctx && engine && canvas
+  
+  if (!hasWebGL && !hasCanvas2D) {
+    requestAnimationFrame(renderLoop)
+    return
+  }
+  
+  // FPS calculation (zero-allocation)
+  const delta = time - lastTime
+  if (delta > 0) {
+    fpsBuffer[fpsIndex] = 1000 / delta
+    fpsIndex = (fpsIndex + 1) % FPS_SAMPLES
+    if (fpsCount < FPS_SAMPLES) fpsCount++
+  }
+  lastTime = time
+  
+  // Phase 5: Process shared input buffer (zero-latency!)
+  processSharedInput()
+  
+  // Physics step
+  if (isPlaying) {
+    const steps = speed >= 1 ? Math.floor(speed) : 1
+    for (let i = 0; i < steps; i++) {
+      engine.step()
+    }
+    // Memory might have grown
+    updateMemoryViews()
+  }
+  
+  // Render
+  renderFrame()
+  
+  // Send stats (throttled)
+  if (time - lastStatsUpdate > STATS_INTERVAL) {
+    sendStats()
+    lastStatsUpdate = time
+  }
+  
+  requestAnimationFrame(renderLoop)
+}
+
+function renderFrame() {
+  if (!engine || !canvas) return
+  
+  const transform = { zoom, panX, panY }
+  
+  // Thermal mode path (uses Canvas2D to render, then uploads to WebGL)
+  if (renderMode === 'thermal') {
+    if (!ctx || !pixels || !imageData || !temperatureView) return
+    
+    // Render thermal to ImageData
+    renderThermal()
+    ctx.putImageData(imageData, 0, 0)
+    
+    // Use WebGL to display with transform (if available)
+    if (useWebGL && renderer) {
+      renderer.renderThermal(imageData, transform)
+    }
+    // If no WebGL, thermalCanvas already has the image (but no transform)
+    return
+  }
+  
+  // Phase 3: WebGL Path (GPU-accelerated)
+  if (useWebGL && renderer && wasmMemory) {
+    // Use dirty rectangles for optimal GPU upload
+    renderer.renderWithDirtyRects(engine, wasmMemory, transform)
+    return
+  }
+  
+  // Fallback: Canvas2D Path (when WebGL not available)
+  if (!ctx || !pixels32 || !imageData || !colorsView || !typesView) return
+  
+  const width = canvas.width
+  const height = canvas.height
+  
+  // 1. Render to ImageData
+  renderNormal()
+  
+  // 2. Put pixels to context
+  ctx.putImageData(imageData, 0, 0)
+  
+  // 3. Draw to screen with camera transform (if we had a separate screen canvas)
+  // For OffscreenCanvas in worker, this IS the screen
+  // We need to handle zoom/pan differently - draw to a buffer first
+  
+  // Clear and apply transform for world border
+  // (The main render is already done via putImageData)
+  drawWorldBorder(width, height)
+}
+
+function renderNormal() {
+  if (!pixels32 || !colorsView || !typesView) return
+  
+  const len = Math.min(typesView.length, pixels32.length)
+  
+  // Direct copy (WASM provides ABGR format)
+  pixels32.set(colorsView.subarray(0, len))
+  
+  // Fix empty cells to background
+  for (let i = 0; i < len; i++) {
+    if (typesView[i] === EL_EMPTY) {
+      pixels32[i] = BG_COLOR_32
+    }
+  }
+}
+
+function renderThermal() {
+  if (!pixels || !temperatureView) return
+  
+  const len = Math.min(temperatureView.length, pixels.length / 4)
+  
+  for (let i = 0; i < len; i++) {
+    const temp = temperatureView[i]
+    const base = i << 2
+    
+    const [r, g, b] = getThermalColor(temp)
+    
+    pixels[base] = r
+    pixels[base + 1] = g
+    pixels[base + 2] = b
+    pixels[base + 3] = 255
+  }
+}
+
+function getThermalColor(t: number): [number, number, number] {
+  if (t < 0) {
+    const intensity = Math.min(1, Math.abs(t) / 30)
+    return [0, 0, Math.floor(128 + 127 * intensity)]
+  }
+  if (t < 20) {
+    const ratio = t / 20
+    return [0, Math.floor(ratio * 255), 255]
+  }
+  if (t < 50) {
+    const ratio = (t - 20) / 30
+    return [0, 255, Math.floor(255 * (1 - ratio))]
+  }
+  if (t < 100) {
+    const ratio = (t - 50) / 50
+    return [Math.floor(255 * ratio), 255, 0]
+  }
+  if (t < 500) {
+    const ratio = (t - 100) / 400
+    return [255, Math.floor(255 * (1 - ratio)), 0]
+  }
+  const ratio = Math.min(1, (t - 500) / 500)
+  return [255, Math.floor(255 * ratio), Math.floor(255 * ratio)]
+}
+
+function drawWorldBorder(width: number, height: number) {
+  if (!ctx) return
+  
+  // Outer glow
+  ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)'
+  ctx.lineWidth = 6
+  ctx.strokeRect(-3, -3, width + 6, height + 6)
+  
+  // Middle glow
+  ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)'
+  ctx.lineWidth = 3
+  ctx.strokeRect(-1.5, -1.5, width + 3, height + 3)
+  
+  // Inner sharp border
+  ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(0, 0, width, height)
+}
+
+// ============================================================================
+// INPUT HANDLING
+// ============================================================================
+
+function handleInput(x: number, y: number, radius: number, element: ElementType, tool: ToolType) {
+  if (!engine) return
+  
+  // Apply camera transform to convert screen coords to world coords
+  const viewport = canvas ? { width: canvas.width, height: canvas.height } : { width: 0, height: 0 }
+  const world = invertTransform(
+    x,
+    y,
+    { zoom, panX, panY },
+    viewport
+  )
+  const worldX = Math.floor(world.x)
+  const worldY = Math.floor(world.y)
+  
+  const wasmElement = ELEMENT_MAP[element] ?? 0
+  
+  if (tool === 'eraser') {
+    engine.remove_particles_in_radius(worldX, worldY, radius)
+  } else if (tool === 'brush') {
+    if (wasmElement !== 0) {
+      engine.add_particles_in_radius(worldX, worldY, radius, wasmElement)
+    }
+  }
+  // pipette and move are handled on main thread (UI concerns)
+}
+
+// Phase 5: State for Bresenham line interpolation
+let lastInputX: number | null = null
+let lastInputY: number | null = null
+
+/**
+ * Bresenham's Line Algorithm for smooth drawing
+ * Draws a line of particles between (x0, y0) and (x1, y1)
+ */
+function drawLine(x0: number, y0: number, x1: number, y1: number, radius: number, elementType: number, isErase: boolean) {
+  if (!engine) return
+  
+  const dx = Math.abs(x1 - x0)
+  const dy = Math.abs(y1 - y0)
+  const sx = (x0 < x1) ? 1 : -1
+  const sy = (y0 < y1) ? 1 : -1
+  let err = dx - dy
+
+  while (true) {
+    // Apply brush at current point
+    if (isErase) {
+      engine.remove_particles_in_radius(x0, y0, radius)
+    } else {
+      engine.add_particles_in_radius(x0, y0, radius, elementType)
+    }
+
+    if (x0 === x1 && y0 === y1) break
+    
+    const e2 = 2 * err
+    if (e2 > -dy) { err -= dy; x0 += sx }
+    if (e2 < dx) { err += dx; y0 += sy }
+  }
+}
+
+/**
+ * Phase 5: Process all pending input from shared buffer
+ * Called every frame before physics step
+ * Uses Bresenham interpolation for smooth lines!
+ */
+function processSharedInput() {
+  if (!sharedInputBuffer || !engine) return
+  
+  // Read all events accumulated since last frame (zero-allocation!)
+  sharedInputBuffer.processAll((x, y, type, val) => {
+    // CRITICAL: Handle end-stroke sentinel FIRST - resets Bresenham state
+    // This goes through the same SAB channel as brush events, so no race conditions!
+    if (type === INPUT_TYPE_END_STROKE) {
+      lastInputX = null
+      lastInputY = null
+      return
+    }
+    
+    const currentX = Math.floor(x)
+    const currentY = Math.floor(y)
+    
+    // DEBUG: Log what worker receives
+    console.log(`🔧 Worker.processInput: world(${currentX}, ${currentY}) | worker.zoom=${zoom.toFixed(2)} worker.pan=(${panX.toFixed(0)}, ${panY.toFixed(0)})`)
+    const isErase = (type === INPUT_TYPE_ERASE)
+    const elementType = isErase ? 0 : (type - INPUT_TYPE_BRUSH_OFFSET)
+
+    // Guard against malformed element ids
+    if (!isErase && elementType <= 0) {
+      return
+    }
+
+    // If this is a new stroke or we lost tracking, start here
+    if (lastInputX === null || lastInputY === null) {
+      lastInputX = currentX
+      lastInputY = currentY
+      // Draw single point
+      if (isErase) {
+        engine.remove_particles_in_radius(currentX, currentY, val)
+      } else if (elementType !== 0) {
+        engine.add_particles_in_radius(currentX, currentY, val, elementType)
+      }
+      return
+    }
+
+    // Interpolate line from last known position to current
+    if (elementType !== 0 || isErase) {
+      drawLine(lastInputX, lastInputY, currentX, currentY, val, elementType, isErase)
+    }
+
+    // Update tracking
+    lastInputX = currentX
+    lastInputY = currentY
+  })
+}
+
+/**
+ * Reset input tracking (called on mouse up)
+ */
+function resetInputTracking() {
+  lastInputX = null
+  lastInputY = null
+}
+
+// ============================================================================
+// STATS
+// ============================================================================
+
+function sendStats() {
+  // Calculate average FPS (zero allocation)
+  let sum = 0
+  for (let i = 0; i < fpsCount; i++) {
+    sum += fpsBuffer[i]
+  }
+  const avgFps = fpsCount > 0 ? sum / fpsCount : 0
+  
+  const particleCount = engine?.particle_count ?? 0
+  
+  self.postMessage({
+    type: 'STATS',
+    fps: Math.round(avgFps),
+    particleCount
+  })
+}
+
+// ============================================================================
+// MESSAGE HANDLER
+// ============================================================================
+
+self.onmessage = (e: MessageEvent<WorkerMessage>) => {
+  const msg = e.data
+  
+  switch (msg.type) {
+    case 'INIT':
+      initEngine(msg.canvas, msg.width, msg.height, msg.inputBuffer)
+      break
+      
+    case 'PLAY':
+      isPlaying = true
+      break
+      
+    case 'PAUSE':
+      isPlaying = false
+      break
+      
+    case 'INPUT':
+      handleInput(msg.x, msg.y, msg.radius, msg.element, msg.tool)
+      break
+      
+    case 'INPUT_END':
+      // Phase 5: Reset Bresenham line tracking on mouse up
+      resetInputTracking()
+      break
+      
+    case 'TRANSFORM':
+      zoom = msg.zoom
+      panX = msg.panX
+      panY = msg.panY
+      break
+      
+    case 'SETTINGS':
+      if (msg.gravity && engine) {
+        engine.set_gravity(msg.gravity.x, msg.gravity.y)
+      }
+      if (msg.ambientTemperature !== undefined && engine) {
+        engine.set_ambient_temperature(msg.ambientTemperature)
+      }
+      if (msg.speed !== undefined) {
+        speed = msg.speed
+      }
+      break
+      
+    case 'SET_RENDER_MODE':
+      renderMode = msg.mode
+      break
+      
+    case 'CLEAR':
+      if (engine) {
+        engine.clear()
+      }
+      break
+      
+    case 'RESIZE':
+      if (engine && canvas) {
+        // CRITICAL: Force integer sizes to prevent "falling through" bug
+        const w = Math.floor(msg.width)
+        const h = Math.floor(msg.height)
+        
+        // Check if size actually changed
+        if (w === canvas.width && h === canvas.height) break
+        
+        // Recreate world with new size
+        engine = new wasmModule.World(w, h)
+        canvas.width = w
+        canvas.height = h
+        
+        // Phase 3: Resize WebGL renderer
+        if (useWebGL && renderer) {
+          renderer.resize(w, h)
+        } else if (ctx) {
+          // Canvas2D fallback
+          imageData = new ImageData(w, h)
+          pixels = imageData.data
+          pixels32 = new Uint32Array(pixels.buffer)
+        }
+        
+        updateMemoryViews()
+        console.log(`⚡ Resized World to: ${w}x${h}`)
+      }
+      break
+  }
+}
+
+// Export empty to make it a module
+export {}
+
+--- End of File: apps/web/src/workers/simulation.worker.ts ---
 
 
 --- File: packages/engine/src/behaviors/energy.rs ---
@@ -3700,56 +5654,50 @@ impl Behavior for UtilityBehavior {
 
 --- File: packages/engine/src/chunks.rs ---
 
-//! Chunk System - Spatial optimization for particle simulation
+//! Chunk System - Phase 5: BitSet Optimization
 //! 
-//! Phase 4: Divide world into chunks (32x32) for:
-//! - Skip processing of inactive/sleeping chunks
-//! - O(active_chunks) instead of O(W*H)
-//! - Wake neighbors when particles cross boundaries
+//! Optimization:
+//! - Vec<bool> (1 byte per chunk) -> Vec<u64> (1 bit per chunk)
+//! - 64x memory reduction for dirty flags
+//! - L1 Cache friendly iteration
 
 /// Chunk size in pixels (32x32 is cache-friendly)
 pub const CHUNK_SIZE: u32 = 32;
 
 /// Number of frames before a chunk goes to sleep
-/// Higher value = less aggressive sleeping, more correct behavior
-const SLEEP_THRESHOLD: u32 = 30;
+const SLEEP_THRESHOLD: u32 = 60;
 
 /// Chunk state
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChunkState {
-    /// Chunk has active particles that moved recently
     Active,
-    /// Chunk is dormant - no movement for SLEEP_THRESHOLD frames
     Sleeping,
 }
 
 /// Manages chunk-based spatial optimization
 pub struct ChunkGrid {
-    /// Number of chunks horizontally
     chunks_x: u32,
-    /// Number of chunks vertically  
     chunks_y: u32,
-    /// Total number of chunks
     chunk_count: usize,
     
-    /// Current state of each chunk
+    /// Number of u64 words needed for BitSet
+    u64_count: usize,
+    
     state: Vec<ChunkState>,
-    /// Dirty flag - chunk needs processing this frame
-    dirty: Vec<bool>,
-    /// Frames since last activity (for sleep detection)
+    
+    // === BITSET OPTIMIZATION (Phase 5) ===
+    // 1 bit = 1 chunk. u64 stores 64 chunks.
+    dirty_bits: Vec<u64>,
+    visual_dirty_bits: Vec<u64>,
+    
     idle_frames: Vec<u32>,
-    /// Number of non-empty cells in chunk (for quick empty check)
     particle_count: Vec<u32>,
     
-    // === Lazy Hydration System ===
-    /// Virtual temperature of air in each chunk (updated every frame, even sleeping)
+    // Lazy Hydration
     pub virtual_temp: Vec<f32>,
-    /// Flag: chunk just woke up from sleep, needs temperature hydration
     pub just_woke_up: Vec<bool>,
     
-    // === Visual Dirty (Phase 3 Fix: State Desync) ===
-    /// Visual dirty flag - chunk needs RENDERING (separate from physics dirty)
-    /// Cleared only when JS fetches the dirty list, not during physics!
+    // Legacy compatibility (world.rs uses visual_dirty[idx])
     pub visual_dirty: Vec<bool>,
 }
 
@@ -3760,20 +5708,52 @@ impl ChunkGrid {
         let chunks_y = (world_height + CHUNK_SIZE - 1) / CHUNK_SIZE;
         let chunk_count = (chunks_x * chunks_y) as usize;
         
+        // How many u64 needed to store chunk_count bits?
+        let u64_count = (chunk_count + 63) / 64;
+        
         Self {
             chunks_x,
             chunks_y,
             chunk_count,
-            state: vec![ChunkState::Active; chunk_count],  // Start active
-            dirty: vec![true; chunk_count],                 // All dirty initially
+            u64_count,
+            state: vec![ChunkState::Active; chunk_count],
+            // BitSet: all bits set = all dirty initially
+            dirty_bits: vec![!0u64; u64_count],
+            visual_dirty_bits: vec![!0u64; u64_count],
             idle_frames: vec![0; chunk_count],
             particle_count: vec![0; chunk_count],
-            // Lazy Hydration: init with room temperature
             virtual_temp: vec![20.0; chunk_count],
             just_woke_up: vec![false; chunk_count],
-            // Visual dirty: TRUE initially so first frame draws everything
+            // Legacy compatibility
             visual_dirty: vec![true; chunk_count],
         }
+    }
+    
+    // === BitSet Helpers ===
+    
+    #[inline(always)]
+    fn set_bit(bits: &mut [u64], idx: usize) {
+        let word = idx >> 6;  // idx / 64
+        let bit = idx & 63;   // idx % 64
+        if word < bits.len() {
+            bits[word] |= 1u64 << bit;
+        }
+    }
+
+    #[inline(always)]
+    fn clear_bit(bits: &mut [u64], idx: usize) {
+        let word = idx >> 6;
+        let bit = idx & 63;
+        if word < bits.len() {
+            bits[word] &= !(1u64 << bit);
+        }
+    }
+
+    #[inline(always)]
+    fn check_bit(bits: &[u64], idx: usize) -> bool {
+        let word = idx >> 6;
+        let bit = idx & 63;
+        word < bits.len() && (bits[word] & (1u64 << bit)) != 0
     }
     
     // === Chunk indexing ===
@@ -3804,44 +5784,37 @@ impl ChunkGrid {
         cx >= 0 && cx < self.chunks_x as i32 && cy >= 0 && cy < self.chunks_y as i32
     }
     
-    // === Dirty flag management ===
+    // === Dirty flag management (BitSet) ===
     
     /// Mark chunk as dirty (needs processing)
-    /// Lazy Hydration: detects Sleep -> Active transition
     #[inline]
     pub fn mark_dirty(&mut self, x: u32, y: u32) {
         let idx = self.chunk_index(x, y);
-        // Catch the wake-up moment for temperature hydration!
+        self.mark_dirty_idx(idx);
+    }
+    
+    /// Mark chunk as dirty by chunk index (BitSet version)
+    #[inline]
+    pub fn mark_dirty_idx(&mut self, idx: usize) {
+        if idx >= self.chunk_count { return; }
+        
         if self.state[idx] == ChunkState::Sleeping {
             self.just_woke_up[idx] = true;
         }
-        self.dirty[idx] = true;
+        
+        Self::set_bit(&mut self.dirty_bits, idx);
+        Self::set_bit(&mut self.visual_dirty_bits, idx);
+        self.visual_dirty[idx] = true; // Legacy compatibility
+        
         self.idle_frames[idx] = 0;
         self.state[idx] = ChunkState::Active;
     }
     
-    /// Mark chunk as dirty by chunk index
-    /// Lazy Hydration: detects Sleep -> Active transition
-    /// Also marks visual_dirty for renderer!
-    #[inline]
-    pub fn mark_dirty_idx(&mut self, idx: usize) {
-        if idx < self.chunk_count {
-            // Catch the wake-up moment for temperature hydration!
-            if self.state[idx] == ChunkState::Sleeping {
-                self.just_woke_up[idx] = true;
-            }
-            self.dirty[idx] = true;
-            self.visual_dirty[idx] = true; // IMPORTANT: Mark for rendering too!
-            self.idle_frames[idx] = 0;
-            self.state[idx] = ChunkState::Active;
-        }
-    }
-    
-    /// Check if chunk needs processing
+    /// Check if chunk needs processing (BitSet)
     #[inline]
     pub fn is_dirty(&self, cx: u32, cy: u32) -> bool {
         let idx = self.chunk_idx_from_coords(cx, cy);
-        self.dirty[idx]
+        Self::check_bit(&self.dirty_bits, idx)
     }
     
     /// Check if chunk is sleeping
@@ -3851,15 +5824,11 @@ impl ChunkGrid {
         self.state[idx] == ChunkState::Sleeping
     }
     
-    /// Should we process this chunk?
-    /// Phase 4.1: Now properly tracks particle movements!
+    /// Should we process this chunk? (BitSet version)
     #[inline]
     pub fn should_process(&self, cx: u32, cy: u32) -> bool {
         let idx = self.chunk_idx_from_coords(cx, cy);
-        // Process if:
-        // 1. Dirty (explicitly marked for update - e.g., neighbor woke us)
-        // 2. Has particles (they might need to move)
-        self.dirty[idx] || self.particle_count[idx] > 0
+        Self::check_bit(&self.dirty_bits, idx) || self.particle_count[idx] > 0
     }
     
     // === Wake neighbors ===
@@ -3954,51 +5923,51 @@ impl ChunkGrid {
         // They get cleared as chunks are processed
     }
     
-    /// Called after processing a chunk
-    /// Sets visual_dirty if movement occurred (for renderer to pick up)
+    /// Called after processing a chunk (BitSet version)
     pub fn end_chunk_update(&mut self, cx: u32, cy: u32, had_movement: bool) {
         let idx = self.chunk_idx_from_coords(cx, cy);
         
         if had_movement {
             self.idle_frames[idx] = 0;
             self.state[idx] = ChunkState::Active;
-            self.visual_dirty[idx] = true; // CRITICAL: Mark for render!
+            Self::set_bit(&mut self.visual_dirty_bits, idx);
+            self.visual_dirty[idx] = true; // Legacy
             
-            // CRITICAL: Wake chunk BELOW us (particles fall down!)
-            let cyi = cy as i32;
-            if self.chunk_in_bounds(cx as i32, cyi + 1) {
+            // Wake chunk below (particles fall)
+            if cy + 1 < self.chunks_y {
                 let below_idx = self.chunk_idx_from_coords(cx, cy + 1);
-                self.dirty[below_idx] = true;
-                self.visual_dirty[below_idx] = true; // Also mark below for render
+                Self::set_bit(&mut self.dirty_bits, below_idx);
+                Self::set_bit(&mut self.visual_dirty_bits, below_idx);
+                self.visual_dirty[below_idx] = true;
                 self.state[below_idx] = ChunkState::Active;
                 self.idle_frames[below_idx] = 0;
             }
         } else {
             self.idle_frames[idx] += 1;
-            // Only sleep if no particles in chunk
             if self.idle_frames[idx] >= SLEEP_THRESHOLD && self.particle_count[idx] == 0 {
                 self.state[idx] = ChunkState::Sleeping;
             }
         }
         
-        // Clear PHYSICS dirty flag after processing
-        // NOTE: visual_dirty is NOT cleared here - it waits for JS to fetch it!
-        self.dirty[idx] = false;
+        // Clear physics dirty bit
+        Self::clear_bit(&mut self.dirty_bits, idx);
     }
     
-    /// Clear visual dirty flag (called by World when JS fetches dirty list)
+    /// Clear visual dirty flag
     #[inline]
     pub fn clear_visual_dirty(&mut self, idx: usize) {
         if idx < self.chunk_count {
+            Self::clear_bit(&mut self.visual_dirty_bits, idx);
             self.visual_dirty[idx] = false;
         }
     }
     
-    /// Reset all chunks to active (e.g., after clear)
+    /// Reset all chunks (BitSet version)
     pub fn reset(&mut self) {
         self.state.fill(ChunkState::Active);
-        self.dirty.fill(true);
-        self.visual_dirty.fill(true); // Reset visual dirty for full redraw
+        self.dirty_bits.fill(!0u64);  // All dirty
+        self.visual_dirty_bits.fill(!0u64);
+        self.visual_dirty.fill(true);
         self.idle_frames.fill(0);
         self.particle_count.fill(0);
         self.virtual_temp.fill(20.0);
@@ -4046,9 +6015,10 @@ impl ChunkGrid {
         self.state.iter().filter(|&&s| s == ChunkState::Active).count()
     }
     
-    /// Get number of dirty chunks
+    /// Get number of dirty chunks (BitSet version)
     pub fn dirty_chunk_count(&self) -> usize {
-        self.dirty.iter().filter(|&&d| d).count()
+        // Count set bits across all words
+        self.dirty_bits.iter().map(|w| w.count_ones() as usize).sum()
     }
     
     /// Get total chunk count
@@ -4062,21 +6032,12 @@ impl ChunkGrid {
     }
 }
 
-/// Iterator over chunks that need processing
-pub struct ActiveChunkIterator {
-    chunks_x: u32,
-    chunks_y: u32,
-    current: usize,
-    dirty: Vec<bool>,
-    active: Vec<bool>,
-}
-
 impl ChunkGrid {
-    /// Get iterator over chunks that should be processed
+    /// Get iterator over chunks that should be processed (BitSet version)
     pub fn active_chunks(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         let chunks_x = self.chunks_x;
         (0..self.chunk_count).filter_map(move |idx| {
-            if self.dirty[idx] || (self.particle_count[idx] > 0 && self.state[idx] == ChunkState::Active) {
+            if Self::check_bit(&self.dirty_bits, idx) || (self.particle_count[idx] > 0 && self.state[idx] == ChunkState::Active) {
                 let cx = (idx as u32) % chunks_x;
                 let cy = (idx as u32) / chunks_x;
                 Some((cx, cy))
@@ -4604,14 +6565,29 @@ impl Grid {
     
     /// Fast swap using raw pointers - UNSAFE: caller must ensure both coords are valid
     /// This is the hottest path in the simulation!
+    /// 
+    /// PHASE 4 OPTIMIZATION: Only record moves that cross chunk boundaries!
+    /// Before: Every swap was recorded → millions of writes per second
+    /// After: Only cross-chunk swaps → 10-100x fewer writes
     #[inline(always)]
     pub unsafe fn swap_unchecked(&mut self, x1: u32, y1: u32, x2: u32, y2: u32) {
         let idx1 = self.index_unchecked(x1, y1);
         let idx2 = self.index_unchecked(x2, y2);
         
-        // Record move for chunk tracking (only if particle is moving)
+        // === PHASE 4: SMART MOVE RECORDING ===
+        // Only record moves that cross chunk boundaries!
+        // CHUNK_SIZE = 32 = 2^5, so >> 5 is fast division by 32
         if *self.types.get_unchecked(idx1) != EL_EMPTY {
-            self.pending_moves.push((x1, y1, x2, y2));
+            let c1_x = x1 >> 5;  // x1 / 32
+            let c1_y = y1 >> 5;  // y1 / 32
+            let c2_x = x2 >> 5;
+            let c2_y = y2 >> 5;
+            
+            // Only record if particle crossed chunk boundary
+            if c1_x != c2_x || c1_y != c2_y {
+                self.pending_moves.push((x1, y1, x2, y2));
+            }
+            // Intra-chunk moves don't need recording - chunk is already active
         }
         
         // Raw pointer swap - no bounds checks!
@@ -4721,6 +6697,10 @@ impl Grid {
 //! - reactions.rs   - Chemical reactions
 //! - temperature.rs - Thermodynamics and phase changes
 //! - world.rs       - Orchestration only
+
+// Phase 4: Utils with safety macros (must be first for macro export!)
+#[macro_use]
+mod utils;
 
 mod elements;
 mod grid;
@@ -5137,7 +7117,250 @@ pub fn process_temperature_grid_chunked(
     }
 }
 
+// ============================================================================
+// PHASE 3: SIMD-OPTIMIZED TEMPERATURE PROCESSING
+// ============================================================================
+// 
+// WASM SIMD128 provides 128-bit vectors:
+// - f32x4: 4 float32 values processed in ONE instruction
+// - Speedup: 2-4x for bulk temperature operations
+// 
+// Usage: Call update_air_temperature_simd for rows of empty cells
+
+#[cfg(target_arch = "wasm32")]
+use std::arch::wasm32::*;
+
+/// SIMD: Update air temperature for 4 cells at once
+/// All 4 cells lerp towards ambient temperature
+/// 
+/// # Safety
+/// - `temps_ptr` must be aligned to 16 bytes and valid for `count` f32s
+/// - `count` must be divisible by 4
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub unsafe fn update_air_temperature_simd(
+    temps_ptr: *mut f32,
+    count: usize,
+    ambient_temp: f32,
+    lerp_speed: f32,
+) {
+    // Broadcast constants to all 4 lanes
+    let v_ambient = f32x4_splat(ambient_temp);
+    let v_lerp = f32x4_splat(lerp_speed);
+    let v_one_minus_lerp = f32x4_splat(1.0 - lerp_speed);
+    
+    let mut i = 0;
+    while i + 4 <= count {
+        let ptr = temps_ptr.add(i);
+        
+        // Load 4 temperatures
+        let v_current = v128_load(ptr as *const v128);
+        
+        // new_temp = current * (1 - lerp) + ambient * lerp
+        // This is equivalent to: current + (ambient - current) * lerp
+        let v_scaled_current = f32x4_mul(v_current, v_one_minus_lerp);
+        let v_scaled_ambient = f32x4_mul(v_ambient, v_lerp);
+        let v_new = f32x4_add(v_scaled_current, v_scaled_ambient);
+        
+        // Store back
+        v128_store(ptr as *mut v128, v_new);
+        
+        i += 4;
+    }
+    
+    // Handle remainder (0-3 cells) with scalar code
+    while i < count {
+        let ptr = temps_ptr.add(i);
+        let current = *ptr;
+        *ptr = current + (ambient_temp - current) * lerp_speed;
+        i += 1;
+    }
+}
+
+/// SIMD: Batch process diffusion between cell and its right neighbor
+/// Processes 4 pairs at once: (i, i+1), (i+2, i+3), (i+4, i+5), (i+6, i+7)
+/// 
+/// # Safety
+/// - `temps_ptr` must be valid for at least `count + 1` f32s
+/// - `count` must be divisible by 4
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub unsafe fn diffuse_horizontal_simd(
+    temps_ptr: *mut f32,
+    count: usize,
+    transfer_rate: f32,
+) {
+    let v_rate = f32x4_splat(transfer_rate);
+    let v_threshold = f32x4_splat(0.5);
+    
+    // Process in steps of 4, comparing each cell with its right neighbor
+    let mut i = 0;
+    while i + 4 < count {
+        let ptr = temps_ptr.add(i);
+        
+        // Load current 4 temps and next 4 temps (shifted by 1)
+        let v_current = v128_load(ptr as *const v128);
+        let v_next = v128_load(ptr.add(1) as *const v128);
+        
+        // diff = next - current
+        let v_diff = f32x4_sub(v_next, v_current);
+        let v_abs_diff = f32x4_abs(v_diff);
+        
+        // Only transfer if |diff| > threshold (create mask)
+        let v_mask = f32x4_gt(v_abs_diff, v_threshold);
+        
+        // change = diff * rate (only where mask is true)
+        let v_change = f32x4_mul(v_diff, v_rate);
+        let v_masked_change = v128_and(v_change, v_mask);
+        
+        // Apply: current += change, next -= change
+        let v_new_current = f32x4_add(v_current, v_masked_change);
+        let v_new_next = f32x4_sub(v_next, v_masked_change);
+        
+        v128_store(ptr as *mut v128, v_new_current);
+        v128_store(ptr.add(1) as *mut v128, v_new_next);
+        
+        i += 4;
+    }
+}
+
+/// Process a full row of temperatures with SIMD (air cells only)
+/// Fallback for non-WASM targets
+#[cfg(not(target_arch = "wasm32"))]
+pub unsafe fn update_air_temperature_simd(
+    temps_ptr: *mut f32,
+    count: usize,
+    ambient_temp: f32,
+    lerp_speed: f32,
+) {
+    for i in 0..count {
+        let ptr = temps_ptr.add(i);
+        let current = *ptr;
+        *ptr = current + (ambient_temp - current) * lerp_speed;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub unsafe fn diffuse_horizontal_simd(
+    _temps_ptr: *mut f32,
+    _count: usize,
+    _transfer_rate: f32,
+) {
+    // No-op on non-WASM, use scalar path
+}
+
 --- End of File: packages/engine/src/temperature.rs ---
+
+
+--- File: packages/engine/src/utils/mod.rs ---
+
+//! Utility modules for the particle engine
+
+pub mod safety;
+
+--- End of File: packages/engine/src/utils/mod.rs ---
+
+
+--- File: packages/engine/src/utils/safety.rs ---
+
+//! Zero-Cost Safety Macros
+//! 
+//! Phase 4: "Roll Cage" - Debug checks in dev, raw speed in prod
+//! 
+//! In Debug mode: Normal bounds-checked access (panics with useful errors)
+//! In Release mode: Unsafe unchecked access (zero overhead)
+//! 
+//! Usage:
+//! ```rust
+//! // Read: fast!(slice, [index])
+//! let val = *fast!(self.types, [idx]);
+//! 
+//! // Write: fast!(slice, [index] = value)
+//! fast!(self.life, [idx] = 100);
+//! ```
+
+/// Zero-cost bounds checking macro
+/// 
+/// - Debug: Uses normal indexing with bounds checks
+/// - Release: Uses get_unchecked/get_unchecked_mut
+/// 
+/// This gives you the best of both worlds:
+/// - Safe development with clear panic messages
+/// - Maximum performance in production
+#[macro_export]
+macro_rules! fast {
+    // Read pattern: fast!(slice, [index])
+    ($slice:expr, [$index:expr]) => {{
+        #[cfg(debug_assertions)]
+        {
+            // Debug: Normal access with bounds check
+            &$slice[$index]
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            // Release: Unsafe unchecked access
+            unsafe { $slice.get_unchecked($index) }
+        }
+    }};
+    
+    // Write pattern: fast!(slice, [index] = value)
+    ($slice:expr, [$index:expr] = $val:expr) => {{
+        #[cfg(debug_assertions)]
+        {
+            // Debug: Normal access with bounds check
+            $slice[$index] = $val;
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            // Release: Unsafe unchecked access
+            unsafe { *$slice.get_unchecked_mut($index) = $val; }
+        }
+    }};
+}
+
+/// Unsafe block wrapper for explicit "I know what I'm doing" sections
+/// In debug mode, adds extra logging before the unsafe operation
+#[macro_export]
+macro_rules! unsafe_fast {
+    ($($code:tt)*) => {{
+        #[cfg(debug_assertions)]
+        {
+            // In debug, still run the unsafe code but could add logging here
+            unsafe { $($code)* }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe { $($code)* }
+        }
+    }};
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_fast_read() {
+        let arr = vec![1, 2, 3, 4, 5];
+        let val = *fast!(arr, [2]);
+        assert_eq!(val, 3);
+    }
+    
+    #[test]
+    fn test_fast_write() {
+        let mut arr = vec![1, 2, 3, 4, 5];
+        fast!(arr, [2] = 100);
+        assert_eq!(arr[2], 100);
+    }
+    
+    #[test]
+    #[should_panic]
+    #[cfg(debug_assertions)]
+    fn test_fast_bounds_check_debug() {
+        let arr = vec![1, 2, 3];
+        let _ = *fast!(arr, [10]); // Should panic in debug
+    }
+}
+
+--- End of File: packages/engine/src/utils/safety.rs ---
 
 
 --- File: packages/engine/src/world.rs ---
@@ -5462,18 +7685,14 @@ impl World {
     // === PHASE 3: SMART RENDERING API ===
     
     /// Collect list of dirty chunks that need rendering
-    /// Uses visual_dirty (separate from physics dirty) to avoid state desync!
-    /// Returns the count of dirty chunks
+    /// Uses visual_dirty (separate from physics dirty) to avoid state desync
     pub fn collect_dirty_chunks(&mut self) -> usize {
         self.dirty_list.clear();
         let total = self.chunks.total_chunks();
         
         for i in 0..total {
-            // Check VISUAL dirty, not physics dirty!
             if self.chunks.visual_dirty[i] {
                 self.dirty_list.push(i as u32);
-                
-                // Clear flag immediately - we're sending this to JS
                 self.chunks.clear_visual_dirty(i);
             }
         }
@@ -5838,6 +8057,10 @@ impl World {
         
         // Mark as updated
         self.grid.set_updated(x, y, true);
+        
+        // CRITICAL: Mark chunk as dirty for rendering!
+        // Without this, reactions don't trigger re-render!
+        self.chunks.mark_dirty(x, y);
     }
 }
 

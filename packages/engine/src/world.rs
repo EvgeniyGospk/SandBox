@@ -318,18 +318,14 @@ impl World {
     // === PHASE 3: SMART RENDERING API ===
     
     /// Collect list of dirty chunks that need rendering
-    /// Uses visual_dirty (separate from physics dirty) to avoid state desync!
-    /// Returns the count of dirty chunks
+    /// Uses visual_dirty (separate from physics dirty) to avoid state desync
     pub fn collect_dirty_chunks(&mut self) -> usize {
         self.dirty_list.clear();
         let total = self.chunks.total_chunks();
         
         for i in 0..total {
-            // Check VISUAL dirty, not physics dirty!
             if self.chunks.visual_dirty[i] {
                 self.dirty_list.push(i as u32);
-                
-                // Clear flag immediately - we're sending this to JS
                 self.chunks.clear_visual_dirty(i);
             }
         }
@@ -694,5 +690,9 @@ impl World {
         
         // Mark as updated
         self.grid.set_updated(x, y, true);
+        
+        // CRITICAL: Mark chunk as dirty for rendering!
+        // Without this, reactions don't trigger re-render!
+        self.chunks.mark_dirty(x, y);
     }
 }

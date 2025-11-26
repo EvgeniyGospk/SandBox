@@ -22,7 +22,7 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "src/lib/engine/WebGLRenderer.ts"],
   "exclude": [
     "src/lib/engine/_LEGACY",
     "src/lib/engine/__tests__"

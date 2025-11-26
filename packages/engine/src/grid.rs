@@ -341,14 +341,29 @@ impl Grid {
     
     /// Fast swap using raw pointers - UNSAFE: caller must ensure both coords are valid
     /// This is the hottest path in the simulation!
+    /// 
+    /// PHASE 4 OPTIMIZATION: Only record moves that cross chunk boundaries!
+    /// Before: Every swap was recorded → millions of writes per second
+    /// After: Only cross-chunk swaps → 10-100x fewer writes
     #[inline(always)]
     pub unsafe fn swap_unchecked(&mut self, x1: u32, y1: u32, x2: u32, y2: u32) {
         let idx1 = self.index_unchecked(x1, y1);
         let idx2 = self.index_unchecked(x2, y2);
         
-        // Record move for chunk tracking (only if particle is moving)
+        // === PHASE 4: SMART MOVE RECORDING ===
+        // Only record moves that cross chunk boundaries!
+        // CHUNK_SIZE = 32 = 2^5, so >> 5 is fast division by 32
         if *self.types.get_unchecked(idx1) != EL_EMPTY {
-            self.pending_moves.push((x1, y1, x2, y2));
+            let c1_x = x1 >> 5;  // x1 / 32
+            let c1_y = y1 >> 5;  // y1 / 32
+            let c2_x = x2 >> 5;
+            let c2_y = y2 >> 5;
+            
+            // Only record if particle crossed chunk boundary
+            if c1_x != c2_x || c1_y != c2_y {
+                self.pending_moves.push((x1, y1, x2, y2));
+            }
+            // Intra-chunk moves don't need recording - chunk is already active
         }
         
         // Raw pointer swap - no bounds checks!

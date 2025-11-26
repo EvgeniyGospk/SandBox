@@ -1,0 +1,671 @@
+/**
+ * Simulation Worker - Runs WASM physics in separate thread
+ * 
+ * Phase 1 (WebWorker): UI never blocks, physics runs independently
+ * Phase 2 (Zero-Copy): Direct memory access via SharedArrayBuffer views
+ * 
+ * Message Protocol:
+ * - Main → Worker: INIT, PLAY, PAUSE, SET_TOOL, INPUT, TRANSFORM, SETTINGS, CLEAR, RESIZE
+ * - Worker → Main: READY, STATS, ERROR
+ */
+
+// Worker-side types (can't import from main - workers are isolated)
+// MUST match types.ts ElementType exactly!
+type ElementType = 
+  | 'empty'
+  | 'stone' | 'sand' | 'wood' | 'metal' | 'ice'
+  | 'water' | 'oil' | 'lava' | 'acid'
+  | 'steam' | 'smoke'
+  | 'fire' | 'spark' | 'electricity'
+  | 'gunpowder'
+  | 'clone' | 'void'
+  | 'dirt' | 'seed' | 'plant'
+
+type RenderMode = 'normal' | 'thermal'
+type ToolType = 'brush' | 'eraser' | 'pipette' | 'move'
+
+// Phase 5: Import SharedInputBuffer for zero-latency input
+import { SharedInputBuffer, INPUT_TYPE_ERASE, INPUT_TYPE_END_STROKE, INPUT_TYPE_BRUSH_OFFSET } from '../lib/InputBuffer'
+import { screenToWorld as invertTransform } from '../lib/engine/transform'
+
+// Phase 3: WebGL Renderer for GPU-accelerated rendering
+import { WebGLRenderer } from '../lib/engine/WebGLRenderer'
+
+// Message types
+interface InitMessage {
+  type: 'INIT'
+  canvas: OffscreenCanvas
+  width: number
+  height: number
+  inputBuffer?: SharedArrayBuffer // Phase 5: Optional shared input buffer
+}
+
+interface InputMessage {
+  type: 'INPUT'
+  x: number
+  y: number
+  radius: number
+  element: ElementType
+  tool: ToolType
+}
+
+interface TransformMessage {
+  type: 'TRANSFORM'
+  zoom: number
+  panX: number
+  panY: number
+}
+
+interface SettingsMessage {
+  type: 'SETTINGS'
+  gravity?: { x: number; y: number }
+  ambientTemperature?: number
+  speed?: number
+}
+
+interface RenderModeMessage {
+  type: 'SET_RENDER_MODE'
+  mode: RenderMode
+}
+
+interface ResizeMessage {
+  type: 'RESIZE'
+  width: number
+  height: number
+}
+
+type WorkerMessage = 
+  | InitMessage
+  | InputMessage
+  | TransformMessage
+  | SettingsMessage
+  | RenderModeMessage
+  | ResizeMessage
+  | { type: 'PLAY' }
+  | { type: 'PAUSE' }
+  | { type: 'CLEAR' }
+  | { type: 'INPUT_END' }  // Phase 5: Reset Bresenham tracking
+
+// Worker state
+let engine: any = null
+let wasmModule: any = null
+let wasmMemory: WebAssembly.Memory | null = null
+let canvas: OffscreenCanvas | null = null
+
+// Phase 3: WebGL Renderer (replaces Canvas2D)
+let renderer: WebGLRenderer | null = null
+let useWebGL = true // Feature flag for fallback
+
+// Phase 5: Shared input buffer for zero-latency input
+let sharedInputBuffer: SharedInputBuffer | null = null
+
+// Canvas2D for thermal mode (and fallback)
+let thermalCanvas: OffscreenCanvas | null = null
+let ctx: OffscreenCanvasRenderingContext2D | null = null
+let imageData: ImageData | null = null
+let pixels: Uint8ClampedArray | null = null
+let pixels32: Uint32Array | null = null
+
+// Memory views (zero-copy into WASM)
+let typesView: Uint8Array | null = null
+let colorsView: Uint32Array | null = null
+let temperatureView: Float32Array | null = null
+
+// Simulation state
+let isPlaying = false
+let speed = 1
+let renderMode: RenderMode = 'normal'
+
+// Camera state
+let zoom = 1
+let panX = 0
+let panY = 0
+
+// Animation
+// Note: animationFrameId stored but only used for potential future cancellation
+let lastTime = 0
+
+// FPS tracking (zero-allocation ring buffer)
+const FPS_SAMPLES = 20
+const fpsBuffer = new Float32Array(FPS_SAMPLES)
+let fpsIndex = 0
+let fpsCount = 0
+
+// Stats update throttling
+let lastStatsUpdate = 0
+const STATS_INTERVAL = 200 // ms
+
+// Constants
+const BG_COLOR_32 = 0xFF0A0A0A
+const EL_EMPTY = 0
+
+// Element mapping - MUST match Rust elements.rs exactly!
+const ELEMENT_MAP: Record<ElementType, number> = {
+  empty: 0,
+  stone: 1,
+  sand: 2,
+  wood: 3,
+  metal: 4,
+  ice: 5,
+  water: 6,
+  oil: 7,
+  lava: 8,
+  acid: 9,
+  steam: 10,
+  smoke: 11,
+  fire: 12,
+  spark: 13,
+  electricity: 14,
+  gunpowder: 15,
+  clone: 16,
+  void: 17,
+  dirt: 18,
+  seed: 19,
+  plant: 20
+}
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
+
+async function initEngine(initCanvas: OffscreenCanvas, width: number, height: number, inputBuffer?: SharedArrayBuffer) {
+  try {
+    canvas = initCanvas
+    
+    // CRITICAL: Set canvas size! OffscreenCanvas doesn't inherit from HTMLCanvasElement
+    canvas.width = width
+    canvas.height = height
+    
+    // Phase 5: Setup shared input buffer if provided
+    if (inputBuffer) {
+      sharedInputBuffer = new SharedInputBuffer(inputBuffer)
+      console.log('🚀 Worker: Using SharedArrayBuffer for input (zero-latency)')
+    }
+    
+    // Import WASM module dynamically
+    // @ts-ignore - Dynamic import in worker
+    const wasm = await import('@particula/engine-wasm')
+    const wasmExports = await wasm.default()
+    
+    wasmModule = wasm
+    // CRITICAL: memory is returned from default(), not wasm.memory!
+    wasmMemory = wasmExports.memory
+    
+    if (!wasmMemory) {
+      console.error('WASM memory not found! Exports:', Object.keys(wasmExports))
+      throw new Error('WASM memory not available')
+    }
+    
+    console.log(`🚀 Worker: WASM memory size: ${wasmMemory.buffer.byteLength} bytes`)
+    
+    // Create world
+    engine = new wasm.World(width, height)
+    
+    // Phase 3: Try WebGL first (GPU-accelerated)
+    try {
+      renderer = new WebGLRenderer(canvas, width, height)
+      useWebGL = true
+      console.log('🎮 Worker: WebGL 2.0 Renderer active!')
+    } catch (e) {
+      console.warn('WebGL not available, falling back to Canvas2D:', e)
+      useWebGL = false
+    }
+    
+    // ALWAYS create Canvas2D resources for thermal mode fallback
+    // Create a separate OffscreenCanvas for thermal rendering
+    thermalCanvas = new OffscreenCanvas(width, height)
+    ctx = thermalCanvas.getContext('2d', { 
+      alpha: false,
+      desynchronized: true
+    }) as OffscreenCanvasRenderingContext2D
+    
+    if (ctx) {
+      ctx.imageSmoothingEnabled = false
+      imageData = new ImageData(width, height)
+      pixels = imageData.data
+      pixels32 = new Uint32Array(pixels.buffer)
+      console.log('🌡️ Worker: Thermal mode canvas ready')
+    }
+    
+    console.log(`🚀 Worker: Canvas ${width}x${height}, Mode: ${useWebGL ? 'WebGL' : 'Canvas2D'}`)
+    
+    // Setup zero-copy memory views
+    updateMemoryViews()
+    
+    console.log('🚀 Worker: Engine initialized!')
+    
+    // Notify main thread
+    self.postMessage({ type: 'READY', width, height })
+    
+    // Start render loop
+    requestAnimationFrame(renderLoop)
+    
+  } catch (error) {
+    console.error('Worker init error:', error)
+    self.postMessage({ type: 'ERROR', message: String(error) })
+  }
+}
+
+function updateMemoryViews() {
+  if (!engine || !wasmMemory) return
+  
+  const size = engine.types_len()
+  const typesPtr = engine.types_ptr()
+  const colorsPtr = engine.colors_ptr()
+  const tempPtr = engine.temperature_ptr()
+  
+  typesView = new Uint8Array(wasmMemory.buffer, typesPtr, size)
+  colorsView = new Uint32Array(wasmMemory.buffer, colorsPtr, size)
+  temperatureView = new Float32Array(wasmMemory.buffer, tempPtr, size)
+}
+
+// ============================================================================
+// RENDER LOOP
+// ============================================================================
+
+function renderLoop(time: number) {
+  // Check if we have everything needed for rendering
+  const hasWebGL = useWebGL && renderer && engine && canvas && wasmMemory
+  const hasCanvas2D = !useWebGL && ctx && engine && canvas
+  
+  if (!hasWebGL && !hasCanvas2D) {
+    requestAnimationFrame(renderLoop)
+    return
+  }
+  
+  // FPS calculation (zero-allocation)
+  const delta = time - lastTime
+  if (delta > 0) {
+    fpsBuffer[fpsIndex] = 1000 / delta
+    fpsIndex = (fpsIndex + 1) % FPS_SAMPLES
+    if (fpsCount < FPS_SAMPLES) fpsCount++
+  }
+  lastTime = time
+  
+  // Phase 5: Process shared input buffer (zero-latency!)
+  processSharedInput()
+  
+  // Physics step
+  if (isPlaying) {
+    const steps = speed >= 1 ? Math.floor(speed) : 1
+    for (let i = 0; i < steps; i++) {
+      engine.step()
+    }
+    // Memory might have grown
+    updateMemoryViews()
+  }
+  
+  // Render
+  renderFrame()
+  
+  // Send stats (throttled)
+  if (time - lastStatsUpdate > STATS_INTERVAL) {
+    sendStats()
+    lastStatsUpdate = time
+  }
+  
+  requestAnimationFrame(renderLoop)
+}
+
+function renderFrame() {
+  if (!engine || !canvas) return
+  
+  const transform = { zoom, panX, panY }
+  
+  // Thermal mode path (uses Canvas2D to render, then uploads to WebGL)
+  if (renderMode === 'thermal') {
+    if (!ctx || !pixels || !imageData || !temperatureView) return
+    
+    // Render thermal to ImageData
+    renderThermal()
+    ctx.putImageData(imageData, 0, 0)
+    
+    // Use WebGL to display with transform (if available)
+    if (useWebGL && renderer) {
+      renderer.renderThermal(imageData, transform)
+    }
+    // If no WebGL, thermalCanvas already has the image (but no transform)
+    return
+  }
+  
+  // Phase 3: WebGL Path (GPU-accelerated)
+  if (useWebGL && renderer && wasmMemory) {
+    // Use dirty rectangles for optimal GPU upload
+    renderer.renderWithDirtyRects(engine, wasmMemory, transform)
+    return
+  }
+  
+  // Fallback: Canvas2D Path (when WebGL not available)
+  if (!ctx || !pixels32 || !imageData || !colorsView || !typesView) return
+  
+  const width = canvas.width
+  const height = canvas.height
+  
+  // 1. Render to ImageData
+  renderNormal()
+  
+  // 2. Put pixels to context
+  ctx.putImageData(imageData, 0, 0)
+  
+  // 3. Draw to screen with camera transform (if we had a separate screen canvas)
+  // For OffscreenCanvas in worker, this IS the screen
+  // We need to handle zoom/pan differently - draw to a buffer first
+  
+  // Clear and apply transform for world border
+  // (The main render is already done via putImageData)
+  drawWorldBorder(width, height)
+}
+
+function renderNormal() {
+  if (!pixels32 || !colorsView || !typesView) return
+  
+  const len = Math.min(typesView.length, pixels32.length)
+  
+  // Direct copy (WASM provides ABGR format)
+  pixels32.set(colorsView.subarray(0, len))
+  
+  // Fix empty cells to background
+  for (let i = 0; i < len; i++) {
+    if (typesView[i] === EL_EMPTY) {
+      pixels32[i] = BG_COLOR_32
+    }
+  }
+}
+
+function renderThermal() {
+  if (!pixels || !temperatureView) return
+  
+  const len = Math.min(temperatureView.length, pixels.length / 4)
+  
+  for (let i = 0; i < len; i++) {
+    const temp = temperatureView[i]
+    const base = i << 2
+    
+    const [r, g, b] = getThermalColor(temp)
+    
+    pixels[base] = r
+    pixels[base + 1] = g
+    pixels[base + 2] = b
+    pixels[base + 3] = 255
+  }
+}
+
+function getThermalColor(t: number): [number, number, number] {
+  if (t < 0) {
+    const intensity = Math.min(1, Math.abs(t) / 30)
+    return [0, 0, Math.floor(128 + 127 * intensity)]
+  }
+  if (t < 20) {
+    const ratio = t / 20
+    return [0, Math.floor(ratio * 255), 255]
+  }
+  if (t < 50) {
+    const ratio = (t - 20) / 30
+    return [0, 255, Math.floor(255 * (1 - ratio))]
+  }
+  if (t < 100) {
+    const ratio = (t - 50) / 50
+    return [Math.floor(255 * ratio), 255, 0]
+  }
+  if (t < 500) {
+    const ratio = (t - 100) / 400
+    return [255, Math.floor(255 * (1 - ratio)), 0]
+  }
+  const ratio = Math.min(1, (t - 500) / 500)
+  return [255, Math.floor(255 * ratio), Math.floor(255 * ratio)]
+}
+
+function drawWorldBorder(width: number, height: number) {
+  if (!ctx) return
+  
+  // Outer glow
+  ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)'
+  ctx.lineWidth = 6
+  ctx.strokeRect(-3, -3, width + 6, height + 6)
+  
+  // Middle glow
+  ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)'
+  ctx.lineWidth = 3
+  ctx.strokeRect(-1.5, -1.5, width + 3, height + 3)
+  
+  // Inner sharp border
+  ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(0, 0, width, height)
+}
+
+// ============================================================================
+// INPUT HANDLING
+// ============================================================================
+
+function handleInput(x: number, y: number, radius: number, element: ElementType, tool: ToolType) {
+  if (!engine) return
+  
+  // Apply camera transform to convert screen coords to world coords
+  const viewport = canvas ? { width: canvas.width, height: canvas.height } : { width: 0, height: 0 }
+  const world = invertTransform(
+    x,
+    y,
+    { zoom, panX, panY },
+    viewport
+  )
+  const worldX = Math.floor(world.x)
+  const worldY = Math.floor(world.y)
+  
+  const wasmElement = ELEMENT_MAP[element] ?? 0
+  
+  if (tool === 'eraser') {
+    engine.remove_particles_in_radius(worldX, worldY, radius)
+  } else if (tool === 'brush') {
+    if (wasmElement !== 0) {
+      engine.add_particles_in_radius(worldX, worldY, radius, wasmElement)
+    }
+  }
+  // pipette and move are handled on main thread (UI concerns)
+}
+
+// Phase 5: State for Bresenham line interpolation
+let lastInputX: number | null = null
+let lastInputY: number | null = null
+
+/**
+ * Bresenham's Line Algorithm for smooth drawing
+ * Draws a line of particles between (x0, y0) and (x1, y1)
+ */
+function drawLine(x0: number, y0: number, x1: number, y1: number, radius: number, elementType: number, isErase: boolean) {
+  if (!engine) return
+  
+  const dx = Math.abs(x1 - x0)
+  const dy = Math.abs(y1 - y0)
+  const sx = (x0 < x1) ? 1 : -1
+  const sy = (y0 < y1) ? 1 : -1
+  let err = dx - dy
+
+  while (true) {
+    // Apply brush at current point
+    if (isErase) {
+      engine.remove_particles_in_radius(x0, y0, radius)
+    } else {
+      engine.add_particles_in_radius(x0, y0, radius, elementType)
+    }
+
+    if (x0 === x1 && y0 === y1) break
+    
+    const e2 = 2 * err
+    if (e2 > -dy) { err -= dy; x0 += sx }
+    if (e2 < dx) { err += dx; y0 += sy }
+  }
+}
+
+/**
+ * Phase 5: Process all pending input from shared buffer
+ * Called every frame before physics step
+ * Uses Bresenham interpolation for smooth lines!
+ */
+function processSharedInput() {
+  if (!sharedInputBuffer || !engine) return
+  
+  // Read all events accumulated since last frame (zero-allocation!)
+  sharedInputBuffer.processAll((x, y, type, val) => {
+    // CRITICAL: Handle end-stroke sentinel FIRST - resets Bresenham state
+    // This goes through the same SAB channel as brush events, so no race conditions!
+    if (type === INPUT_TYPE_END_STROKE) {
+      lastInputX = null
+      lastInputY = null
+      return
+    }
+    
+    const currentX = Math.floor(x)
+    const currentY = Math.floor(y)
+    
+    const isErase = (type === INPUT_TYPE_ERASE)
+    const elementType = isErase ? 0 : (type - INPUT_TYPE_BRUSH_OFFSET)
+
+    // Guard against malformed element ids
+    if (!isErase && elementType <= 0) {
+      return
+    }
+
+    // If this is a new stroke or we lost tracking, start here
+    if (lastInputX === null || lastInputY === null) {
+      lastInputX = currentX
+      lastInputY = currentY
+      // Draw single point
+      if (isErase) {
+        engine.remove_particles_in_radius(currentX, currentY, val)
+      } else if (elementType !== 0) {
+        engine.add_particles_in_radius(currentX, currentY, val, elementType)
+      }
+      return
+    }
+
+    // Interpolate line from last known position to current
+    if (elementType !== 0 || isErase) {
+      drawLine(lastInputX, lastInputY, currentX, currentY, val, elementType, isErase)
+    }
+
+    // Update tracking
+    lastInputX = currentX
+    lastInputY = currentY
+  })
+}
+
+/**
+ * Reset input tracking (called on mouse up)
+ */
+function resetInputTracking() {
+  lastInputX = null
+  lastInputY = null
+}
+
+// ============================================================================
+// STATS
+// ============================================================================
+
+function sendStats() {
+  // Calculate average FPS (zero allocation)
+  let sum = 0
+  for (let i = 0; i < fpsCount; i++) {
+    sum += fpsBuffer[i]
+  }
+  const avgFps = fpsCount > 0 ? sum / fpsCount : 0
+  
+  const particleCount = engine?.particle_count ?? 0
+  
+  self.postMessage({
+    type: 'STATS',
+    fps: Math.round(avgFps),
+    particleCount
+  })
+}
+
+// ============================================================================
+// MESSAGE HANDLER
+// ============================================================================
+
+self.onmessage = (e: MessageEvent<WorkerMessage>) => {
+  const msg = e.data
+  
+  switch (msg.type) {
+    case 'INIT':
+      initEngine(msg.canvas, msg.width, msg.height, msg.inputBuffer)
+      break
+      
+    case 'PLAY':
+      isPlaying = true
+      break
+      
+    case 'PAUSE':
+      isPlaying = false
+      break
+      
+    case 'INPUT':
+      handleInput(msg.x, msg.y, msg.radius, msg.element, msg.tool)
+      break
+      
+    case 'INPUT_END':
+      // Phase 5: Reset Bresenham line tracking on mouse up
+      resetInputTracking()
+      break
+      
+    case 'TRANSFORM':
+      zoom = msg.zoom
+      panX = msg.panX
+      panY = msg.panY
+      break
+      
+    case 'SETTINGS':
+      if (msg.gravity && engine) {
+        engine.set_gravity(msg.gravity.x, msg.gravity.y)
+      }
+      if (msg.ambientTemperature !== undefined && engine) {
+        engine.set_ambient_temperature(msg.ambientTemperature)
+      }
+      if (msg.speed !== undefined) {
+        speed = msg.speed
+      }
+      break
+      
+    case 'SET_RENDER_MODE':
+      renderMode = msg.mode
+      break
+      
+    case 'CLEAR':
+      if (engine) {
+        engine.clear()
+      }
+      break
+      
+    case 'RESIZE':
+      if (engine && canvas) {
+        // CRITICAL: Force integer sizes to prevent "falling through" bug
+        const w = Math.floor(msg.width)
+        const h = Math.floor(msg.height)
+        
+        // Check if size actually changed
+        if (w === canvas.width && h === canvas.height) break
+        
+        // Recreate world with new size
+        engine = new wasmModule.World(w, h)
+        canvas.width = w
+        canvas.height = h
+        
+        // Phase 3: Resize WebGL renderer
+        if (useWebGL && renderer) {
+          renderer.resize(w, h)
+        } else if (ctx) {
+          // Canvas2D fallback
+          imageData = new ImageData(w, h)
+          pixels = imageData.data
+          pixels32 = new Uint32Array(pixels.buffer)
+        }
+        
+        updateMemoryViews()
+        console.log(`⚡ Resized World to: ${w}x${h}`)
+      }
+      break
+  }
+}
+
+// Export empty to make it a module
+export {}

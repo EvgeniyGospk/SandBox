@@ -11,6 +11,10 @@
 //! - temperature.rs - Thermodynamics and phase changes
 //! - world.rs       - Orchestration only
 
+// Phase 4: Utils with safety macros (must be first for macro export!)
+#[macro_use]
+mod utils;
+
 mod elements;
 mod grid;
 mod chunks;

@@ -136,9 +136,12 @@ export class CanvasRenderer {
     this.ctx.fillRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
     
     this.ctx.save()
-    // Apply Pan then Zoom
-    this.ctx.translate(this.panX, this.panY)
+    // Match WebGL transform: scale around viewport center, then apply screen-space pan
+    const centerX = this.ctx.canvas.width / 2
+    const centerY = this.ctx.canvas.height / 2
+    this.ctx.translate(centerX + this.panX, centerY + this.panY)
     this.ctx.scale(this.zoom, this.zoom)
+    this.ctx.translate(-centerX, -centerY)
     
     // Draw buffer image
     this.ctx.drawImage(this.bufferCanvas, 0, 0)

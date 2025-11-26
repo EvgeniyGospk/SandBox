@@ -166,3 +166,9 @@ export interface ISimulation {
   readonly width: number
   readonly height: number
 }
+
+// ============================================
+// RENDER & TOOL TYPES
+// ============================================
+export type RenderMode = 'normal' | 'thermal'
+export type ToolType = 'brush' | 'eraser' | 'pipette' | 'fill' | 'move'
