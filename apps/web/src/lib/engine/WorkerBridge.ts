@@ -23,9 +23,10 @@ export interface SimulationStats {
   particleCount: number
 }
 
-export type StatsCallback = (stats: SimulationStats) => void
+export type StatsCallback = (stats: { fps: number; particleCount: number }) => void
 export type ReadyCallback = (width: number, height: number) => void
 export type ErrorCallback = (message: string) => void
+export type CrashCallback = (message: string, canRecover: boolean) => void
 
 /**
  * Bridge between Main Thread and Simulation Worker
@@ -61,6 +62,7 @@ export class WorkerBridge {
   public onStats: StatsCallback | null = null
   public onReady: ReadyCallback | null = null
   public onError: ErrorCallback | null = null
+  public onCrash: CrashCallback | null = null  // Phase 5: Crash recovery
   
   // Camera state (stored on main thread for coordinate conversion)
   private zoom: number = 1
@@ -105,6 +107,12 @@ export class WorkerBridge {
             case 'ERROR':
               this.onError?.(msg.message)
               reject(new Error(msg.message))
+              break
+              
+            // Phase 5: WASM crash recovery
+            case 'CRASH':
+              console.error('💥 WASM Crash:', msg.message)
+              this.onCrash?.(msg.message, msg.canRecover ?? true)
               break
           }
         }

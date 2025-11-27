@@ -36,7 +36,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
-      '@particula/engine-wasm': fileURLToPath(new URL('../../packages/engine/pkg', import.meta.url)),
+      '@particula/engine-wasm': fileURLToPath(new URL('../../packages/engine-wasm', import.meta.url)),
     },
   },
   server: {

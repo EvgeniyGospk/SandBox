@@ -2,6 +2,7 @@
  * SharedInputBuffer - Lock-free Ring Buffer for Mouse Input
  * 
  * Phase 5: "Telemetry" - Zero-latency input via SharedArrayBuffer
+ * Phase 3 (Fort Knox): Overflow protection to prevent Bresenham artifacts
  * 
  * Instead of postMessage (async, serialization overhead), we write
  * mouse events directly to shared memory. Worker reads every frame.
@@ -9,14 +10,16 @@
  * Buffer Layout:
  * [0] = Write Head (Main Thread writes here)
  * [1] = Read Head (Worker reads here)
- * [2..] = Events: [x, y, type, brushSize] * INPUT_BUFFER_SIZE
+ * [2] = Overflow Flag (Phase 3: set when buffer overflows)
+ * [3..] = Events: [x, y, type, brushSize] * INPUT_BUFFER_SIZE
  * 
- * Total size: (2 + 4 * 100) * 4 = 1608 bytes
+ * Total size: (3 + 4 * 100) * 4 = 1612 bytes
  */
 
 export const INPUT_BUFFER_SIZE = 100 // Max events in queue
 export const EVENT_SIZE = 4 // Int32 per event: x, y, type, brushSize
-const HEAD_OFFSET = 2 // First 2 slots are write/read heads
+const HEAD_OFFSET = 3 // First 3 slots are write/read heads + overflow flag
+const OVERFLOW_INDEX = 2 // Index of overflow flag in buffer
 
 // Input event types (matches ToolType + element encoding)
 export const INPUT_TYPE_BRUSH = 0
@@ -50,9 +53,10 @@ export class SharedInputBuffer {
   
   constructor(sharedBuffer: SharedArrayBuffer) {
     this.buffer = new Int32Array(sharedBuffer)
-    // Initialize heads to 0
+    // Initialize heads and overflow flag to 0
     Atomics.store(this.buffer, 0, 0) // Write head
     Atomics.store(this.buffer, 1, 0) // Read head
+    Atomics.store(this.buffer, OVERFLOW_INDEX, 0) // Overflow flag (Phase 3)
   }
   
   /**
@@ -82,7 +86,9 @@ export class SharedInputBuffer {
     
     // Check if buffer is full (writer caught up to reader)
     if (nextWriteIndex === readIndex) {
-      // Buffer full - drop event (1 frame desync is invisible)
+      // Phase 3 (Fort Knox): Set overflow flag when buffer is full
+      // This tells the Worker to reset Bresenham state
+      Atomics.store(this.buffer, OVERFLOW_INDEX, 1)
       return false
     }
     
@@ -193,5 +199,32 @@ export class SharedInputBuffer {
       return writeIndex - readIndex
     }
     return INPUT_BUFFER_SIZE - readIndex + writeIndex
+  }
+  
+  // === PHASE 3 (Fort Knox): Overflow Protection ===
+  
+  /**
+   * Check if overflow occurred (buffer was full when push was attempted)
+   * This should be checked by Worker before processing events.
+   * If true, Worker should reset Bresenham tracking to prevent line artifacts.
+   */
+  checkOverflow(): boolean {
+    return Atomics.load(this.buffer, OVERFLOW_INDEX) === 1
+  }
+  
+  /**
+   * Clear overflow flag (called by Worker after handling overflow)
+   */
+  clearOverflow(): void {
+    Atomics.store(this.buffer, OVERFLOW_INDEX, 0)
+  }
+  
+  /**
+   * Check and clear overflow atomically
+   * Returns true if overflow occurred (and clears the flag)
+   */
+  checkAndClearOverflow(): boolean {
+    // Atomics.exchange returns the old value and sets the new value
+    return Atomics.exchange(this.buffer, OVERFLOW_INDEX, 0) === 1
   }
 }

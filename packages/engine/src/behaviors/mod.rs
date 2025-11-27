@@ -20,11 +20,13 @@ pub use utility::UtilityBehavior;
 pub use plant::PlantBehavior;
 
 use crate::grid::Grid;
-use crate::elements::{CategoryId, CAT_POWDER, CAT_LIQUID, CAT_GAS, CAT_ENERGY, CAT_UTILITY, CAT_BIO};
+use crate::chunks::ChunkGrid;
+use crate::elements::{CategoryId, ElementId, CAT_POWDER, CAT_LIQUID, CAT_GAS, CAT_ENERGY, CAT_UTILITY, CAT_BIO};
 
 /// Update context passed to behaviors (mirrors TypeScript UpdateContext)
 pub struct UpdateContext<'a> {
     pub grid: &'a mut Grid,
+    pub chunks: &'a mut ChunkGrid,
     pub x: u32,
     pub y: u32,
     pub frame: u64,
@@ -32,6 +34,25 @@ pub struct UpdateContext<'a> {
     pub gravity_y: f32,
     pub ambient_temp: f32,
     pub rng: &'a mut u32,
+}
+
+impl<'a> UpdateContext<'a> {
+    #[inline]
+    pub fn mark_dirty(&mut self, x: u32, y: u32) {
+        self.chunks.mark_dirty(x, y);
+    }
+
+    #[inline]
+    pub fn set_particle_dirty(&mut self, x: u32, y: u32, element: ElementId, color: u32, life: u16, temp: f32) {
+        self.grid.set_particle(x, y, element, color, life, temp);
+        self.chunks.mark_dirty(x, y);
+    }
+
+    #[inline]
+    pub fn clear_cell_dirty(&mut self, x: u32, y: u32) {
+        self.grid.clear_cell(x, y);
+        self.chunks.mark_dirty(x, y);
+    }
 }
 
 /// Behavior trait - each category implements this

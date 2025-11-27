@@ -13,7 +13,7 @@
 
 use wasm_bindgen::prelude::*;
 use crate::grid::Grid;
-use crate::chunks::{ChunkGrid, CHUNK_SIZE};
+use crate::chunks::{ChunkGrid, CHUNK_SIZE, MergedDirtyRects};
 use crate::elements::{
     ELEMENT_DATA, ElementId, EL_EMPTY, ELEMENT_COUNT,
     get_color_with_variation, get_props
@@ -53,6 +53,10 @@ pub struct World {
     // Phase 3: Smart Rendering buffers
     dirty_list: Vec<u32>,           // List of dirty chunk indices for rendering
     chunk_transfer_buffer: Vec<u32>, // 32x32 pixel buffer for chunk extraction
+    
+    // Phase 2: Merged dirty rectangles for GPU batching
+    merged_rects: MergedDirtyRects,
+    rect_transfer_buffer: Vec<u32>, // Larger buffer for merged rect extraction
 }
 
 #[wasm_bindgen]
@@ -73,6 +77,10 @@ impl World {
             // Phase 3: Smart Rendering
             dirty_list: Vec::with_capacity(1000),
             chunk_transfer_buffer: vec![0u32; (CHUNK_SIZE * CHUNK_SIZE) as usize],
+            
+            // Phase 2: GPU Batching
+            merged_rects: MergedDirtyRects::new(500), // Max 500 rectangles
+            rect_transfer_buffer: vec![0u32; (CHUNK_SIZE * CHUNK_SIZE * 16) as usize], // Max 4x4 chunks = 128x128 pixels
         }
     }
 
@@ -96,6 +104,11 @@ impl World {
 
     pub fn set_ambient_temperature(&mut self, temp: f32) {
         self.ambient_temperature = temp;
+    }
+    
+    /// DEBUG: Get current ambient temperature
+    pub fn get_ambient_temperature(&self) -> f32 {
+        self.ambient_temperature
     }
 
     /// Add a particle at position
@@ -159,6 +172,7 @@ impl World {
         
         // Phase 4: Track removal in chunk
         self.chunks.remove_particle(x, y);
+        self.chunks.mark_dirty(x, y); // Ensure render updates even without movement
         
         self.grid.clear_cell(x, y);
         if self.particle_count > 0 {
@@ -391,6 +405,112 @@ impl World {
     pub fn chunks_y(&self) -> u32 {
         self.chunks.dimensions().1
     }
+    
+    // === PHASE 2: MERGED DIRTY RECTANGLES API ===
+    
+    /// Collect dirty chunks and merge into rectangles for GPU batching
+    /// Returns number of merged rectangles
+    /// 
+    /// Call get_merged_rect_* functions to get each rectangle's properties
+    pub fn collect_merged_rects(&mut self) -> usize {
+        // Collect and merge horizontally
+        let _count = self.chunks.collect_merged_dirty_rects(&mut self.merged_rects);
+        
+        // Also try to merge vertically
+        self.chunks.merge_vertical(&mut self.merged_rects);
+        
+        // Clear visual dirty flags for collected chunks
+        let total = self.chunks.total_chunks();
+        for i in 0..total {
+            if self.chunks.visual_dirty[i] {
+                self.chunks.clear_visual_dirty(i);
+            }
+        }
+        
+        self.merged_rects.count()
+    }
+    
+    /// DEBUG: Count dirty chunks WITHOUT clearing (for logging)
+    pub fn count_dirty_chunks(&self) -> usize {
+        let mut count = 0;
+        for i in 0..self.chunks.total_chunks() {
+            if self.chunks.visual_dirty[i] {
+                count += 1;
+            }
+        }
+        count
+    }
+    
+    /// Get merged rect X (in pixels)
+    pub fn get_merged_rect_x(&self, idx: usize) -> u32 {
+        self.merged_rects.get(idx).map(|r| r.cx * CHUNK_SIZE).unwrap_or(0)
+    }
+    
+    /// Get merged rect Y (in pixels)
+    pub fn get_merged_rect_y(&self, idx: usize) -> u32 {
+        self.merged_rects.get(idx).map(|r| r.cy * CHUNK_SIZE).unwrap_or(0)
+    }
+    
+    /// Get merged rect Width (in pixels)
+    pub fn get_merged_rect_w(&self, idx: usize) -> u32 {
+        self.merged_rects.get(idx).map(|r| r.cw * CHUNK_SIZE).unwrap_or(0)
+    }
+    
+    /// Get merged rect Height (in pixels)
+    pub fn get_merged_rect_h(&self, idx: usize) -> u32 {
+        self.merged_rects.get(idx).map(|r| r.ch * CHUNK_SIZE).unwrap_or(0)
+    }
+    
+    /// Extract pixels for a merged rectangle into transfer buffer
+    /// Returns pointer to the buffer
+    /// 
+    /// The buffer is laid out as row-major: width * height pixels
+    pub fn extract_rect_pixels(&mut self, idx: usize) -> *const u32 {
+        let rect = match self.merged_rects.get(idx) {
+            Some(r) => r.clone(),
+            None => return self.rect_transfer_buffer.as_ptr(),
+        };
+        
+        let px = rect.cx * CHUNK_SIZE;
+        let py = rect.cy * CHUNK_SIZE;
+        let pw = rect.cw * CHUNK_SIZE;
+        let ph = rect.ch * CHUNK_SIZE;
+        
+        // Clamp to world bounds
+        let end_x = (px + pw).min(self.grid.width());
+        let end_y = (py + ph).min(self.grid.height());
+        let actual_w = end_x - px;
+        let _actual_h = end_y - py;
+        
+        let grid_width = self.grid.width() as usize;
+        let colors_ptr = self.grid.colors.as_ptr();
+        let buffer_ptr = self.rect_transfer_buffer.as_mut_ptr();
+        
+        let mut buf_idx = 0usize;
+        
+        unsafe {
+            for y in py..end_y {
+                let row_offset = (y as usize) * grid_width;
+                let src_start = row_offset + (px as usize);
+                let row_len = actual_w as usize;
+                
+                std::ptr::copy_nonoverlapping(
+                    colors_ptr.add(src_start),
+                    buffer_ptr.add(buf_idx),
+                    row_len
+                );
+                
+                buf_idx += pw as usize; // Stride is full rect width
+            }
+        }
+        
+        self.rect_transfer_buffer.as_ptr()
+    }
+    
+    /// Get the size of the rect transfer buffer in bytes
+    pub fn rect_buffer_size(&self) -> usize {
+        self.rect_transfer_buffer.len() * 4
+    }
 }
 
 // Private simulation methods
@@ -508,6 +628,7 @@ impl World {
             // Create update context
             let mut ctx = UpdateContext {
                 grid: &mut self.grid,
+                chunks: &mut self.chunks,
                 x,
                 y,
                 frame: self.frame,
@@ -519,6 +640,9 @@ impl World {
             
             // Delegate to behavior registry
             self.behaviors.update(category, &mut ctx);
+            
+            // Drop ctx to release borrows
+            drop(ctx);
             
             // Check if particle moved (cell is now empty or different)
             let new_type = self.grid.get_type_unchecked(x, y);
@@ -588,6 +712,7 @@ impl World {
         // Create update context
         let mut ctx = UpdateContext {
             grid: &mut self.grid,
+            chunks: &mut self.chunks,
             x,
             y,
             frame: self.frame,
@@ -610,7 +735,8 @@ impl World {
     /// Process chemical reactions (mirrors TypeScript processReactionsTyped)
     fn process_reactions(&mut self, x: u32, y: u32, element: ElementId) {
         // Pick a random neighbor
-        let dir = xorshift32(&mut self.rng_state) % 4;
+        // PHASE 1 OPT: & 3 instead of % 4 (saves ~40 CPU cycles)
+        let dir = xorshift32(&mut self.rng_state) & 3;
         let xi = x as i32;
         let yi = y as i32;
         
@@ -629,7 +755,8 @@ impl World {
         // Check if there's a reaction
         if let Some(reaction) = get_reaction(element, neighbor_type) {
             // Roll the dice
-            let roll = (xorshift32(&mut self.rng_state) % 100) as u8;
+            // PHASE 1 OPT: fast-range reduction instead of % 100
+            let roll = ((xorshift32(&mut self.rng_state) as u64 * 100) >> 32) as u8;
             if roll >= reaction.chance { return; }
             
             // Apply the reaction

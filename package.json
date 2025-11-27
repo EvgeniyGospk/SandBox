@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
-    "build:wasm": "cd packages/engine && wasm-pack build --target web --out-dir ../engine-wasm",
+    "codegen": "node scripts/generate-elements.js",
+    "build:wasm": "npm run codegen && cd packages/engine && wasm-pack build --target web --out-dir ../engine-wasm",
     "lint": "turbo run lint",
     "clean": "turbo run clean && rm -rf node_modules"
   },

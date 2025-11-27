@@ -15,6 +15,7 @@
 #[macro_use]
 mod utils;
 
+mod generated_elements;
 mod elements;
 mod grid;
 mod chunks;

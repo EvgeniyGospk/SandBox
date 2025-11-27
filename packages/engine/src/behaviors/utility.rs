@@ -43,7 +43,7 @@ impl UtilityBehavior {
             
             // Don't destroy empty, void, or clone
             if neighbor_type != EL_EMPTY && neighbor_type != EL_VOID && neighbor_type != EL_CLONE {
-                ctx.grid.clear_cell(nx as u32, ny as u32);
+                ctx.clear_cell_dirty(nx as u32, ny as u32);
             }
         }
     }
@@ -97,7 +97,7 @@ impl UtilityBehavior {
             let seed = ((nx as u32 * 7 + ny as u32 * 13 + frame as u32) & 31) as u8;
             let props = &ELEMENT_DATA[source_type as usize];
             
-            ctx.grid.set_particle(
+            ctx.set_particle_dirty(
                 nx as u32, ny as u32,
                 source_type,
                 get_color_with_variation(source_type, seed),

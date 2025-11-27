@@ -31,6 +31,9 @@ import { screenToWorld as invertTransform } from '../lib/engine/transform'
 // Phase 3: WebGL Renderer for GPU-accelerated rendering
 import { WebGLRenderer } from '../lib/engine/WebGLRenderer'
 
+// Phase 3 (Fort Knox): Safe memory management
+import { MemoryManager } from '../lib/engine/MemoryManager'
+
 // Message types
 interface InitMessage {
   type: 'INIT'
@@ -106,10 +109,8 @@ let imageData: ImageData | null = null
 let pixels: Uint8ClampedArray | null = null
 let pixels32: Uint32Array | null = null
 
-// Memory views (zero-copy into WASM)
-let typesView: Uint8Array | null = null
-let colorsView: Uint32Array | null = null
-let temperatureView: Float32Array | null = null
+// Phase 3 (Fort Knox): Safe memory manager
+let memoryManager: MemoryManager | null = null
 
 // Simulation state
 let isPlaying = false
@@ -138,6 +139,11 @@ const STATS_INTERVAL = 200 // ms
 // Constants
 const BG_COLOR_32 = 0xFF0A0A0A
 const EL_EMPTY = 0
+
+// === DEBUG: Dirty chunk logging ===
+const DEBUG_DIRTY = true  // Set to false to disable logging
+let debugLogInterval = 0
+const DEBUG_LOG_EVERY = 60  // Log every N frames
 
 // Element mapping - MUST match Rust elements.rs exactly!
 const ELEMENT_MAP: Record<ElementType, number> = {
@@ -247,16 +253,15 @@ async function initEngine(initCanvas: OffscreenCanvas, width: number, height: nu
 }
 
 function updateMemoryViews() {
+  // Phase 3 (Fort Knox): Use MemoryManager for safe view access
   if (!engine || !wasmMemory) return
   
-  const size = engine.types_len()
-  const typesPtr = engine.types_ptr()
-  const colorsPtr = engine.colors_ptr()
-  const tempPtr = engine.temperature_ptr()
-  
-  typesView = new Uint8Array(wasmMemory.buffer, typesPtr, size)
-  colorsView = new Uint32Array(wasmMemory.buffer, colorsPtr, size)
-  temperatureView = new Float32Array(wasmMemory.buffer, tempPtr, size)
+  if (!memoryManager) {
+    memoryManager = new MemoryManager(wasmMemory, engine)
+  } else {
+    // Refresh views if memory grew
+    memoryManager.refresh()
+  }
 }
 
 // ============================================================================
@@ -285,14 +290,25 @@ function renderLoop(time: number) {
   // Phase 5: Process shared input buffer (zero-latency!)
   processSharedInput()
   
-  // Physics step
+  // Physics step (Phase 5: wrapped in try-catch for crash recovery)
   if (isPlaying) {
-    const steps = speed >= 1 ? Math.floor(speed) : 1
-    for (let i = 0; i < steps; i++) {
-      engine.step()
+    try {
+      const steps = speed >= 1 ? Math.floor(speed) : 1
+      for (let i = 0; i < steps; i++) {
+        engine.step()
+      }
+      // Memory might have grown
+      updateMemoryViews()
+    } catch (e) {
+      // Phase 5: WASM crashed - notify UI and stop simulation
+      console.error('💥 WASM simulation crashed:', e)
+      isPlaying = false
+      self.postMessage({
+        type: 'CRASH',
+        message: String(e),
+        canRecover: true
+      })
     }
-    // Memory might have grown
-    updateMemoryViews()
   }
   
   // Render
@@ -314,7 +330,7 @@ function renderFrame() {
   
   // Thermal mode path (uses Canvas2D to render, then uploads to WebGL)
   if (renderMode === 'thermal') {
-    if (!ctx || !pixels || !imageData || !temperatureView) return
+    if (!ctx || !pixels || !imageData || !memoryManager) return
     
     // Render thermal to ImageData
     renderThermal()
@@ -330,13 +346,60 @@ function renderFrame() {
   
   // Phase 3: WebGL Path (GPU-accelerated)
   if (useWebGL && renderer && wasmMemory) {
+    // === DEBUG: Log dirty chunks info ===
+    if (DEBUG_DIRTY) {
+      debugLogInterval++
+      if (debugLogInterval >= DEBUG_LOG_EVERY) {
+        debugLogInterval = 0
+        
+        // Get dirty count BEFORE render (without consuming!)
+        const dirtyCount = engine.count_dirty_chunks ? engine.count_dirty_chunks() : 0
+        
+        // Sample some chunk states
+        const chunksX = engine.chunks_x()
+        const chunksY = engine.chunks_y()
+        const totalChunks = chunksX * chunksY
+        
+        // Count ALL water and ice particles in the world
+        let waterCount = 0
+        let iceCount = 0
+        let sampleTemp = 0
+        let sampleCount = 0
+        
+        if (memoryManager) {
+          const types = memoryManager.types
+          const temps = memoryManager.temperature
+          const len = types.length
+          
+          // Scan entire world
+          for (let i = 0; i < len; i++) {
+            const type = types[i]
+            if (type === 6) { // EL_WATER
+              waterCount++
+              sampleTemp += temps[i]
+              sampleCount++
+            } else if (type === 5) { // EL_ICE
+              iceCount++
+              sampleTemp += temps[i]
+              sampleCount++
+            }
+          }
+        }
+        
+        const avgTemp = sampleCount > 0 ? (sampleTemp / sampleCount).toFixed(1) : 'N/A'
+        const ambientTemp = engine.get_ambient_temperature ? engine.get_ambient_temperature() : 'N/A'
+        
+        console.log(`🔍 DEBUG [Frame]: dirty=${dirtyCount}/${totalChunks}, water=${waterCount}, ice=${iceCount}, avgTemp=${avgTemp}°C, ambient=${ambientTemp}°C`)
+      }
+    }
+    
     // Use dirty rectangles for optimal GPU upload
     renderer.renderWithDirtyRects(engine, wasmMemory, transform)
     return
   }
   
   // Fallback: Canvas2D Path (when WebGL not available)
-  if (!ctx || !pixels32 || !imageData || !colorsView || !typesView) return
+  if (!ctx || !pixels32 || !imageData || !memoryManager) return
   
   const width = canvas.width
   const height = canvas.height
@@ -357,8 +420,10 @@ function renderFrame() {
 }
 
 function renderNormal() {
-  if (!pixels32 || !colorsView || !typesView) return
+  if (!pixels32 || !memoryManager) return
   
+  const typesView = memoryManager.types
+  const colorsView = memoryManager.colors
   const len = Math.min(typesView.length, pixels32.length)
   
   // Direct copy (WASM provides ABGR format)
@@ -373,8 +438,9 @@ function renderNormal() {
 }
 
 function renderThermal() {
-  if (!pixels || !temperatureView) return
+  if (!pixels || !memoryManager) return
   
+  const temperatureView = memoryManager.temperature
   const len = Math.min(temperatureView.length, pixels.length / 4)
   
   for (let i = 0; i < len; i++) {
@@ -501,9 +567,20 @@ function drawLine(x0: number, y0: number, x1: number, y1: number, radius: number
  * Phase 5: Process all pending input from shared buffer
  * Called every frame before physics step
  * Uses Bresenham interpolation for smooth lines!
+ * 
+ * Phase 3 (Fort Knox): Handles overflow - resets Bresenham to prevent artifacts
  */
 function processSharedInput() {
   if (!sharedInputBuffer || !engine) return
+  
+  // Phase 3 (Fort Knox): Check for buffer overflow
+  // If overflow occurred, reset Bresenham state to prevent line artifacts
+  // (e.g., line drawn from last known point to current point across the screen)
+  if (sharedInputBuffer.checkAndClearOverflow()) {
+    console.warn('🔒 Input buffer overflow detected - resetting Bresenham state')
+    lastInputX = null
+    lastInputY = null
+  }
   
   // Read all events accumulated since last frame (zero-allocation!)
   sharedInputBuffer.processAll((x, y, type, val) => {
@@ -628,6 +705,10 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
       
     case 'SET_RENDER_MODE':
       renderMode = msg.mode
+      // Force full texture upload when returning to normal mode
+      if (renderMode === 'normal' && useWebGL && renderer) {
+        renderer.requestFullUpload()
+      }
       break
       
     case 'CLEAR':

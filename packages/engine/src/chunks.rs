@@ -177,47 +177,88 @@ impl ChunkGrid {
     
     // === Wake neighbors ===
     
+    /// PHASE 1 OPT: Branchless neighbor wake with lookup table
+    /// 
+    /// Instead of 8 if-statements (branch misprediction nightmare),
+    /// we compute a bitmask from local position and iterate over set bits.
+    /// 
+    /// Lookup table indexed by: (near_left | near_right<<1 | near_top<<2 | near_bottom<<3)
+    /// Each entry is a bitmask of neighbors to wake:
+    ///   Bit 0: Left, Bit 1: Right, Bit 2: Top, Bit 3: Bottom
+    ///   Bit 4: Top-Left, Bit 5: Top-Right, Bit 6: Bottom-Left, Bit 7: Bottom-Right
+    /// 
+    /// Precomputed offsets for each bit: (dx, dy)
+    const NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
+        (-1, 0),   // 0: Left
+        (1, 0),    // 1: Right
+        (0, -1),   // 2: Top
+        (0, 1),    // 3: Bottom
+        (-1, -1),  // 4: Top-Left
+        (1, -1),   // 5: Top-Right
+        (-1, 1),   // 6: Bottom-Left
+        (1, 1),    // 7: Bottom-Right
+    ];
+    
+    /// Lookup table: index = (near_left | near_right<<1 | near_top<<2 | near_bottom<<3)
+    /// Value = bitmask of neighbors to wake
+    const WAKE_MASK_LUT: [u8; 16] = [
+        0b0000_0000, // 0: not near any edge
+        0b0000_0001, // 1: near left only -> wake left
+        0b0000_0010, // 2: near right only -> wake right
+        0b0000_0011, // 3: near left+right (impossible for 32px chunk, but handle it)
+        0b0000_0100, // 4: near top only -> wake top
+        0b0001_0101, // 5: near left+top -> wake left, top, top-left
+        0b0010_0110, // 6: near right+top -> wake right, top, top-right
+        0b0011_0111, // 7: near left+right+top
+        0b0000_1000, // 8: near bottom only -> wake bottom
+        0b0100_1001, // 9: near left+bottom -> wake left, bottom, bottom-left
+        0b1000_1010, // 10: near right+bottom -> wake right, bottom, bottom-right
+        0b1100_1011, // 11: near left+right+bottom
+        0b0000_1100, // 12: near top+bottom (impossible, but handle)
+        0b0101_1101, // 13: near left+top+bottom
+        0b1010_1110, // 14: near right+top+bottom
+        0b1111_1111, // 15: all edges (impossible)
+    ];
+    
     /// Wake chunk and its neighbors (called when particle moves near boundary)
+    /// PHASE 1 OPT: Branchless implementation using lookup table
     pub fn wake_neighbors(&mut self, x: u32, y: u32) {
         let (cx, cy) = self.chunk_coords(x, y);
+        
+        // PHASE 1 OPT: Use & instead of % for local coords (CHUNK_SIZE is power of 2)
+        let local_x = x & (CHUNK_SIZE - 1);
+        let local_y = y & (CHUNK_SIZE - 1);
+        
+        // Compute edge flags as 0 or 1 (branchless)
+        let near_left = (local_x < 2) as usize;
+        let near_right = (local_x >= CHUNK_SIZE - 2) as usize;
+        let near_top = (local_y < 2) as usize;
+        let near_bottom = (local_y >= CHUNK_SIZE - 2) as usize;
+        
+        // Build lookup index
+        let lut_idx = near_left | (near_right << 1) | (near_top << 2) | (near_bottom << 3);
+        let wake_mask = Self::WAKE_MASK_LUT[lut_idx];
+        
+        // Early exit if not near any edge (most common case)
+        if wake_mask == 0 { return; }
+        
         let cxi = cx as i32;
         let cyi = cy as i32;
         
-        // Check if near chunk boundary (within 2 pixels)
-        let local_x = x % CHUNK_SIZE;
-        let local_y = y % CHUNK_SIZE;
-        
-        let near_left = local_x < 2;
-        let near_right = local_x >= CHUNK_SIZE - 2;
-        let near_top = local_y < 2;
-        let near_bottom = local_y >= CHUNK_SIZE - 2;
-        
-        // Wake adjacent chunks if near boundary
-        if near_left && self.chunk_in_bounds(cxi - 1, cyi) {
-            self.mark_dirty_idx(self.chunk_idx_from_coords((cxi - 1) as u32, cy));
-        }
-        if near_right && self.chunk_in_bounds(cxi + 1, cyi) {
-            self.mark_dirty_idx(self.chunk_idx_from_coords((cxi + 1) as u32, cy));
-        }
-        if near_top && self.chunk_in_bounds(cxi, cyi - 1) {
-            self.mark_dirty_idx(self.chunk_idx_from_coords(cx, (cyi - 1) as u32));
-        }
-        if near_bottom && self.chunk_in_bounds(cxi, cyi + 1) {
-            self.mark_dirty_idx(self.chunk_idx_from_coords(cx, (cyi + 1) as u32));
-        }
-        
-        // Diagonals
-        if near_left && near_top && self.chunk_in_bounds(cxi - 1, cyi - 1) {
-            self.mark_dirty_idx(self.chunk_idx_from_coords((cxi - 1) as u32, (cyi - 1) as u32));
-        }
-        if near_right && near_top && self.chunk_in_bounds(cxi + 1, cyi - 1) {
-            self.mark_dirty_idx(self.chunk_idx_from_coords((cxi + 1) as u32, (cyi - 1) as u32));
-        }
-        if near_left && near_bottom && self.chunk_in_bounds(cxi - 1, cyi + 1) {
-            self.mark_dirty_idx(self.chunk_idx_from_coords((cxi - 1) as u32, (cyi + 1) as u32));
-        }
-        if near_right && near_bottom && self.chunk_in_bounds(cxi + 1, cyi + 1) {
-            self.mark_dirty_idx(self.chunk_idx_from_coords((cxi + 1) as u32, (cyi + 1) as u32));
+        // Iterate over set bits in wake_mask
+        let mut mask = wake_mask;
+        while mask != 0 {
+            let bit = mask.trailing_zeros() as usize;
+            mask &= mask - 1; // Clear lowest set bit
+            
+            let (dx, dy) = Self::NEIGHBOR_OFFSETS[bit];
+            let ncx = cxi + dx;
+            let ncy = cyi + dy;
+            
+            // Bounds check (still needed, but predictable branch)
+            if ncx >= 0 && ncx < self.chunks_x as i32 && ncy >= 0 && ncy < self.chunks_y as i32 {
+                self.mark_dirty_idx(self.chunk_idx_from_coords(ncx as u32, ncy as u32));
+            }
         }
     }
     
@@ -389,5 +430,167 @@ impl ChunkGrid {
                 None
             }
         })
+    }
+}
+
+// ============================================================================
+// PHASE 2: MERGED DIRTY RECTANGLES FOR GPU BATCHING
+// ============================================================================
+// 
+// Instead of uploading each dirty chunk separately (N calls to texSubImage2D),
+// we merge adjacent dirty chunks into larger rectangles.
+// 
+// Example: 6 dirty chunks in a row → 1 rectangle upload
+// 
+// Algorithm: Row-based run-length encoding
+// 1. For each row of chunks, find runs of consecutive dirty chunks
+// 2. Output (x, y, width, height) in CHUNK units
+
+/// Represents a merged rectangle of dirty chunks (in CHUNK coordinates)
+#[derive(Clone, Copy, Debug)]
+pub struct DirtyRect {
+    pub cx: u32,      // Chunk X
+    pub cy: u32,      // Chunk Y
+    pub cw: u32,      // Width in chunks
+    pub ch: u32,      // Height in chunks (always 1 for row-based RLE)
+}
+
+/// Buffer for storing merged dirty rectangles (reused across frames)
+pub struct MergedDirtyRects {
+    rects: Vec<DirtyRect>,
+    count: usize,
+}
+
+impl MergedDirtyRects {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            rects: vec![DirtyRect { cx: 0, cy: 0, cw: 0, ch: 0 }; capacity],
+            count: 0,
+        }
+    }
+    
+    #[inline]
+    pub fn clear(&mut self) {
+        self.count = 0;
+    }
+    
+    #[inline]
+    pub fn push(&mut self, rect: DirtyRect) {
+        if self.count < self.rects.len() {
+            self.rects[self.count] = rect;
+            self.count += 1;
+        }
+    }
+    
+    #[inline]
+    pub fn count(&self) -> usize {
+        self.count
+    }
+    
+    #[inline]
+    pub fn get(&self, idx: usize) -> Option<&DirtyRect> {
+        if idx < self.count {
+            Some(&self.rects[idx])
+        } else {
+            None
+        }
+    }
+    
+    /// Get raw pointer for JS interop
+    pub fn as_ptr(&self) -> *const DirtyRect {
+        self.rects.as_ptr()
+    }
+}
+
+impl ChunkGrid {
+    /// PHASE 2: Collect dirty chunks and merge into rectangles
+    /// 
+    /// Uses row-based run-length encoding to merge horizontal runs.
+    /// Returns number of rectangles generated.
+    /// 
+    /// Call get_merged_rect(idx) to retrieve each rectangle.
+    pub fn collect_merged_dirty_rects(&self, output: &mut MergedDirtyRects) -> usize {
+        output.clear();
+        
+        // Row-based RLE: scan each row and find runs of consecutive dirty chunks
+        for cy in 0..self.chunks_y {
+            let mut run_start: Option<u32> = None;
+            
+            for cx in 0..self.chunks_x {
+                let idx = self.chunk_idx_from_coords(cx, cy);
+                let is_dirty = Self::check_bit(&self.visual_dirty_bits, idx);
+                
+                if is_dirty {
+                    // Start or continue a run
+                    if run_start.is_none() {
+                        run_start = Some(cx);
+                    }
+                } else {
+                    // End of run (if any)
+                    if let Some(start) = run_start {
+                        output.push(DirtyRect {
+                            cx: start,
+                            cy,
+                            cw: cx - start,
+                            ch: 1,
+                        });
+                        run_start = None;
+                    }
+                }
+            }
+            
+            // End of row - close any open run
+            if let Some(start) = run_start {
+                output.push(DirtyRect {
+                    cx: start,
+                    cy,
+                    cw: self.chunks_x - start,
+                    ch: 1,
+                });
+            }
+        }
+        
+        output.count()
+    }
+    
+    /// PHASE 2: Try to merge vertically adjacent rectangles
+    /// 
+    /// After row-based RLE, we can merge rectangles that have the same
+    /// X start and width across consecutive rows.
+    /// 
+    /// This further reduces the number of GPU uploads.
+    pub fn merge_vertical(&self, rects: &mut MergedDirtyRects) {
+        if rects.count() < 2 { return; }
+        
+        // Simple O(n²) merge - fine for small numbers of rectangles
+        let mut i = 0;
+        while i < rects.count {
+            let rect_i = rects.rects[i];
+            let mut j = i + 1;
+            
+            while j < rects.count {
+                let rect_j = rects.rects[j];
+                
+                // Can merge if same X, same width, and adjacent rows
+                if rect_j.cx == rect_i.cx 
+                    && rect_j.cw == rect_i.cw 
+                    && rect_j.cy == rect_i.cy + rect_i.ch 
+                {
+                    // Extend rect_i downward
+                    rects.rects[i].ch += rect_j.ch;
+                    
+                    // Remove rect_j by swapping with last
+                    rects.count -= 1;
+                    if j < rects.count {
+                        rects.rects[j] = rects.rects[rects.count];
+                    }
+                    // Don't increment j - check the swapped element
+                } else {
+                    j += 1;
+                }
+            }
+            
+            i += 1;
+        }
     }
 }

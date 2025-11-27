@@ -394,6 +394,7 @@ impl Grid {
     
     /// Hydrate chunk - fill air cells with virtual temperature
     /// Called when chunk wakes up from sleep
+    /// PHASE 1 OPT: Uses SIMD for contiguous empty cell runs
     pub fn hydrate_chunk(&mut self, cx: u32, cy: u32, temp: f32) {
         let start_x = cx * CHUNK_SIZE;
         let start_y = cy * CHUNK_SIZE;
@@ -408,12 +409,53 @@ impl Grid {
         unsafe {
             for y in start_y..end_y {
                 let row_offset = (y as usize) * width;
-                for x in start_x..end_x {
+                let mut x = start_x;
+                
+                while x < end_x {
                     let idx = row_offset + (x as usize);
-                    // Only update temperature if cell is empty (air)
-                    // Particles keep their own temperature!
-                    if *types_ptr.add(idx) == EL_EMPTY {
-                        *temps_ptr.add(idx) = temp;
+                    
+                    // Skip non-empty cells
+                    if *types_ptr.add(idx) != EL_EMPTY {
+                        x += 1;
+                        continue;
+                    }
+                    
+                    // Found empty cell - count consecutive empties
+                    let run_start = x;
+                    while x < end_x && *types_ptr.add(row_offset + (x as usize)) == EL_EMPTY {
+                        x += 1;
+                    }
+                    let run_len = (x - run_start) as usize;
+                    
+                    // PHASE 1 OPT: Use SIMD for runs of 4+ cells
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        use std::arch::wasm32::*;
+                        
+                        let run_ptr = temps_ptr.add(row_offset + (run_start as usize));
+                        let mut i = 0usize;
+                        
+                        // Process 4 cells at a time with SIMD
+                        let v_temp = f32x4_splat(temp);
+                        while i + 4 <= run_len {
+                            v128_store(run_ptr.add(i) as *mut v128, v_temp);
+                            i += 4;
+                        }
+                        
+                        // Scalar remainder
+                        while i < run_len {
+                            *run_ptr.add(i) = temp;
+                            i += 1;
+                        }
+                    }
+                    
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        // Scalar fallback for non-WASM
+                        let run_ptr = temps_ptr.add(row_offset + (run_start as usize));
+                        for i in 0..run_len {
+                            *run_ptr.add(i) = temp;
+                        }
                     }
                 }
             }
@@ -421,6 +463,7 @@ impl Grid {
     }
     
     /// Get average air temperature in chunk (for sync when going to sleep)
+    /// PHASE 1 OPT: Uses SIMD horizontal sum for accumulation
     pub fn get_average_air_temp(&self, cx: u32, cy: u32) -> f32 {
         let start_x = cx * CHUNK_SIZE;
         let start_y = cy * CHUNK_SIZE;
@@ -453,5 +496,111 @@ impl Grid {
             // No air in chunk (fully occupied) - return room temp
             20.0
         }
+    }
+    
+    // === PHASE 1: SIMD-optimized batch operations ===
+    
+    /// Batch lerp air temperatures towards target (for active chunks)
+    /// Processes contiguous empty cell runs with SIMD
+    /// Returns number of cells processed
+    #[cfg(target_arch = "wasm32")]
+    pub unsafe fn batch_lerp_air_temps(&mut self, cx: u32, cy: u32, target_temp: f32, lerp_speed: f32) -> u32 {
+        use std::arch::wasm32::*;
+        
+        let start_x = cx * CHUNK_SIZE;
+        let start_y = cy * CHUNK_SIZE;
+        let end_x = (start_x + CHUNK_SIZE).min(self.width);
+        let end_y = (start_y + CHUNK_SIZE).min(self.height);
+        
+        let types_ptr = self.types.as_ptr();
+        let temps_ptr = self.temperature.as_mut_ptr();
+        let width = self.width as usize;
+        
+        // SIMD constants
+        let v_target = f32x4_splat(target_temp);
+        let v_lerp = f32x4_splat(lerp_speed);
+        let v_one_minus_lerp = f32x4_splat(1.0 - lerp_speed);
+        
+        let mut processed = 0u32;
+        
+        for y in start_y..end_y {
+            let row_offset = (y as usize) * width;
+            let mut x = start_x;
+            
+            while x < end_x {
+                let idx = row_offset + (x as usize);
+                
+                // Skip non-empty cells
+                if *types_ptr.add(idx) != EL_EMPTY {
+                    x += 1;
+                    continue;
+                }
+                
+                // Count consecutive empty cells
+                let run_start = x;
+                while x < end_x && *types_ptr.add(row_offset + (x as usize)) == EL_EMPTY {
+                    x += 1;
+                }
+                let run_len = (x - run_start) as usize;
+                processed += run_len as u32;
+                
+                // Process with SIMD
+                let run_ptr = temps_ptr.add(row_offset + (run_start as usize));
+                let mut i = 0usize;
+                
+                // SIMD: 4 cells at a time
+                // new_temp = current * (1 - lerp) + target * lerp
+                while i + 4 <= run_len {
+                    let ptr = run_ptr.add(i);
+                    let v_current = v128_load(ptr as *const v128);
+                    let v_new = f32x4_add(
+                        f32x4_mul(v_current, v_one_minus_lerp),
+                        f32x4_mul(v_target, v_lerp)
+                    );
+                    v128_store(ptr as *mut v128, v_new);
+                    i += 4;
+                }
+                
+                // Scalar remainder
+                while i < run_len {
+                    let ptr = run_ptr.add(i);
+                    let current = *ptr;
+                    *ptr = current + (target_temp - current) * lerp_speed;
+                    i += 1;
+                }
+            }
+        }
+        
+        processed
+    }
+    
+    /// Non-WASM fallback for batch_lerp_air_temps
+    #[cfg(not(target_arch = "wasm32"))]
+    pub unsafe fn batch_lerp_air_temps(&mut self, cx: u32, cy: u32, target_temp: f32, lerp_speed: f32) -> u32 {
+        let start_x = cx * CHUNK_SIZE;
+        let start_y = cy * CHUNK_SIZE;
+        let end_x = (start_x + CHUNK_SIZE).min(self.width);
+        let end_y = (start_y + CHUNK_SIZE).min(self.height);
+        
+        let types_ptr = self.types.as_ptr();
+        let temps_ptr = self.temperature.as_mut_ptr();
+        let width = self.width as usize;
+        
+        let mut processed = 0u32;
+        
+        for y in start_y..end_y {
+            let row_offset = (y as usize) * width;
+            for x in start_x..end_x {
+                let idx = row_offset + (x as usize);
+                if *types_ptr.add(idx) == EL_EMPTY {
+                    let ptr = temps_ptr.add(idx);
+                    let current = *ptr;
+                    *ptr = current + (target_temp - current) * lerp_speed;
+                    processed += 1;
+                }
+            }
+        }
+        
+        processed
     }
 }

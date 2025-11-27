@@ -72,7 +72,7 @@ impl PlantBehavior {
         let seed = ((x as u32 * 11 + y as u32 * 17 + ctx.frame as u32) & 31) as u8;
         let props = &ELEMENT_DATA[EL_PLANT as usize];
         
-        ctx.grid.set_particle(
+        ctx.set_particle_dirty(
             x as u32, y as u32,
             EL_PLANT,
             get_color_with_variation(EL_PLANT, seed),
@@ -129,31 +129,34 @@ impl PlantBehavior {
         
         // Too hot - burns
         if temp > 150.0 {
-            ctx.grid.clear_cell(x, y);
+            ctx.clear_cell_dirty(x, y);
             return;
         }
         
         // 5% chance to try growing each frame (EXACT TypeScript: Math.random() > 0.05)
-        let rand = xorshift32(ctx.rng);
-        if (rand % 100) > 5 { return; }
+        // PHASE 1 OPT: fast-range reduction instead of % 100
+        let rand = ((xorshift32(ctx.rng) as u64 * 100) >> 32) as u32;
+        if rand > 5 { return; }
         
         // Check if can grow up
         let can_grow_up = ctx.grid.in_bounds(xi, yi - 1) && ctx.grid.is_empty(xi, yi - 1);
         
         if !can_grow_up {
             // 20% chance to try growing sideways (EXACT TypeScript: Math.random() > 0.2)
-            let rand2 = xorshift32(ctx.rng);
-            if (rand2 % 100) > 20 { return; }
+            // PHASE 1 OPT: fast-range reduction instead of % 100
+            let rand2 = ((xorshift32(ctx.rng) as u64 * 100) >> 32) as u32;
+            if rand2 > 20 { return; }
         }
         
         // Find water within radius 3
-        if let Some((wx, wy)) = self.find_water(ctx, xi, yi, 3) {
-            // Consume water
-            ctx.grid.clear_cell(wx as u32, wy as u32);
+            if let Some((wx, wy)) = self.find_water(ctx, xi, yi, 3) {
+                // Consume water
+                ctx.clear_cell_dirty(wx as u32, wy as u32);
             
             // Choose grow direction using weighted random (EXACT TypeScript)
-            let rand3 = xorshift32(ctx.rng);
-            let rand_f = (rand3 % 1000) as f32 / 1000.0;
+            // PHASE 1 OPT: fast-range reduction instead of % 1000
+            let rand3 = ((xorshift32(ctx.rng) as u64 * 1000) >> 32) as u32;
+            let rand_f = rand3 as f32 / 1000.0;
             
             let mut cumulative = 0.0;
             let mut chosen = GROW_OPTIONS[0];
