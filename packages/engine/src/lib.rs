@@ -22,6 +22,9 @@ mod chunks;
 mod behaviors;
 mod reactions;
 mod temperature;
+mod physics;  // Phase 2: Newtonian Physics
+mod rigid_body;  // Rigid body structure
+mod rigid_body_system;  // Rigid body manager
 mod world;
 
 use wasm_bindgen::prelude::*;

@@ -8,6 +8,7 @@
  */
 
 import type { ElementType, RenderMode, ToolType } from './types'
+import { ELEMENT_NAME_TO_ID } from './generated_elements'
 import { screenToWorld as invertTransform } from './transform'
 import { 
   SharedInputBuffer, 
@@ -40,14 +41,6 @@ export type CrashCallback = (message: string, canRecover: boolean) => void
  * bridge.addParticles(x, y, radius, element)
  * ```
  */
-// Element name to ID mapping (must match Rust elements.rs)
-const ELEMENT_TO_ID: Record<ElementType, number> = {
-  'empty': 0, 'stone': 1, 'sand': 2, 'wood': 3, 'metal': 4, 'ice': 5,
-  'water': 6, 'oil': 7, 'lava': 8, 'acid': 9, 'steam': 10, 'smoke': 11,
-  'fire': 12, 'spark': 13, 'electricity': 14, 'gunpowder': 15,
-  'clone': 16, 'void': 17, 'dirt': 18, 'seed': 19, 'plant': 20
-}
-
 export class WorkerBridge {
   private worker: Worker | null = null
   private _width: number = 0
@@ -57,6 +50,9 @@ export class WorkerBridge {
   // Phase 5: Shared input buffer for zero-latency input
   private inputBuffer: SharedInputBuffer | null = null
   private useSharedInput: boolean = false
+  private pipetteResolvers: Map<number, (el: ElementType | null) => void> = new Map()
+  private snapshotResolvers: Map<number, (data: ArrayBuffer | null) => void> = new Map()
+  private requestId = 1
   
   // Callbacks
   public onStats: StatsCallback | null = null
@@ -114,6 +110,24 @@ export class WorkerBridge {
               console.error('💥 WASM Crash:', msg.message)
               this.onCrash?.(msg.message, msg.canRecover ?? true)
               break
+            
+            case 'PIPETTE_RESULT': {
+              const resolver = this.pipetteResolvers.get(msg.id)
+              if (resolver) {
+                resolver(msg.element ?? null)
+                this.pipetteResolvers.delete(msg.id)
+              }
+              break
+            }
+
+            case 'SNAPSHOT_RESULT': {
+              const resolver = this.snapshotResolvers.get(msg.id)
+              if (resolver) {
+                resolver(msg.buffer ?? null)
+                this.snapshotResolvers.delete(msg.id)
+              }
+              break
+            }
           }
         }
         
@@ -167,9 +181,13 @@ export class WorkerBridge {
   play(): void {
     this.worker?.postMessage({ type: 'PLAY' })
   }
-  
+
   pause(): void {
     this.worker?.postMessage({ type: 'PAUSE' })
+  }
+
+  step(): void {
+    this.worker?.postMessage({ type: 'STEP' })
   }
   
   clear(): void {
@@ -182,7 +200,14 @@ export class WorkerBridge {
    * Add/remove particles (screen coordinates are converted to world)
    * Phase 5: Uses SharedArrayBuffer when available for zero-latency!
    */
-  handleInput(screenX: number, screenY: number, radius: number, element: ElementType, tool: ToolType): void {
+  handleInput(
+    screenX: number,
+    screenY: number,
+    radius: number,
+    element: ElementType,
+    tool: ToolType,
+    brushShape: 'circle' | 'square' | 'line' = 'circle'
+  ): void {
     const viewport = { width: this._width, height: this._height }
     const world = invertTransform(
       screenX,
@@ -198,7 +223,7 @@ export class WorkerBridge {
       if (tool === 'eraser') {
         this.inputBuffer.pushErase(worldX, worldY, radius)
       } else if (tool === 'brush') {
-        const elementId = ELEMENT_TO_ID[element] ?? 0
+        const elementId = ELEMENT_NAME_TO_ID[element] ?? 0
         if (elementId !== 0) { // Don't push empty
           this.inputBuffer.pushBrush(worldX, worldY, radius, elementId)
         }
@@ -213,6 +238,7 @@ export class WorkerBridge {
       y: screenY,
       radius,
       element,
+      brushShape,
       tool
     })
   }
@@ -229,6 +255,79 @@ export class WorkerBridge {
    */
   removeParticles(screenX: number, screenY: number, radius: number): void {
     this.handleInput(screenX, screenY, radius, 'empty', 'eraser')
+  }
+
+  /**
+   * Flood fill tool (worker only)
+   */
+  fill(screenX: number, screenY: number, element: ElementType): void {
+    const viewport = { width: this._width, height: this._height }
+    const world = invertTransform(
+      screenX,
+      screenY,
+      { zoom: this.zoom, panX: this.panX, panY: this.panY },
+      viewport
+    )
+    this.worker?.postMessage({
+      type: 'FILL',
+      x: Math.floor(world.x),
+      y: Math.floor(world.y),
+      element
+    })
+  }
+  
+  /**
+   * Spawn a rigid body at world coordinates
+   */
+  spawnRigidBody(
+    worldX: number, 
+    worldY: number, 
+    size: number, 
+    shape: 'box' | 'circle', 
+    element: ElementType
+  ): void {
+    this.worker?.postMessage({
+      type: 'SPAWN_RIGID_BODY',
+      x: Math.floor(worldX),
+      y: Math.floor(worldY),
+      size: Math.floor(size),
+      shape,
+      element
+    })
+  }
+
+  /**
+   * Pipette tool - returns element under cursor
+   */
+  pipette(screenX: number, screenY: number): Promise<ElementType | null> {
+    const id = this.requestId++
+    return new Promise((resolve) => {
+      this.pipetteResolvers.set(id, resolve)
+      this.worker?.postMessage({
+        type: 'PIPETTE',
+        id,
+        x: screenX,
+        y: screenY,
+      })
+    })
+  }
+
+  /**
+   * Capture snapshot of world (types only)
+   */
+  saveSnapshot(): Promise<ArrayBuffer | null> {
+    const id = this.requestId++
+    return new Promise((resolve) => {
+      this.snapshotResolvers.set(id, resolve)
+      this.worker?.postMessage({ type: 'SNAPSHOT', id })
+    })
+  }
+
+  /**
+   * Load snapshot buffer (must match world dimensions)
+   */
+  loadSnapshot(buffer: ArrayBuffer): void {
+    this.worker?.postMessage({ type: 'LOAD_SNAPSHOT', buffer }, [buffer])
   }
   
   /**

@@ -19,8 +19,11 @@ use crate::elements::{
     get_color_with_variation, get_props
 };
 use crate::behaviors::{BehaviorRegistry, UpdateContext};
-use crate::reactions::{get_reaction, Reaction};
+use crate::reactions::{Reaction, ReactionSystem};
 use crate::temperature::process_temperature_grid_chunked;
+use crate::physics::update_particle_physics;
+use crate::rigid_body::RigidBody;
+use crate::rigid_body_system::RigidBodySystem;
 
 /// Random number generator (xorshift32)
 #[inline]
@@ -39,6 +42,8 @@ pub struct World {
     grid: Grid,
     chunks: ChunkGrid,
     behaviors: BehaviorRegistry,
+    reactions: ReactionSystem,  // Phase 1: Data-driven O(1) reaction lookup
+    rigid_bodies: RigidBodySystem,  // Rigid body physics system
     
     // Settings
     gravity_x: f32,
@@ -68,6 +73,8 @@ impl World {
             grid: Grid::new(width, height),
             chunks: ChunkGrid::new(width, height),
             behaviors: BehaviorRegistry::new(),
+            reactions: ReactionSystem::new(), // Phase 1: O(1) reaction lookup
+            rigid_bodies: RigidBodySystem::new(), // Rigid body physics
             gravity_x: 0.0,
             gravity_y: 1.0,
             ambient_temperature: 20.0,
@@ -97,9 +104,10 @@ impl World {
     pub fn frame(&self) -> u64 { self.frame }
 
     pub fn set_gravity(&mut self, x: f32, y: f32) {
-        // Match TypeScript: gx/gy = sign of gravity, can be 0
-        self.gravity_x = if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
-        self.gravity_y = if y > 0.0 { 1.0 } else if y < 0.0 { -1.0 } else { 0.0 };
+        // Phase 2: Use actual gravity values for velocity-based physics
+        // Higher values = faster acceleration
+        self.gravity_x = x;
+        self.gravity_y = y;
     }
 
     pub fn set_ambient_temperature(&mut self, temp: f32) {
@@ -204,9 +212,36 @@ impl World {
         self.particle_count = 0;
         self.frame = 0;
     }
+    
+    // === RIGID BODY API ===
+    
+    /// Spawn a rectangular rigid body at position (x, y) with size (w, h)
+    /// Returns the body ID
+    pub fn spawn_rigid_body(&mut self, x: f32, y: f32, w: i32, h: i32, element_id: u8) -> u32 {
+        let body = RigidBody::new_rect(x, y, w, h, element_id, 0);
+        self.rigid_bodies.add_body(body, &mut self.grid, &mut self.chunks)
+    }
+    
+    /// Spawn a circular rigid body at position (x, y) with given radius
+    /// Returns the body ID
+    pub fn spawn_rigid_circle(&mut self, x: f32, y: f32, radius: i32, element_id: u8) -> u32 {
+        let body = RigidBody::new_circle(x, y, radius, element_id, 0);
+        self.rigid_bodies.add_body(body, &mut self.grid, &mut self.chunks)
+    }
+    
+    /// Remove a rigid body by ID
+    pub fn remove_rigid_body(&mut self, id: u32) {
+        self.rigid_bodies.remove_body(id);
+    }
+    
+    /// Get number of active rigid bodies
+    pub fn rigid_body_count(&self) -> usize {
+        self.rigid_bodies.body_count()
+    }
 
     /// Step the simulation forward
     /// Phase 4: Only process active chunks!
+    /// Phase 2: Newtonian physics with velocity
     pub fn step(&mut self) {
         // === LAZY HYDRATION: Process waking chunks ===
         // When a chunk transitions Sleep -> Active, we need to fill its air cells
@@ -219,6 +254,14 @@ impl World {
         
         // Phase 4: Begin frame for chunk tracking
         self.chunks.begin_frame();
+        
+        // === RIGID BODY PHYSICS ===
+        // Update rigid bodies BEFORE particle physics so particles can react to new body positions
+        self.rigid_bodies.update(&mut self.grid, &mut self.chunks, self.gravity_y);
+        
+        // === PHASE 2: PHYSICS PASS ===
+        // Apply gravity and velocity-based movement BEFORE behavior pass
+        self.process_physics();
         
         let go_right = (self.frame & 1) == 0;
         let (chunks_x, chunks_y) = self.chunks.dimensions();
@@ -285,6 +328,68 @@ impl World {
             for i in 0..count {
                 let (from_x, from_y, to_x, to_y) = *moves_ptr.add(i);
                 self.chunks.move_particle(from_x, from_y, to_x, to_y);
+            }
+        }
+    }
+    
+    /// Phase 2: Process physics for all particles in active chunks
+    /// Applies gravity and velocity-based movement
+    /// 
+    /// CRITICAL: Processing order depends on gravity direction!
+    /// - Positive gravity (down): process bottom-to-top
+    /// - Negative gravity (up): process top-to-bottom
+    fn process_physics(&mut self) {
+        let (chunks_x, chunks_y) = self.chunks.dimensions();
+        let gravity_y = self.gravity_y;
+        
+        // Choose processing order based on gravity direction
+        if gravity_y >= 0.0 {
+            // Positive gravity: particles fall DOWN → process bottom-to-top
+            for cy in (0..chunks_y).rev() {
+                for cx in 0..chunks_x {
+                    self.process_physics_chunk(cx, cy, gravity_y, false);
+                }
+            }
+        } else {
+            // Negative gravity: particles fly UP → process top-to-bottom
+            for cy in 0..chunks_y {
+                for cx in 0..chunks_x {
+                    self.process_physics_chunk(cx, cy, gravity_y, true);
+                }
+            }
+        }
+    }
+    
+    /// Process physics for a single chunk
+    fn process_physics_chunk(&mut self, cx: u32, cy: u32, gravity_y: f32, top_to_bottom: bool) {
+        if self.chunks.is_sleeping(cx, cy) {
+            return;
+        }
+        
+        let start_x = cx * CHUNK_SIZE;
+        let start_y = cy * CHUNK_SIZE;
+        let end_x = (start_x + CHUNK_SIZE).min(self.grid.width());
+        let end_y = (start_y + CHUNK_SIZE).min(self.grid.height());
+        
+        if top_to_bottom {
+            // For negative gravity: process top-to-bottom
+            for y in start_y..end_y {
+                for x in start_x..end_x {
+                    let element = self.grid.get_type(x as i32, y as i32);
+                    if element != EL_EMPTY {
+                        update_particle_physics(&mut self.grid, &mut self.chunks, x, y, gravity_y);
+                    }
+                }
+            }
+        } else {
+            // For positive gravity: process bottom-to-top
+            for y in (start_y..end_y).rev() {
+                for x in start_x..end_x {
+                    let element = self.grid.get_type(x as i32, y as i32);
+                    if element != EL_EMPTY {
+                        update_particle_physics(&mut self.grid, &mut self.chunks, x, y, gravity_y);
+                    }
+                }
             }
         }
     }
@@ -752,15 +857,15 @@ impl World {
         let neighbor_type = self.grid.get_type(nx, ny);
         if neighbor_type == EL_EMPTY { return; }
         
-        // Check if there's a reaction
-        if let Some(reaction) = get_reaction(element, neighbor_type) {
-            // Roll the dice
-            // PHASE 1 OPT: fast-range reduction instead of % 100
-            let roll = ((xorshift32(&mut self.rng_state) as u64 * 100) >> 32) as u8;
+        // Phase 1: O(1) reaction lookup from LUT
+        if let Some(reaction) = self.reactions.get(element, neighbor_type) {
+            // Roll the dice (chance is 0-255 in new system)
+            let roll = (xorshift32(&mut self.rng_state) & 0xFF) as u8;
             if roll >= reaction.chance { return; }
             
-            // Apply the reaction
-            self.apply_reaction(x, y, nx as u32, ny as u32, reaction);
+            // Copy reaction to release the borrow before apply
+            let r = *reaction;
+            self.apply_reaction(x, y, nx as u32, ny as u32, &r);
         }
     }
     

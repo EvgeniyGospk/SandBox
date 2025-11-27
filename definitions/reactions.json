@@ -1,0 +1,228 @@
+{
+  "$schema": "./reactions.schema.json",
+  "version": "1.0.0",
+  "description": "Chemical reactions between elements - Data-driven bilateral system",
+  
+  "reactions": [
+    {
+      "id": "fire_wood",
+      "aggressor": "fire",
+      "victim": "wood",
+      "result_aggressor": "smoke",
+      "result_victim": "fire",
+      "chance": 0.10,
+      "spawn": "smoke",
+      "comment": "Fire spreads to wood, producing smoke"
+    },
+    {
+      "id": "fire_oil",
+      "aggressor": "fire",
+      "victim": "oil",
+      "result_aggressor": "smoke",
+      "result_victim": "fire",
+      "chance": 0.20,
+      "spawn": "smoke",
+      "comment": "Oil catches fire easily"
+    },
+    {
+      "id": "fire_water",
+      "aggressor": "fire",
+      "victim": "water",
+      "result_aggressor": "empty",
+      "result_victim": "steam",
+      "chance": 0.50,
+      "spawn": null,
+      "comment": "Water extinguishes fire, becomes steam"
+    },
+    {
+      "id": "fire_ice",
+      "aggressor": "fire",
+      "victim": "ice",
+      "result_aggressor": "empty",
+      "result_victim": "water",
+      "chance": 0.30,
+      "spawn": "steam",
+      "comment": "Fire melts ice"
+    },
+    {
+      "id": "fire_gunpowder",
+      "aggressor": "fire",
+      "victim": "gunpowder",
+      "result_aggressor": "fire",
+      "result_victim": "fire",
+      "chance": 1.00,
+      "spawn": "smoke",
+      "comment": "Gunpowder explodes instantly"
+    },
+    {
+      "id": "fire_plant",
+      "aggressor": "fire",
+      "victim": "plant",
+      "result_aggressor": "smoke",
+      "result_victim": "fire",
+      "chance": 0.10,
+      "spawn": "smoke",
+      "comment": "Plants burn like wood"
+    },
+    {
+      "id": "fire_seed",
+      "aggressor": "fire",
+      "victim": "seed",
+      "result_aggressor": "smoke",
+      "result_victim": "fire",
+      "chance": 0.20,
+      "spawn": null,
+      "comment": "Seeds burn quickly"
+    },
+    {
+      "id": "lava_water",
+      "aggressor": "lava",
+      "victim": "water",
+      "result_aggressor": "stone",
+      "result_victim": "steam",
+      "chance": 0.15,
+      "spawn": "steam",
+      "comment": "Lava cools to stone, water becomes steam"
+    },
+    {
+      "id": "lava_wood",
+      "aggressor": "lava",
+      "victim": "wood",
+      "result_aggressor": null,
+      "result_victim": "fire",
+      "chance": 0.30,
+      "spawn": "smoke",
+      "comment": "Lava ignites wood"
+    },
+    {
+      "id": "lava_oil",
+      "aggressor": "lava",
+      "victim": "oil",
+      "result_aggressor": null,
+      "result_victim": "fire",
+      "chance": 0.40,
+      "spawn": "smoke",
+      "comment": "Lava ignites oil"
+    },
+    {
+      "id": "lava_ice",
+      "aggressor": "lava",
+      "victim": "ice",
+      "result_aggressor": "stone",
+      "result_victim": "steam",
+      "chance": 0.30,
+      "spawn": null,
+      "comment": "Lava melts ice completely"
+    },
+    {
+      "id": "lava_gunpowder",
+      "aggressor": "lava",
+      "victim": "gunpowder",
+      "result_aggressor": null,
+      "result_victim": "fire",
+      "chance": 1.00,
+      "spawn": "smoke",
+      "comment": "Gunpowder explodes from lava heat"
+    },
+    {
+      "id": "lava_plant",
+      "aggressor": "lava",
+      "victim": "plant",
+      "result_aggressor": null,
+      "result_victim": "fire",
+      "chance": 0.50,
+      "spawn": "smoke",
+      "comment": "Lava burns plants"
+    },
+    {
+      "id": "lava_dirt",
+      "aggressor": "lava",
+      "victim": "dirt",
+      "result_aggressor": null,
+      "result_victim": "stone",
+      "chance": 0.05,
+      "spawn": null,
+      "comment": "Lava slowly hardens dirt to stone"
+    },
+    {
+      "id": "acid_stone",
+      "aggressor": "acid",
+      "victim": "stone",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.10,
+      "spawn": "smoke",
+      "comment": "Acid dissolves stone"
+    },
+    {
+      "id": "acid_metal",
+      "aggressor": "acid",
+      "victim": "metal",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.05,
+      "spawn": null,
+      "comment": "Acid slowly dissolves metal"
+    },
+    {
+      "id": "acid_wood",
+      "aggressor": "acid",
+      "victim": "wood",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.20,
+      "spawn": null,
+      "comment": "Acid dissolves wood"
+    },
+    {
+      "id": "acid_ice",
+      "aggressor": "acid",
+      "victim": "ice",
+      "result_aggressor": "empty",
+      "result_victim": "water",
+      "chance": 0.20,
+      "spawn": null,
+      "comment": "Acid melts ice to water"
+    },
+    {
+      "id": "acid_plant",
+      "aggressor": "acid",
+      "victim": "plant",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.15,
+      "spawn": null,
+      "comment": "Acid dissolves plants"
+    },
+    {
+      "id": "acid_dirt",
+      "aggressor": "acid",
+      "victim": "dirt",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.05,
+      "spawn": null,
+      "comment": "Acid dissolves dirt slowly"
+    },
+    {
+      "id": "water_lava",
+      "aggressor": "water",
+      "victim": "lava",
+      "result_aggressor": "steam",
+      "result_victim": "stone",
+      "chance": 0.15,
+      "spawn": "steam",
+      "comment": "Water cools lava to stone"
+    },
+    {
+      "id": "water_fire",
+      "aggressor": "water",
+      "victim": "fire",
+      "result_aggressor": "steam",
+      "result_victim": "empty",
+      "chance": 0.30,
+      "spawn": null,
+      "comment": "Water extinguishes fire"
+    }
+  ]
+}

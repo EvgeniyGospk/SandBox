@@ -27,6 +27,7 @@ type ToolType = 'brush' | 'eraser' | 'pipette' | 'move'
 // Phase 5: Import SharedInputBuffer for zero-latency input
 import { SharedInputBuffer, INPUT_TYPE_ERASE, INPUT_TYPE_END_STROKE, INPUT_TYPE_BRUSH_OFFSET } from '../lib/InputBuffer'
 import { screenToWorld as invertTransform } from '../lib/engine/transform'
+import { ELEMENT_NAME_TO_ID, ELEMENT_ID_TO_NAME } from '../lib/engine/generated_elements'
 
 // Phase 3: WebGL Renderer for GPU-accelerated rendering
 import { WebGLRenderer } from '../lib/engine/WebGLRenderer'
@@ -50,6 +51,7 @@ interface InputMessage {
   radius: number
   element: ElementType
   tool: ToolType
+  brushShape?: 'circle' | 'square' | 'line'
 }
 
 interface TransformMessage {
@@ -86,8 +88,14 @@ type WorkerMessage =
   | ResizeMessage
   | { type: 'PLAY' }
   | { type: 'PAUSE' }
+  | { type: 'STEP' }   // Single-step when paused
   | { type: 'CLEAR' }
+  | { type: 'FILL'; x: number; y: number; element: ElementType }
+  | { type: 'PIPETTE'; id: number; x: number; y: number }
+  | { type: 'SNAPSHOT'; id: number }
+  | { type: 'LOAD_SNAPSHOT'; buffer: ArrayBuffer }
   | { type: 'INPUT_END' }  // Phase 5: Reset Bresenham tracking
+  | { type: 'SPAWN_RIGID_BODY'; x: number; y: number; size: number; shape: 'box' | 'circle'; element: ElementType }
 
 // Worker state
 let engine: any = null
@@ -141,34 +149,22 @@ const BG_COLOR_32 = 0xFF0A0A0A
 const EL_EMPTY = 0
 
 // === DEBUG: Dirty chunk logging ===
-const DEBUG_DIRTY = true  // Set to false to disable logging
+const DEBUG_DIRTY =
+  (
+    typeof process !== 'undefined' &&
+    process.env?.NODE_ENV === 'development' &&
+    process.env?.VITE_DEBUG_DIRTY !== 'false'
+  ) ||
+  (
+    typeof import.meta !== 'undefined' &&
+    (import.meta as any).env?.MODE === 'development' &&
+    (import.meta as any).env?.VITE_DEBUG_DIRTY !== 'false'
+  )
 let debugLogInterval = 0
 const DEBUG_LOG_EVERY = 60  // Log every N frames
 
-// Element mapping - MUST match Rust elements.rs exactly!
-const ELEMENT_MAP: Record<ElementType, number> = {
-  empty: 0,
-  stone: 1,
-  sand: 2,
-  wood: 3,
-  metal: 4,
-  ice: 5,
-  water: 6,
-  oil: 7,
-  lava: 8,
-  acid: 9,
-  steam: 10,
-  smoke: 11,
-  fire: 12,
-  spark: 13,
-  electricity: 14,
-  gunpowder: 15,
-  clone: 16,
-  void: 17,
-  dirt: 18,
-  seed: 19,
-  plant: 20
-}
+// Element mapping from generated definitions
+const ELEMENT_MAP: Record<ElementType, number> = ELEMENT_NAME_TO_ID
 
 // ============================================================================
 // INITIALIZATION
@@ -504,7 +500,14 @@ function drawWorldBorder(width: number, height: number) {
 // INPUT HANDLING
 // ============================================================================
 
-function handleInput(x: number, y: number, radius: number, element: ElementType, tool: ToolType) {
+function handleInput(
+  x: number,
+  y: number,
+  radius: number,
+  element: ElementType,
+  tool: ToolType,
+  brushShape: 'circle' | 'square' | 'line' = 'circle'
+) {
   if (!engine) return
   
   // Apply camera transform to convert screen coords to world coords
@@ -520,12 +523,27 @@ function handleInput(x: number, y: number, radius: number, element: ElementType,
   
   const wasmElement = ELEMENT_MAP[element] ?? 0
   
-  if (tool === 'eraser') {
-    engine.remove_particles_in_radius(worldX, worldY, radius)
-  } else if (tool === 'brush') {
-    if (wasmElement !== 0) {
-      engine.add_particles_in_radius(worldX, worldY, radius, wasmElement)
+  const applyBrush = (wx: number, wy: number) => {
+    if (tool === 'eraser') {
+      engine.remove_particles_in_radius(wx, wy, radius)
+    } else if (tool === 'brush') {
+      if (wasmElement !== 0) {
+        engine.add_particles_in_radius(wx, wy, radius, wasmElement)
+      }
     }
+  }
+
+  if (brushShape === 'square') {
+    const half = Math.max(1, radius)
+    for (let dy = -half; dy <= half; dy++) {
+      for (let dx = -half; dx <= half; dx++) {
+        applyBrush(worldX + dx, worldY + dy)
+      }
+    }
+  } else if (brushShape === 'line') {
+    drawLine(worldX - radius, worldY, worldX + radius, worldY, radius, wasmElement, tool === 'eraser')
+  } else {
+    applyBrush(worldX, worldY)
   }
   // pipette and move are handled on main thread (UI concerns)
 }
@@ -533,6 +551,7 @@ function handleInput(x: number, y: number, radius: number, element: ElementType,
 // Phase 5: State for Bresenham line interpolation
 let lastInputX: number | null = null
 let lastInputY: number | null = null
+const FILL_LIMIT = 200_000 // safety guard to prevent freezes
 
 /**
  * Bresenham's Line Algorithm for smooth drawing
@@ -635,6 +654,99 @@ function resetInputTracking() {
   lastInputY = null
 }
 
+function captureSnapshot(): ArrayBuffer | null {
+  if (!memoryManager || !engine) return null
+  const types = memoryManager.types
+  // Copy into new ArrayBuffer to transfer
+  return new Uint8Array(types).buffer
+}
+
+function loadSnapshotBuffer(buffer: ArrayBuffer) {
+  if (!engine || !wasmModule) return
+  const types = new Uint8Array(buffer)
+  const width = engine.width as number
+  const height = engine.height as number
+  const expected = width * height
+  if (types.length !== expected) {
+    console.warn('Snapshot size mismatch, skipping load')
+    return
+  }
+  // Reset world
+  engine = new wasmModule.World(width, height)
+  updateMemoryViews()
+  // Re-apply particles
+  for (let i = 0; i < types.length; i++) {
+    const elId = types[i]
+    if (elId === 0) continue
+    const x = i % width
+    const y = Math.floor(i / width)
+    engine.add_particle(x, y, elId)
+  }
+  // Force full upload on renderer next frame
+  if (renderer) renderer.requestFullUpload()
+}
+
+/**
+ * Read element at world coordinate
+ */
+function readElementAt(x: number, y: number): ElementType | null {
+  if (!memoryManager || !engine) return null
+  const width = engine.width as number
+  const height = engine.height as number
+  if (x < 0 || y < 0 || x >= width || y >= height) return null
+  const types = memoryManager.types
+  const idx = y * width + x
+  const elId = types[idx] ?? 0
+  return ELEMENT_ID_TO_NAME[elId] ?? null
+}
+
+/**
+ * Flood fill contiguous area of the same element id
+ */
+function floodFill(startX: number, startY: number, targetElementId: number) {
+  if (!memoryManager || !engine) return
+  const width = engine.width as number
+  const height = engine.height as number
+  if (startX < 0 || startY < 0 || startX >= width || startY >= height) return
+
+  const types = memoryManager.types
+  const startIdx = startY * width + startX
+  const sourceId = types[startIdx] ?? 0
+
+  // nothing to do
+  if (sourceId === targetElementId) return
+
+  const visited = new Uint8Array(width * height)
+  const stack: Array<{ x: number; y: number }> = [{ x: startX, y: startY }]
+  let processed = 0
+
+  while (stack.length > 0) {
+    const { x, y } = stack.pop() as { x: number; y: number }
+    if (x < 0 || y < 0 || x >= width || y >= height) continue
+    const idx = y * width + x
+    if (visited[idx]) continue
+    if (types[idx] !== sourceId) continue
+
+    visited[idx] = 1
+    processed++
+    if (processed > FILL_LIMIT) break
+
+    // Replace
+    if (targetElementId === 0) {
+      engine.remove_particle(x, y)
+    } else {
+      // If there is something else, remove then add to ensure overwrite
+      engine.remove_particle(x, y)
+      engine.add_particle(x, y, targetElementId)
+    }
+
+    stack.push({ x: x + 1, y })
+    stack.push({ x: x - 1, y })
+    stack.push({ x, y: y + 1 })
+    stack.push({ x, y: y - 1 })
+  }
+}
+
 // ============================================================================
 // STATS
 // ============================================================================
@@ -676,8 +788,63 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
       isPlaying = false
       break
       
+    case 'STEP':
+      if (engine) {
+        engine.step()
+        updateMemoryViews()
+      }
+      break
+    
+    case 'FILL': {
+      if (!engine || !memoryManager) break
+      const elementId = ELEMENT_MAP[msg.element] ?? 0
+      floodFill(msg.x, msg.y, elementId)
+      break
+    }
+    
+    case 'SPAWN_RIGID_BODY': {
+      if (!engine) break
+      const elementId = ELEMENT_MAP[msg.element] ?? 1 // Default to stone
+      if (msg.shape === 'circle') {
+        engine.spawn_rigid_circle(msg.x, msg.y, Math.floor(msg.size / 2), elementId)
+      } else {
+        engine.spawn_rigid_body(msg.x, msg.y, msg.size, msg.size, elementId)
+      }
+      break
+    }
+    
+    case 'PIPETTE': {
+      const viewport = canvas ? { width: canvas.width, height: canvas.height } : { width: 0, height: 0 }
+      const world = invertTransform(
+        msg.x,
+        msg.y,
+        { zoom, panX, panY },
+        viewport
+      )
+      const worldX = Math.floor(world.x)
+      const worldY = Math.floor(world.y)
+      const element = readElementAt(worldX, worldY)
+      self.postMessage({ type: 'PIPETTE_RESULT', id: msg.id, element })
+      break
+    }
+    
+    case 'SNAPSHOT': {
+      const buffer = captureSnapshot()
+      if (buffer) {
+        self.postMessage({ type: 'SNAPSHOT_RESULT', id: msg.id, buffer }, { transfer: [buffer] })
+      } else {
+        self.postMessage({ type: 'SNAPSHOT_RESULT', id: msg.id, buffer: null })
+      }
+      break
+    }
+    
+    case 'LOAD_SNAPSHOT': {
+      loadSnapshotBuffer(msg.buffer)
+      break
+    }
+      
     case 'INPUT':
-      handleInput(msg.x, msg.y, msg.radius, msg.element, msg.tool)
+      handleInput(msg.x, msg.y, msg.radius, msg.element, msg.tool, msg.brushShape ?? 'circle')
       break
       
     case 'INPUT_END':

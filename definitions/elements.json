@@ -1,7 +1,31 @@
 {
   "$schema": "./elements.schema.json",
-  "version": "1.0.0",
-  "description": "Single Source of Truth for all element definitions in Particula",
+  "version": "3.0.0",
+  "description": "Single Source of Truth for all element definitions in Particula - Phase 2 Newtonian Physics",
+  
+  "flags": {
+    "FLAG_NONE":           0,
+    "FLAG_FLAMMABLE":      1,
+    "FLAG_CONDUCTIVE":     2,
+    "FLAG_LIQUID":         4,
+    "FLAG_GAS":            8,
+    "FLAG_POWDER":        16,
+    "FLAG_SOLID":         32,
+    "FLAG_ENERGY":        64,
+    "FLAG_UTILITY":      128,
+    "FLAG_BIO":          256,
+    "FLAG_IGNORE_GRAVITY": 512,
+    "FLAG_CORROSIVE":   1024,
+    "FLAG_HOT":         2048,
+    "FLAG_COLD":        4096,
+    "FLAG_RIGID":       8192
+  },
+  
+  "physics": {
+    "gravity": 0.5,
+    "airFriction": 0.98,
+    "maxVelocity": 10.0
+  },
   
   "categories": [
     { "id": 0, "name": "solid",   "rustName": "CAT_SOLID" },

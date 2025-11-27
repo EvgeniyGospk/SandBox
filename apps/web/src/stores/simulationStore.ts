@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { getEngine } from '@/components/Canvas'
 import type { RenderMode } from '@/lib/engine'
+import * as SimulationController from '@/lib/engine/SimulationController'
 
 interface SimulationState {
   // State
@@ -38,33 +38,39 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   ambientTemperature: 20,
   
   // Actions
-  play: () => set({ isPlaying: true }),
-  pause: () => set({ isPlaying: false }),
+  play: () => {
+    SimulationController.play()
+    set({ isPlaying: true })
+  },
+  pause: () => {
+    SimulationController.pause()
+    set({ isPlaying: false })
+  },
   step: () => {
-    const engine = getEngine()
-    if (engine) {
-      engine.step()
-    }
+    SimulationController.step()
   },
   reset: () => {
-    const engine = getEngine()
-    if (engine) {
-      engine.clear()
-    }
+    SimulationController.reset()
     set({ particleCount: 0, isPlaying: false })
   },
-  setSpeed: (speed) => set({ speed }),
-  setGravity: (gravity) => set({ gravity }),
-  setAmbientTemperature: (ambientTemperature) => set({ ambientTemperature }),
+  setSpeed: (speed) => {
+    SimulationController.setSpeed(speed)
+    set({ speed })
+  },
+  setGravity: (gravity) => {
+    SimulationController.setGravity(gravity)
+    set({ gravity })
+  },
+  setAmbientTemperature: (ambientTemperature) => {
+    SimulationController.setAmbientTemperature(ambientTemperature)
+    set({ ambientTemperature })
+  },
   setFps: (fps) => set({ fps }),
   setParticleCount: (particleCount) => set({ particleCount }),
   toggleRenderMode: () => {
-    const engine = getEngine()
     const currentMode = get().renderMode
     const newMode: RenderMode = currentMode === 'normal' ? 'thermal' : 'normal'
-    if (engine) {
-      engine.setRenderMode(newMode)
-    }
+    SimulationController.setRenderMode(newMode)
     set({ renderMode: newMode })
   },
 }))

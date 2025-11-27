@@ -123,18 +123,43 @@ export const CATEGORY_NAME_TO_ID: Record<CategoryType, CategoryId> = {
 // ELEMENT PROPERTIES
 // ============================================================================
 
+// ============================================================================
+// ELEMENT FLAGS - Phase 1 Data-Driven
+// ============================================================================
+
+export const FLAG_NONE = 0
+export const FLAG_FLAMMABLE = 1
+export const FLAG_CONDUCTIVE = 2
+export const FLAG_LIQUID = 4
+export const FLAG_GAS = 8
+export const FLAG_POWDER = 16
+export const FLAG_SOLID = 32
+export const FLAG_ENERGY = 64
+export const FLAG_UTILITY = 128
+export const FLAG_BIO = 256
+export const FLAG_IGNORE_GRAVITY = 512
+export const FLAG_CORROSIVE = 1024
+export const FLAG_HOT = 2048
+export const FLAG_COLD = 4096
+export const FLAG_RIGID = 8192
+
+export type ElementFlags = number
+
+export function hasFlag(flags: ElementFlags, flag: ElementFlags): boolean {
+  return (flags & flag) !== 0
+}
+
 export interface ElementProps {
   id: ElementId
   name: ElementType
   category: CategoryId
+  flags: ElementFlags
   color: number
   density: number
   dispersion: number
   lifetime: number
   defaultTemp: number
   heatConductivity: number
-  flammable: boolean
-  conductive: boolean
   hidden?: boolean
 }
 
@@ -143,275 +168,292 @@ export const ELEMENT_DATA: ElementProps[] = [
     id: EL_EMPTY,
     name: 'empty',
     category: CAT_SOLID,
+    flags: 32,
     color: 0xFF0A0A0A,
     density: 0,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
-    heatConductivity: 5,
-    flammable: false,
-    conductive: false, hidden: true,
+    heatConductivity: 5, hidden: true,
   },
   {
     id: EL_STONE,
     name: 'stone',
     category: CAT_SOLID,
+    flags: 32,
     color: 0xFF808080,
     density: 2500,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_SAND,
     name: 'sand',
     category: CAT_POWDER,
+    flags: 16,
     color: 0xFFC2B280,
     density: 1600,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 15,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_WOOD,
     name: 'wood',
     category: CAT_SOLID,
+    flags: 33,
     color: 0xFF8B4513,
     density: 600,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 5,
-    flammable: true,
-    conductive: false,
   },
   {
     id: EL_METAL,
     name: 'metal',
     category: CAT_SOLID,
+    flags: 34,
     color: 0xFFA9A9A9,
     density: 7800,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 90,
-    flammable: false,
-    conductive: true,
   },
   {
     id: EL_ICE,
     name: 'ice',
     category: CAT_SOLID,
+    flags: 4128,
     color: 0xFFA5F2F3,
     density: 916,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: -10,
     heatConductivity: 20,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_WATER,
     name: 'water',
     category: CAT_LIQUID,
+    flags: 6,
     color: 0xFF4169E1,
     density: 1000,
     dispersion: 8,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 40,
-    flammable: false,
-    conductive: true,
   },
   {
     id: EL_OIL,
     name: 'oil',
     category: CAT_LIQUID,
+    flags: 5,
     color: 0xFF4A4A2A,
     density: 800,
     dispersion: 5,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 15,
-    flammable: true,
-    conductive: false,
   },
   {
     id: EL_LAVA,
     name: 'lava',
     category: CAT_LIQUID,
+    flags: 2052,
     color: 0xFFFF4500,
     density: 2500,
     dispersion: 2,
     lifetime: 0,
     defaultTemp: 1000,
     heatConductivity: 30,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_ACID,
     name: 'acid',
     category: CAT_LIQUID,
+    flags: 1030,
     color: 0xFF39FF14,
     density: 1050,
     dispersion: 5,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 35,
-    flammable: false,
-    conductive: true,
   },
   {
     id: EL_STEAM,
     name: 'steam',
     category: CAT_GAS,
+    flags: 8,
     color: 0xB4E0E0E0,
     density: 0.6,
     dispersion: 6,
     lifetime: 0,
     defaultTemp: 100,
     heatConductivity: 10,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_SMOKE,
     name: 'smoke',
     category: CAT_GAS,
+    flags: 8,
     color: 0xC83F3F3F,
     density: 1.1,
     dispersion: 4,
     lifetime: 0,
     defaultTemp: 50,
     heatConductivity: 5,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_FIRE,
     name: 'fire',
     category: CAT_ENERGY,
+    flags: 2112,
     color: 0xFFFF6600,
     density: 0.3,
     dispersion: 0,
     lifetime: 60,
     defaultTemp: 800,
     heatConductivity: 50,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_SPARK,
     name: 'spark',
     category: CAT_ENERGY,
+    flags: 64,
     color: 0xFFFFFF00,
     density: 0.1,
     dispersion: 0,
     lifetime: 10,
     defaultTemp: 500,
     heatConductivity: 50,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_ELECTRICITY,
     name: 'electricity',
     category: CAT_ENERGY,
+    flags: 64,
     color: 0xFF00FFFF,
     density: 0,
     dispersion: 0,
     lifetime: 3,
     defaultTemp: 200,
     heatConductivity: 80,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_GUNPOWDER,
     name: 'gunpowder',
     category: CAT_POWDER,
+    flags: 17,
     color: 0xFF404040,
     density: 1400,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
-    flammable: true,
-    conductive: false,
   },
   {
     id: EL_CLONE,
     name: 'clone',
     category: CAT_UTILITY,
+    flags: 640,
     color: 0xFF00FF00,
     density: Infinity,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 0,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_VOID,
     name: 'void',
     category: CAT_UTILITY,
+    flags: 640,
     color: 0xFF000000,
     density: Infinity,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 0,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_DIRT,
     name: 'dirt',
     category: CAT_POWDER,
+    flags: 16,
     color: 0xFF5C4033,
     density: 1200,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_SEED,
     name: 'seed',
     category: CAT_BIO,
+    flags: 257,
     color: 0xFFE2C489,
     density: 1100,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 5,
-    flammable: true,
-    conductive: false,
   },
   {
     id: EL_PLANT,
     name: 'plant',
     category: CAT_BIO,
+    flags: 257,
     color: 0xFF228B22,
     density: 900,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
-    flammable: true,
-    conductive: false,
   },
+]
+
+// ============================================================================
+// REACTIONS - Phase 1 Data-Driven
+// ============================================================================
+
+export interface Reaction {
+  aggressor: ElementType
+  victim: ElementType
+  resultAggressor: ElementType | null
+  resultVictim: ElementType | null
+  chance: number
+  spawn: ElementType | null
+}
+
+export const REACTIONS: Reaction[] = [
+  { aggressor: 'fire', victim: 'wood', resultAggressor: 'smoke', resultVictim: 'fire', chance: 0.1, spawn: 'smoke' },
+  { aggressor: 'fire', victim: 'oil', resultAggressor: 'smoke', resultVictim: 'fire', chance: 0.2, spawn: 'smoke' },
+  { aggressor: 'fire', victim: 'water', resultAggressor: 'empty', resultVictim: 'steam', chance: 0.5, spawn: null },
+  { aggressor: 'fire', victim: 'ice', resultAggressor: 'empty', resultVictim: 'water', chance: 0.3, spawn: 'steam' },
+  { aggressor: 'fire', victim: 'gunpowder', resultAggressor: 'fire', resultVictim: 'fire', chance: 1, spawn: 'smoke' },
+  { aggressor: 'fire', victim: 'plant', resultAggressor: 'smoke', resultVictim: 'fire', chance: 0.1, spawn: 'smoke' },
+  { aggressor: 'fire', victim: 'seed', resultAggressor: 'smoke', resultVictim: 'fire', chance: 0.2, spawn: null },
+  { aggressor: 'lava', victim: 'water', resultAggressor: 'stone', resultVictim: 'steam', chance: 0.15, spawn: 'steam' },
+  { aggressor: 'lava', victim: 'wood', resultAggressor: null, resultVictim: 'fire', chance: 0.3, spawn: 'smoke' },
+  { aggressor: 'lava', victim: 'oil', resultAggressor: null, resultVictim: 'fire', chance: 0.4, spawn: 'smoke' },
+  { aggressor: 'lava', victim: 'ice', resultAggressor: 'stone', resultVictim: 'steam', chance: 0.3, spawn: null },
+  { aggressor: 'lava', victim: 'gunpowder', resultAggressor: null, resultVictim: 'fire', chance: 1, spawn: 'smoke' },
+  { aggressor: 'lava', victim: 'plant', resultAggressor: null, resultVictim: 'fire', chance: 0.5, spawn: 'smoke' },
+  { aggressor: 'lava', victim: 'dirt', resultAggressor: null, resultVictim: 'stone', chance: 0.05, spawn: null },
+  { aggressor: 'acid', victim: 'stone', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.1, spawn: 'smoke' },
+  { aggressor: 'acid', victim: 'metal', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.05, spawn: null },
+  { aggressor: 'acid', victim: 'wood', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.2, spawn: null },
+  { aggressor: 'acid', victim: 'ice', resultAggressor: 'empty', resultVictim: 'water', chance: 0.2, spawn: null },
+  { aggressor: 'acid', victim: 'plant', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.15, spawn: null },
+  { aggressor: 'acid', victim: 'dirt', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.05, spawn: null },
+  { aggressor: 'water', victim: 'lava', resultAggressor: 'steam', resultVictim: 'stone', chance: 0.15, spawn: 'steam' },
+  { aggressor: 'water', victim: 'fire', resultAggressor: 'steam', resultVictim: 'empty', chance: 0.3, spawn: null },
 ]
 
 // ============================================================================

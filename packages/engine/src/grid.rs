@@ -73,6 +73,10 @@ pub struct Grid {
     pub updated: Vec<u8>,           // 0 = not updated, 1 = updated this frame
     pub temperature: Vec<f32>,      // Temperature in °C
     
+    // Phase 2: Newtonian Physics - Velocity arrays
+    pub vx: Vec<f32>,               // Horizontal velocity (pixels/frame)
+    pub vy: Vec<f32>,               // Vertical velocity (pixels/frame)
+    
     // Phase 4: Zero-allocation move buffer
     pub pending_moves: MoveBuffer,
 }
@@ -90,6 +94,9 @@ impl Grid {
             life: vec![0; size],
             updated: vec![0; size],
             temperature: vec![20.0; size],
+            // Phase 2: Velocity arrays (start at 0)
+            vx: vec![0.0; size],
+            vy: vec![0.0; size],
             // Phase 4: Fixed buffer for ~100k moves (~1.6MB RAM)
             // Enough for nuclear explosions, never reallocates!
             pending_moves: MoveBuffer::new(100_000),
@@ -213,6 +220,36 @@ impl Grid {
         self.temperature[idx] = t;
     }
     
+    // === Phase 2: Velocity access ===
+    #[inline]
+    pub fn get_vx(&self, x: u32, y: u32) -> f32 {
+        self.vx[self.index(x, y)]
+    }
+    
+    #[inline]
+    pub fn get_vy(&self, x: u32, y: u32) -> f32 {
+        self.vy[self.index(x, y)]
+    }
+    
+    #[inline]
+    pub fn set_vx(&mut self, x: u32, y: u32, v: f32) {
+        let idx = self.index(x, y);
+        self.vx[idx] = v;
+    }
+    
+    #[inline]
+    pub fn set_vy(&mut self, x: u32, y: u32, v: f32) {
+        let idx = self.index(x, y);
+        self.vy[idx] = v;
+    }
+    
+    #[inline]
+    pub fn add_velocity(&mut self, x: u32, y: u32, dvx: f32, dvy: f32) {
+        let idx = self.index(x, y);
+        self.vx[idx] += dvx;
+        self.vy[idx] += dvy;
+    }
+    
     // === Swap two cells (all data) ===
     // Phase 4: Records the move for chunk tracking
     pub fn swap(&mut self, x1: u32, y1: u32, x2: u32, y2: u32) {
@@ -235,6 +272,9 @@ impl Grid {
         self.life.swap(idx1, idx2);
         self.updated.swap(idx1, idx2);
         self.temperature.swap(idx1, idx2);
+        // Phase 2: Swap velocity too
+        self.vx.swap(idx1, idx2);
+        self.vy.swap(idx1, idx2);
     }
     
     // === Phase 4: Move tracking for chunks (Zero-Allocation) ===
@@ -254,6 +294,9 @@ impl Grid {
         self.life[idx] = life;
         self.updated[idx] = 0;  // NOT updated - can move this frame!
         self.temperature[idx] = temp;
+        // Phase 2: New particles start with zero velocity
+        self.vx[idx] = 0.0;
+        self.vy[idx] = 0.0;
     }
     
     // === Clear single cell ===
@@ -263,6 +306,9 @@ impl Grid {
         self.colors[idx] = BG_COLOR;
         self.life[idx] = 0;
         self.temperature[idx] = 20.0;
+        // Phase 2: Clear velocity
+        self.vx[idx] = 0.0;
+        self.vy[idx] = 0.0;
     }
     
     // === Clear entire grid ===
@@ -272,6 +318,9 @@ impl Grid {
         self.life.fill(0);
         self.updated.fill(0);
         self.temperature.fill(20.0);
+        // Phase 2: Clear velocity
+        self.vx.fill(0.0);
+        self.vy.fill(0.0);
     }
     
     // === Get raw pointers for JS interop ===
@@ -372,12 +421,17 @@ impl Grid {
         let ptr_life = self.life.as_mut_ptr();
         let ptr_updated = self.updated.as_mut_ptr();
         let ptr_temp = self.temperature.as_mut_ptr();
+        let ptr_vx = self.vx.as_mut_ptr();
+        let ptr_vy = self.vy.as_mut_ptr();
         
         std::ptr::swap(ptr_types.add(idx1), ptr_types.add(idx2));
         std::ptr::swap(ptr_colors.add(idx1), ptr_colors.add(idx2));
         std::ptr::swap(ptr_life.add(idx1), ptr_life.add(idx2));
         std::ptr::swap(ptr_updated.add(idx1), ptr_updated.add(idx2));
         std::ptr::swap(ptr_temp.add(idx1), ptr_temp.add(idx2));
+        // Swap velocity vectors as well so momentum moves with the particle
+        std::ptr::swap(ptr_vx.add(idx1), ptr_vx.add(idx2));
+        std::ptr::swap(ptr_vy.add(idx1), ptr_vy.add(idx2));
     }
     
     /// Fast clear cell - UNSAFE: caller must ensure x,y are valid

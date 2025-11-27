@@ -43,8 +43,8 @@ export function RightPanel() {
               <span className="text-sm text-[#A0A0A0] w-5">X:</span>
               <input
                 type="range"
-                min={-20}
-                max={20}
+                min={-10}
+                max={10}
                 step={0.1}
                 value={gravity.x}
                 onChange={(e) => setGravity({ ...gravity, x: Number(e.target.value) })}
@@ -61,8 +61,8 @@ export function RightPanel() {
               <span className="text-sm text-[#A0A0A0] w-5">Y:</span>
               <input
                 type="range"
-                min={-20}
-                max={20}
+                min={-10}
+                max={10}
                 step={0.1}
                 value={gravity.y}
                 onChange={(e) => setGravity({ ...gravity, y: Number(e.target.value) })}

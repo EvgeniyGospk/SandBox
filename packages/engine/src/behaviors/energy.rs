@@ -5,7 +5,7 @@
 //! 
 //! Fire rises erratically, spark/electricity move through conductors
 
-use super::{Behavior, UpdateContext};
+use super::{Behavior, UpdateContext, xorshift32};
 use crate::elements::{EL_EMPTY, EL_FIRE, EL_SPARK, EL_ELECTRICITY};
 
 pub struct EnergyBehavior;
@@ -24,41 +24,29 @@ impl EnergyBehavior {
         let xi = x as i32;
         let yi = y as i32;
         
-        // Fire rises erratically (EXACT TypeScript: const rand = (frame * x * y) & 3)
-        let rand = (ctx.frame as u32).wrapping_mul(x).wrapping_mul(y) & 3;
+        // Fire drifts mostly upward but can spread sideways a bit.
+        let rand = xorshift32(ctx.rng);
+        let lateral = if rand & 1 == 0 { -1 } else { 1 };
         
-        match rand {
-            0 => {
-                let ty = yi - 1;
-                if ctx.grid.in_bounds(xi, ty) {
-                    // SAFETY: We just checked in_bounds
-                    let target = unsafe { ctx.grid.get_type_unchecked(x, ty as u32) };
-                    if target == EL_EMPTY {
-                        unsafe { ctx.grid.swap_unchecked(x, y, x, ty as u32); }
-                    }
-                }
+        // Randomize attempt order to avoid straight pillars
+        let attempts = match rand & 3 {
+            0 => [(0, -1), (lateral, -1), (lateral, 0), (-lateral, 0)],
+            1 => [(lateral, -1), (0, -1), (-lateral, -1), (lateral, 0)],
+            2 => [(0, -1), (-lateral, -1), (lateral, 0), (-lateral, 0)],
+            _ => [(lateral, 0), (0, -1), (lateral, -1), (-lateral, -1)],
+        };
+        
+        for (dx, dy) in attempts {
+            let tx = xi + dx;
+            let ty = yi + dy;
+            if !ctx.grid.in_bounds(tx, ty) { continue; }
+            
+            // SAFETY: bounds checked above
+            let target = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
+            if target == EL_EMPTY {
+                unsafe { ctx.grid.swap_unchecked(x, y, tx as u32, ty as u32); }
+                break;
             }
-            1 => {
-                let tx = xi - 1;
-                let ty = yi - 1;
-                if ctx.grid.in_bounds(tx, ty) {
-                    let target = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
-                    if target == EL_EMPTY {
-                        unsafe { ctx.grid.swap_unchecked(x, y, tx as u32, ty as u32); }
-                    }
-                }
-            }
-            2 => {
-                let tx = xi + 1;
-                let ty = yi - 1;
-                if ctx.grid.in_bounds(tx, ty) {
-                    let target = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
-                    if target == EL_EMPTY {
-                        unsafe { ctx.grid.swap_unchecked(x, y, tx as u32, ty as u32); }
-                    }
-                }
-            }
-            _ => {}
         }
     }
     

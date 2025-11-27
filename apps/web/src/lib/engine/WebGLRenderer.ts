@@ -239,7 +239,7 @@ export class WebGLRenderer {
     const dirtyCount = engine.collect_dirty_chunks();
 
     if (this.forceFullUpload) {
-      this.uploadFull(engine);
+      this.uploadFull(engine, true);  // immediate=true to skip PBO latency
       this.forceFullUpload = false;
       return;
     }
@@ -296,10 +296,21 @@ export class WebGLRenderer {
   private uploadWithMergedRects(engine: any, _memory: WebAssembly.Memory): void {
     const gl = this.gl;
     
-    // DEBUG WORKAROUND: Force full upload every frame to test if dirty tracking is broken
-    const DEBUG_FORCE_FULL = true;
+    // DEBUG WORKAROUND: can be enabled via env flag for diagnostics
+    const DEBUG_FORCE_FULL =
+      (typeof process !== 'undefined' && process.env?.VITE_FORCE_FULL_UPLOAD === 'true') ||
+      (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_FORCE_FULL_UPLOAD === 'true') ||
+      false;
     if (DEBUG_FORCE_FULL) {
       this.uploadFull(engine);
+      return;
+    }
+    
+    // CRITICAL: Check forceFullUpload BEFORE collecting dirty rects
+    // This ensures paused input (clicks) get uploaded immediately
+    if (this.forceFullUpload) {
+      this.uploadFull(engine, true);  // immediate=true to skip PBO latency
+      this.forceFullUpload = false;
       return;
     }
     
@@ -355,13 +366,16 @@ export class WebGLRenderer {
   
   /**
    * PHASE 2: Full texture upload (with optional PBO)
+   * 
+   * @param immediate - Skip PBO double-buffering for instant display (used when paused)
    */
-  private uploadFull(engine: any): void {
+  private uploadFull(engine: any, immediate: boolean = false): void {
     const gl = this.gl;
     const colorsPtr = engine.colors_ptr();
     
-    if (this.usePBO && this.pbo[this.pboIndex]) {
-      // PBO path: async upload
+    // When immediate=true, skip PBO to avoid 1-frame latency (critical for paused input)
+    if (!immediate && this.usePBO && this.pbo[this.pboIndex]) {
+      // PBO path: async upload (1-frame latency but better throughput)
       // 1. Bind next PBO for upload
       const uploadPBO = this.pbo[this.pboIndex];
       const texturePBO = this.pbo[1 - this.pboIndex];
@@ -384,7 +398,7 @@ export class WebGLRenderer {
       gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
       this.pboIndex = 1 - this.pboIndex;
     } else {
-      // Direct upload (no PBO)
+      // Direct upload (no PBO) - immediate display, slightly slower but no latency
       gl.texSubImage2D(
         gl.TEXTURE_2D, 0, 0, 0,
         this.worldWidth, this.worldHeight,

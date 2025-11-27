@@ -1,3 +1,74 @@
+--- File: apps/web/package.json ---
+
+{
+  "name": "@particula/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.17",
+    "clsx": "latest",
+    "framer-motion": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "tailwind-merge": "latest",
+    "zustand": "latest"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@types/node": "^24.10.1",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest",
+    "autoprefixer": "latest",
+    "eslint": "latest",
+    "eslint-plugin-react-hooks": "latest",
+    "eslint-plugin-react-refresh": "latest",
+    "globals": "latest",
+    "postcss": "latest",
+    "tailwindcss": "latest",
+    "typescript": "latest",
+    "typescript-eslint": "latest",
+    "vite": "latest",
+    "vitest": "^4.0.14"
+  }
+}
+
+--- End of File: apps/web/package.json ---
+
+
+--- File: apps/web/public/wasm/package.json ---
+
+{
+  "name": "particula-engine",
+  "type": "module",
+  "collaborators": [
+    "Particula Team"
+  ],
+  "description": "Physics engine for Particula sandbox simulation",
+  "version": "0.1.0",
+  "files": [
+    "particula_engine_bg.wasm",
+    "particula_engine.js",
+    "particula_engine.d.ts"
+  ],
+  "main": "particula_engine.js",
+  "types": "particula_engine.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
+
+--- End of File: apps/web/public/wasm/package.json ---
+
+
 --- File: apps/web/src/App.tsx ---
 
 import { useEffect, useState } from 'react'
@@ -62,6 +133,8 @@ import { useToolStore } from '@/stores/toolStore'
 import { WorkerBridge, isWorkerSupported } from '@/lib/engine/WorkerBridge'
 import { WasmParticleEngine } from '@/lib/engine'
 import { screenToWorld as invertTransform, solvePanForZoom } from '@/lib/engine/transform'
+import { ELEMENT_ID_TO_NAME } from '@/lib/engine/generated_elements'
+import * as SimulationController from '@/lib/engine/SimulationController'
 
 // Global bridge for external access (reset, etc.)
 let globalBridge: WorkerBridge | null = null
@@ -112,7 +185,15 @@ export function Canvas() {
   
   // FIX 2: Достаем renderMode из стора
   const { isPlaying, speed, gravity, ambientTemperature, renderMode, setFps, setParticleCount } = useSimulationStore()
-  const { selectedElement, brushSize, selectedTool } = useToolStore()
+  const { 
+    selectedElement, 
+    brushSize, 
+    brushShape, 
+    selectedTool,
+    rigidBodyShape,
+    rigidBodySize,
+    rigidBodyElement,
+  } = useToolStore()
 
   // Register callbacks
   useEffect(() => {
@@ -211,6 +292,12 @@ export function Canvas() {
         initFallbackEngine(canvas, width, height)
       }
       
+      bridge.onCrash = (msg) => {
+        console.error('Worker crash:', msg)
+        setUseWorker(false)
+        initFallbackEngine(canvas, width, height)
+      }
+      
       // Initialize worker with canvas
       bridge.init(canvas, width, height).catch((err) => {
         console.warn('Worker init failed, falling back:', err)
@@ -264,17 +351,18 @@ export function Canvas() {
   // Main thread render loop (fallback)
   const startFallbackRenderLoop = (engine: WasmParticleEngine, _ctx: CanvasRenderingContext2D) => {
     let lastStatsUpdate = 0
+    let lastTime = performance.now()
     const STATS_INTERVAL = 200
     
     const render = (time: number) => {
       if (!engineRef.current) return
+      const dt = Math.min(Math.max((time - lastTime) / 1000, 0), 0.25)
+      lastTime = time
       
       // Step simulation
       if (isPlaying) {
-        const steps = speed >= 1 ? Math.floor(speed) : 1
-        for (let i = 0; i < steps; i++) {
-          engine.step()
-        }
+        const simDt = dt * speed
+        engine.stepWithDt(simDt)
       }
       
       // Render
@@ -288,7 +376,8 @@ export function Canvas() {
       
       // Stats update
       if (time - lastStatsUpdate > STATS_INTERVAL) {
-        setFps(60) // Approximate
+        const approxFps = dt > 0 ? Math.round(1 / dt) : 60
+        setFps(approxFps)
         setParticleCount(engine.particleCount)
         lastStatsUpdate = time
       }
@@ -364,18 +453,53 @@ export function Canvas() {
       
       bridgeRef.current.setTransform(cam.zoom, cam.x, cam.y)
 
-      // Worker mode: send screen coordinates, worker converts to world
-      bridgeRef.current.handleInput(screenX, screenY, radius, selectedElement, selectedTool)
+      // Fill is one-shot, handle separately
+      if (selectedTool === 'fill') {
+        bridgeRef.current.fill(screenX, screenY, selectedElement)
+      } else if (selectedTool === 'rigid_body') {
+        // Rigid body placement - convert to world coords and spawn
+        const worldPos = screenToWorld(screenX, screenY)
+        bridgeRef.current.spawnRigidBody(
+          worldPos.x, 
+          worldPos.y, 
+          rigidBodySize, 
+          rigidBodyShape, 
+          rigidBodyElement
+        )
+      } else {
+        // Worker mode: send screen coordinates, worker converts to world
+        bridgeRef.current.handleInput(screenX, screenY, radius, selectedElement, selectedTool as any, brushShape)
+      }
     } else if (engineRef.current) {
       // Fallback: convert to world and call engine
       const worldPos = screenToWorld(screenX, screenY)
       if (selectedTool === 'eraser') {
         engineRef.current.removeParticlesInRadius(worldPos.x, worldPos.y, radius)
       } else if (selectedTool === 'brush') {
-        engineRef.current.addParticlesInRadius(worldPos.x, worldPos.y, radius, selectedElement)
+        if (brushShape === 'square') {
+          const half = Math.max(1, radius)
+          for (let dy = -half; dy <= half; dy++) {
+            for (let dx = -half; dx <= half; dx++) {
+              engineRef.current.addParticlesInRadius(worldPos.x + dx, worldPos.y + dy, 1, selectedElement)
+            }
+          }
+        } else if (brushShape === 'line') {
+          engineRef.current.addParticlesInRadius(worldPos.x, worldPos.y, radius, selectedElement)
+        } else {
+          engineRef.current.addParticlesInRadius(worldPos.x, worldPos.y, radius, selectedElement)
+        }
+      } else if (selectedTool === 'fill') {
+        engineRef.current.floodFill(worldPos.x, worldPos.y, selectedElement)
+      } else if (selectedTool === 'rigid_body') {
+        // Spawn rigid body in fallback mode
+        if (rigidBodyShape === 'circle') {
+          engineRef.current.spawnRigidCircle(worldPos.x, worldPos.y, Math.floor(rigidBodySize / 2), rigidBodyElement)
+        } else {
+          engineRef.current.spawnRigidBody(worldPos.x, worldPos.y, rigidBodySize, rigidBodySize, rigidBodyElement)
+        }
       }
     }
-  }, [brushSize, selectedElement, selectedTool, screenToWorld])
+  }, [brushSize, brushShape, selectedElement, selectedTool, screenToWorld, rigidBodyShape, rigidBodySize, rigidBodyElement])
 
   // Zoom handler - uses native event (not React) to allow preventDefault
   const handleWheel = useCallback((e: WheelEvent) => {
@@ -426,10 +550,27 @@ export function Canvas() {
     const pos = getCanvasPosition(e)
     lastMousePos.current = { x: e.clientX, y: e.clientY }
 
+    // Capture snapshot for undo before mutation
+    SimulationController.captureSnapshotForUndo()
+
     // Pan mode
     if (selectedTool === 'move' || e.button === 1) {
       isDragging.current = true
       e.preventDefault()
+      return
+    }
+
+    // Pipette
+    if (selectedTool === 'pipette') {
+      if (bridgeRef.current) {
+        bridgeRef.current.pipette(pos.x, pos.y)
+          .then((el) => { if (el) useToolStore.getState().setElement(el) })
+      } else if (engineRef.current) {
+        const world = screenToWorld(pos.x, pos.y)
+        const elId = engineRef.current.getElementAt(world.x, world.y)
+        const el = ELEMENT_ID_TO_NAME[elId] ?? null
+        if (el) useToolStore.getState().setElement(el)
+      }
       return
     }
 
@@ -644,12 +785,39 @@ function formatNumber(num: number): string {
 import { useState } from 'react'
 import { useToolStore } from '@/stores/toolStore'
 import { ELEMENTS, ELEMENT_CATEGORIES } from '@/lib/elements'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Square, Circle } from 'lucide-react'
+
+// Rigid body shape definitions
+const RIGID_BODY_SHAPES = [
+  { id: 'box', name: 'Box', icon: Square, description: 'Rectangular rigid body' },
+  { id: 'circle', name: 'Ball', icon: Circle, description: 'Circular rigid body' },
+] as const
+
+// Materials available for rigid bodies
+const RIGID_BODY_MATERIALS = [
+  { id: 'stone', name: 'Stone', color: '#808080' },
+  { id: 'metal', name: 'Metal', color: '#A9A9A9' },
+  { id: 'wood', name: 'Wood', color: '#8B4513' },
+  { id: 'ice', name: 'Ice', color: '#A5F2F3' },
+] as const
+
+type PanelMode = 'elements' | 'bodies'
 
 export function LeftPanel() {
   const [isCollapsed, setIsCollapsed] = useState(false)
+  const [panelMode, setPanelMode] = useState<PanelMode>('elements')
   const [activeCategory, setActiveCategory] = useState<string>('solids')
-  const { selectedElement, setElement } = useToolStore()
+  const { 
+    selectedElement, 
+    setElement,
+    rigidBodyShape,
+    rigidBodySize,
+    rigidBodyElement,
+    setRigidBodyShape,
+    setRigidBodySize,
+    setRigidBodyElement,
+    selectedTool,
+  } = useToolStore()
 
   const categories = Object.entries(ELEMENT_CATEGORIES)
   const elementsInCategory = ELEMENTS.filter(el => el.category === activeCategory)
@@ -670,9 +838,30 @@ export function LeftPanel() {
 
   return (
     <aside className="w-64 bg-[#1A1A1A] border-r border-[#333] flex flex-col">
-      {/* Header */}
+      {/* Header with mode toggle */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-[#333]">
-        <span className="text-lg font-semibold">Elements</span>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setPanelMode('elements')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all ${
+              panelMode === 'elements'
+                ? 'bg-[#3B82F6] text-white'
+                : 'bg-[#252525] text-[#808080] hover:text-white'
+            }`}
+          >
+            Elements
+          </button>
+          <button
+            onClick={() => setPanelMode('bodies')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all ${
+              panelMode === 'bodies'
+                ? 'bg-[#8B5CF6] text-white'
+                : 'bg-[#252525] text-[#808080] hover:text-white'
+            }`}
+          >
+            Bodies
+          </button>
+        </div>
         <button
           onClick={() => setIsCollapsed(true)}
           className="p-2 hover:bg-[#252525] rounded-lg transition-colors"
@@ -682,38 +871,132 @@ export function LeftPanel() {
         </button>
       </div>
 
-      {/* Category Tabs */}
-      <div className="px-4 py-3 border-b border-[#333]">
-        <div className="flex gap-2 overflow-x-auto scrollbar-hide">
-          {categories.map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setActiveCategory(key)}
-              className={`px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all ${
-                activeCategory === key
-                  ? 'bg-[#3B82F6] text-white shadow-lg shadow-blue-500/20'
-                  : 'bg-[#252525] text-[#808080] hover:text-white hover:bg-[#2a2a2a]'
-              }`}
+      {panelMode === 'elements' ? (
+        <>
+          {/* Category Tabs */}
+          <div className="px-4 py-3 border-b border-[#333]">
+            <div
+              className="flex gap-2 overflow-x-auto scrollbar-hide"
+              onWheel={(e) => {
+                e.currentTarget.scrollLeft += e.deltaY
+              }}
             >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
+              {categories.map(([key, label]) => (
+                <button
+                  key={key}
+                  onClick={() => setActiveCategory(key)}
+                  className={`px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all ${
+                    activeCategory === key
+                      ? 'bg-[#3B82F6] text-white shadow-lg shadow-blue-500/20'
+                      : 'bg-[#252525] text-[#808080] hover:text-white hover:bg-[#2a2a2a]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
 
-      {/* Elements Grid */}
-      <div className="flex-1 overflow-y-auto p-3">
-        <div className="grid grid-cols-3 gap-2">
-          {elementsInCategory.map((element) => (
-            <ElementButton
-              key={element.id}
-              element={element}
-              isSelected={selectedElement === element.id}
-              onClick={() => setElement(element.id)}
-            />
-          ))}
-        </div>
-      </div>
+          {/* Elements Grid */}
+          <div
+            className="flex-1 overflow-y-auto p-3"
+            onWheel={(e) => {
+              e.currentTarget.scrollTop += e.deltaY
+            }}
+          >
+            <div className="grid grid-cols-3 gap-2">
+              {elementsInCategory.map((element) => (
+                <ElementButton
+                  key={element.id}
+                  element={element}
+                  isSelected={selectedElement === element.id && selectedTool !== 'rigid_body'}
+                  onClick={() => setElement(element.id)}
+                />
+              ))}
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Rigid Bodies Panel */}
+          <div className="flex-1 overflow-y-auto p-4">
+            {/* Shape Selection */}
+            <div className="mb-4">
+              <label className="text-xs text-[#808080] uppercase tracking-wider mb-2 block">Shape</label>
+              <div className="grid grid-cols-2 gap-2">
+                {RIGID_BODY_SHAPES.map((shape) => {
+                  const Icon = shape.icon
+                  return (
+                    <button
+                      key={shape.id}
+                      onClick={() => setRigidBodyShape(shape.id)}
+                      className={`
+                        flex flex-col items-center justify-center p-3 rounded-lg transition-all
+                        ${rigidBodyShape === shape.id && selectedTool === 'rigid_body'
+                          ? 'bg-[#8B5CF6] text-white ring-2 ring-purple-400'
+                          : 'bg-[#252525] text-[#808080] hover:text-white hover:bg-[#2a2a2a]'
+                        }
+                      `}
+                      title={shape.description}
+                    >
+                      <Icon size={24} />
+                      <span className="text-xs mt-1">{shape.name}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Size Slider */}
+            <div className="mb-4">
+              <label className="text-xs text-[#808080] uppercase tracking-wider mb-2 block">
+                Size: {rigidBodySize}px
+              </label>
+              <input
+                type="range"
+                min="5"
+                max="50"
+                value={rigidBodySize}
+                onChange={(e) => setRigidBodySize(parseInt(e.target.value))}
+                className="w-full h-2 bg-[#252525] rounded-lg appearance-none cursor-pointer accent-[#8B5CF6]"
+              />
+            </div>
+
+            {/* Material Selection */}
+            <div className="mb-4">
+              <label className="text-xs text-[#808080] uppercase tracking-wider mb-2 block">Material</label>
+              <div className="grid grid-cols-2 gap-2">
+                {RIGID_BODY_MATERIALS.map((material) => (
+                  <button
+                    key={material.id}
+                    onClick={() => setRigidBodyElement(material.id as any)}
+                    className={`
+                      flex items-center gap-2 p-2 rounded-lg transition-all
+                      ${rigidBodyElement === material.id
+                        ? 'bg-[#252525] ring-2 ring-[#8B5CF6]'
+                        : 'bg-[#1f1f1f] hover:bg-[#252525]'
+                      }
+                    `}
+                  >
+                    <div
+                      className="w-6 h-6 rounded"
+                      style={{ backgroundColor: material.color }}
+                    />
+                    <span className="text-xs">{material.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Instructions */}
+            <div className="mt-4 p-3 bg-[#252525] rounded-lg">
+              <p className="text-xs text-[#808080]">
+                💡 Click on canvas to place a rigid body. It will fall and collide with other objects!
+              </p>
+            </div>
+          </div>
+        </>
+      )}
     </aside>
   )
 }
@@ -821,8 +1104,8 @@ export function RightPanel() {
               <span className="text-sm text-[#A0A0A0] w-5">X:</span>
               <input
                 type="range"
-                min={-20}
-                max={20}
+                min={-10}
+                max={10}
                 step={0.1}
                 value={gravity.x}
                 onChange={(e) => setGravity({ ...gravity, x: Number(e.target.value) })}
@@ -839,8 +1122,8 @@ export function RightPanel() {
               <span className="text-sm text-[#A0A0A0] w-5">Y:</span>
               <input
                 type="range"
-                min={-20}
-                max={20}
+                min={-10}
+                max={10}
                 step={0.1}
                 value={gravity.y}
                 onChange={(e) => setGravity({ ...gravity, y: Number(e.target.value) })}
@@ -943,6 +1226,7 @@ function PresetButton({ label, onClick }: PresetButtonProps) {
 import { useToolStore } from '@/stores/toolStore'
 import { useSimulationStore } from '@/stores/simulationStore'
 import { resetCamera } from '@/components/Canvas'
+import * as SimulationController from '@/lib/engine/SimulationController'
 import { 
   Circle, 
   Square, 
@@ -1083,23 +1367,23 @@ export function TopToolbar() {
       <div className="flex items-center gap-1">
         <ToolButton
           icon={<Undo size={16} />}
-          onClick={() => console.log('Undo')}
+          onClick={() => SimulationController.undo()}
           tooltip="Undo"
         />
         <ToolButton
           icon={<Redo size={16} />}
-          onClick={() => console.log('Redo')}
+          onClick={() => SimulationController.redo()}
           tooltip="Redo"
         />
         <div className="w-px h-6 bg-border mx-1" />
         <ToolButton
           icon={<Save size={16} />}
-          onClick={() => console.log('Save')}
+          onClick={() => SimulationController.saveSnapshot()}
           tooltip="Save"
         />
         <ToolButton
           icon={<FolderOpen size={16} />}
-          onClick={() => console.log('Load')}
+          onClick={() => SimulationController.loadSnapshot()}
           tooltip="Load"
         />
       </div>
@@ -2120,6 +2404,174 @@ export class CanvasRenderer {
 --- End of File: apps/web/src/lib/engine/Renderer.ts ---
 
 
+--- File: apps/web/src/lib/engine/SimulationController.ts ---
+
+/**
+ * SimulationController
+ *
+ * Unified façade that routes simulation commands to the active runtime:
+ * - WorkerBridge (preferred)
+ * - WasmParticleEngine fallback (main thread)
+ *
+ * UI/store should call these helpers instead of touching engine/worker directly.
+ */
+import { getBridge, getEngine } from '@/components/Canvas'
+import type { RenderMode } from './types'
+
+function getTarget() {
+  return getBridge() ?? getEngine()
+}
+
+export function play(): void {
+  const bridge = getBridge()
+  bridge?.play()
+}
+
+export function pause(): void {
+  const bridge = getBridge()
+  bridge?.pause()
+}
+
+export function step(): void {
+  const bridge = getBridge()
+  if (bridge) {
+    // Worker single-step
+    bridge.step()
+  } else {
+    // Fallback engine single-step
+    getEngine()?.step()
+  }
+}
+
+export function reset(): void {
+  const target = getTarget()
+  target?.clear?.()
+}
+
+export function setRenderMode(mode: RenderMode): void {
+  const bridge = getBridge()
+  if (bridge) {
+    bridge.setRenderMode(mode)
+  } else {
+    getEngine()?.setRenderMode(mode)
+  }
+}
+
+export function setGravity(gravity: { x: number; y: number }): void {
+  const bridge = getBridge()
+  if (bridge) {
+    bridge.setSettings({ gravity })
+  } else {
+    getEngine()?.setSettings?.({ gravity })
+  }
+}
+
+export function setAmbientTemperature(ambientTemperature: number): void {
+  const bridge = getBridge()
+  if (bridge) {
+    bridge.setSettings({ ambientTemperature })
+  } else {
+    getEngine()?.setSettings?.({ ambientTemperature })
+  }
+}
+
+export function setSpeed(speed: number): void {
+  const bridge = getBridge()
+  if (bridge) {
+    bridge.setSettings({ speed })
+  }
+}
+
+// === Snapshots ===
+let lastSnapshot: ArrayBuffer | null = null
+const history: ArrayBuffer[] = []
+let historyIndex = -1
+const HISTORY_LIMIT = 20
+
+async function getCurrentSnapshot(): Promise<ArrayBuffer | null> {
+  const bridge = getBridge()
+  if (bridge) {
+    const buffer = await bridge.saveSnapshot() as ArrayBuffer | null
+    if (!buffer) return null
+    let out: ArrayBuffer
+    if (buffer instanceof ArrayBuffer) {
+      out = buffer.slice(0)
+    } else {
+      const view = new Uint8Array(buffer as ArrayBuffer)
+      const copy = new Uint8Array(view)
+      out = copy.buffer
+    } 
+    return out
+  }
+  const engine = getEngine()
+  if (engine) {
+    const snap = engine.saveSnapshot()
+    if (!snap) return null
+    const copy = new Uint8Array(snap)
+    return copy.buffer
+  }
+  return null
+}
+
+export async function saveSnapshot(): Promise<void> {
+  const buffer = await getCurrentSnapshot()
+  lastSnapshot = buffer ?? null
+  if (buffer) {
+    // push into history
+    if (historyIndex < history.length - 1) history.splice(historyIndex + 1)
+    history.push(buffer.slice(0))
+    if (history.length > HISTORY_LIMIT) {
+      history.shift()
+    }
+    historyIndex = history.length - 1
+  }
+}
+
+export function loadSnapshot(): void {
+  if (!lastSnapshot) return
+  const bridge = getBridge()
+  if (bridge) {
+    bridge.loadSnapshot(lastSnapshot.slice(0))
+    return
+  }
+  const engine = getEngine()
+  if (engine) {
+    engine.loadSnapshot(new Uint8Array(lastSnapshot))
+  }
+}
+
+export async function captureSnapshotForUndo(): Promise<void> {
+  const buffer = await getCurrentSnapshot()
+  if (!buffer) return
+  if (historyIndex < history.length - 1) {
+    history.splice(historyIndex + 1)
+  }
+  history.push(buffer.slice(0))
+  if (history.length > HISTORY_LIMIT) {
+    history.shift()
+  }
+  historyIndex = history.length - 1
+}
+
+export function undo(): void {
+  if (historyIndex <= 0) return
+  historyIndex -= 1
+  const buffer = history[historyIndex]
+  lastSnapshot = buffer
+  loadSnapshot()
+}
+
+export function redo(): void {
+  if (historyIndex >= history.length - 1) return
+  historyIndex += 1
+  const buffer = history[historyIndex]
+  lastSnapshot = buffer
+  loadSnapshot()
+}
+
+--- End of File: apps/web/src/lib/engine/SimulationController.ts ---
+
+
 --- File: apps/web/src/lib/engine/WasmParticleEngine.ts ---
 
 /**
@@ -2181,6 +2633,7 @@ interface WasmWorld {
   remove_particles_in_radius: (cx: number, cy: number, radius: number) => void
   clear: () => void
   step: () => void
+  step_with_dt: (dt: number) => void
   types_ptr: () => number
   colors_ptr: () => number
   types_len: () => number
@@ -2193,6 +2646,11 @@ interface WasmWorld {
   extract_chunk_pixels: (chunkIdx: number) => number
   chunks_x: () => number
   chunks_y: () => number
+  // Rigid Bodies
+  spawn_rigid_body: (x: number, y: number, w: number, h: number, element_id: number) => number
+  spawn_rigid_circle: (x: number, y: number, radius: number, element_id: number) => number
+  remove_rigid_body: (id: number) => void
+  rigid_body_count: () => number
 }
 
 let wasmModule: WasmModule | null = null
@@ -2331,21 +2789,96 @@ export class WasmParticleEngine {
     this.world.remove_particles_in_radius(Math.floor(cx), Math.floor(cy), Math.floor(radius))
   }
   
+  // === Rigid Body Methods ===
+  
+  /** Spawn a rectangular rigid body */
+  spawnRigidBody(x: number, y: number, w: number, h: number, element: ElementType): number {
+    if (this._isBusy) return 0
+    const wasmId = ELEMENT_TO_WASM_ID[element] ?? 1 // Default to stone
+    return this.world.spawn_rigid_body(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h), wasmId)
+  }
+  
+  /** Spawn a circular rigid body */
+  spawnRigidCircle(x: number, y: number, radius: number, element: ElementType): number {
+    if (this._isBusy) return 0
+    const wasmId = ELEMENT_TO_WASM_ID[element] ?? 1 // Default to stone
+    return this.world.spawn_rigid_circle(Math.floor(x), Math.floor(y), Math.floor(radius), wasmId)
+  }
+  
+  /** Remove a rigid body by ID */
+  removeRigidBody(id: number): void {
+    if (this._isBusy) return
+    this.world.remove_rigid_body(id)
+  }
+  
+  /** Get number of rigid bodies */
+  get rigidBodyCount(): number {
+    return this.world.rigid_body_count()
+  }
+
+  /** Flood fill contiguous area of the same element */
+  floodFill(cx: number, cy: number, element: ElementType): void {
+    if (!this.typesView || !wasmMemory) return
+    const width = this._width
+    const height = this._height
+    if (cx < 0 || cy < 0 || cx >= width || cy >= height) return
+    const targetId = ELEMENT_TO_WASM_ID[element] ?? 0
+    const types = this.typesView
+    const idx = cy * width + cx
+    const sourceId = types[idx] ?? 0
+    if (sourceId === targetId) return
+    const visited = new Uint8Array(width * height)
+    const stack: Array<{ x: number; y: number }> = [{ x: cx, y: cy }]
+    let processed = 0
+    const LIMIT = 200_000
+
+    while (stack.length > 0) {
+      const { x, y } = stack.pop() as { x: number; y: number }
+      if (x < 0 || y < 0 || x >= width || y >= height) continue
+      const i = y * width + x
+      if (visited[i]) continue
+      if (types[i] !== sourceId) continue
+      visited[i] = 1
+      processed++
+      if (processed > LIMIT) break
+
+      if (targetId === 0) {
+        this.world.remove_particle(x, y)
+      } else {
+        this.world.remove_particle(x, y)
+        this.world.add_particle(x, y, targetId)
+      }
+
+      stack.push({ x: x + 1, y })
+      stack.push({ x: x - 1, y })
+      stack.push({ x, y: y + 1 })
+      stack.push({ x, y: y - 1 })
+    }
+
+    // Memory views might change if world resized
+    this.updateMemoryViews()
+  }
+  
   clear(): void {
     if (this._isBusy) return
     this.world.clear()
   }
   
-  step(): void {
+  stepWithDt(dtSeconds: number): void {
     if (this._isBusy) return
     this._isBusy = true
     try {
-      this.world.step()
+      this.world.step_with_dt(dtSeconds)
       // Memory views may need to be refreshed if WASM memory grew
       this.updateMemoryViews()
     } finally {
       this._isBusy = false
     }
+  }
+  
+  step(): void {
+    // Backwards compatibility: single fixed tick at 60 FPS baseline
+    this.stepWithDt(1 / 60)
   }
   
   render(): void {
@@ -2354,6 +2887,32 @@ export class WasmParticleEngine {
     // Render directly from WASM memory - zero copy!
     // Pass temperature for thermal view mode
     this.renderer.render(this.typesView, this.colorsView, this.temperatureView ?? undefined)
+  }
+  
+  /** Snapshot world types (Uint8Array copy) */
+  saveSnapshot(): Uint8Array | null {
+    if (!this.typesView) return null
+    return new Uint8Array(this.typesView)
+  }
+  
+  /** Load snapshot (types only) */
+  loadSnapshot(types: Uint8Array): void {
+    const expected = this._width * this._height
+    if (types.length !== expected) {
+      console.warn('Snapshot size mismatch, skipping load')
+      return
+    }
+    // Clear world then reapply particles
+    this.world = new this.wasm.World(this._width, this._height)
+    this.updateMemoryViews()
+    for (let i = 0; i < types.length; i++) {
+      const id = types[i]
+      if (id === 0) continue
+      const x = i % this._width
+      const y = Math.floor(i / this._width)
+      this.world.add_particle(x, y, id)
+    }
+    this.updateMemoryViews()
   }
   
   // === Phase 3: Smart Rendering API ===
@@ -2421,6 +2980,13 @@ export class WasmParticleEngine {
   
   destroy(): void {
     // WASM world will be garbage collected
+  }
+
+  /** Read element id at world coordinate */
+  getElementAt(x: number, y: number): number {
+    if (!this.typesView) return 0
+    if (x < 0 || y < 0 || x >= this._width || y >= this._height) return 0
+    return this.typesView[y * this._width + x] ?? 0
   }
 }
 
@@ -2727,8 +3293,11 @@ export class WebGLRenderer {
   private uploadWithMergedRects(engine: any, _memory: WebAssembly.Memory): void {
     const gl = this.gl;
     
-    // DEBUG WORKAROUND: Force full upload every frame to test if dirty tracking is broken
-    const DEBUG_FORCE_FULL = true;
+    // DEBUG WORKAROUND: can be enabled via env flag for diagnostics
+    const DEBUG_FORCE_FULL =
+      (typeof process !== 'undefined' && process.env?.VITE_FORCE_FULL_UPLOAD === 'true') ||
+      (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_FORCE_FULL_UPLOAD === 'true') ||
+      false;
     if (DEBUG_FORCE_FULL) {
       this.uploadFull(engine);
       return;
@@ -3176,6 +3745,7 @@ void main() {
  */
 
 import type { ElementType, RenderMode, ToolType } from './types'
+import { ELEMENT_NAME_TO_ID } from './generated_elements'
 import { screenToWorld as invertTransform } from './transform'
 import { 
   SharedInputBuffer, 
@@ -3208,14 +3778,6 @@ export type CrashCallback = (message: string, canRecover: boolean) => void
  * bridge.addParticles(x, y, radius, element)
  * ```
  */
-// Element name to ID mapping (must match Rust elements.rs)
-const ELEMENT_TO_ID: Record<ElementType, number> = {
-  'empty': 0, 'stone': 1, 'sand': 2, 'wood': 3, 'metal': 4, 'ice': 5,
-  'water': 6, 'oil': 7, 'lava': 8, 'acid': 9, 'steam': 10, 'smoke': 11,
-  'fire': 12, 'spark': 13, 'electricity': 14, 'gunpowder': 15,
-  'clone': 16, 'void': 17, 'dirt': 18, 'seed': 19, 'plant': 20
-}
-
 export class WorkerBridge {
   private worker: Worker | null = null
   private _width: number = 0
@@ -3225,6 +3787,9 @@ export class WorkerBridge {
   // Phase 5: Shared input buffer for zero-latency input
   private inputBuffer: SharedInputBuffer | null = null
   private useSharedInput: boolean = false
+  private pipetteResolvers: Map<number, (el: ElementType | null) => void> = new Map()
+  private snapshotResolvers: Map<number, (data: ArrayBuffer | null) => void> = new Map()
+  private requestId = 1
   
   // Callbacks
   public onStats: StatsCallback | null = null
@@ -3282,6 +3847,24 @@ export class WorkerBridge {
               console.error('💥 WASM Crash:', msg.message)
               this.onCrash?.(msg.message, msg.canRecover ?? true)
               break
+            
+            case 'PIPETTE_RESULT': {
+              const resolver = this.pipetteResolvers.get(msg.id)
+              if (resolver) {
+                resolver(msg.element ?? null)
+                this.pipetteResolvers.delete(msg.id)
+              }
+              break
+            }
+
+            case 'SNAPSHOT_RESULT': {
+              const resolver = this.snapshotResolvers.get(msg.id)
+              if (resolver) {
+                resolver(msg.buffer ?? null)
+                this.snapshotResolvers.delete(msg.id)
+              }
+              break
+            }
           }
         }
         
@@ -3335,9 +3918,13 @@ export class WorkerBridge {
   play(): void {
     this.worker?.postMessage({ type: 'PLAY' })
   }
-  
+
   pause(): void {
     this.worker?.postMessage({ type: 'PAUSE' })
+  }
+
+  step(): void {
+    this.worker?.postMessage({ type: 'STEP' })
   }
   
   clear(): void {
@@ -3350,7 +3937,14 @@ export class WorkerBridge {
    * Add/remove particles (screen coordinates are converted to world)
    * Phase 5: Uses SharedArrayBuffer when available for zero-latency!
    */
-  handleInput(screenX: number, screenY: number, radius: number, element: ElementType, tool: ToolType): void {
+  handleInput(
+    screenX: number,
+    screenY: number,
+    radius: number,
+    element: ElementType,
+    tool: ToolType,
+    brushShape: 'circle' | 'square' | 'line' = 'circle'
+  ): void {
     const viewport = { width: this._width, height: this._height }
     const world = invertTransform(
       screenX,
@@ -3366,7 +3960,7 @@ export class WorkerBridge {
       if (tool === 'eraser') {
         this.inputBuffer.pushErase(worldX, worldY, radius)
       } else if (tool === 'brush') {
-        const elementId = ELEMENT_TO_ID[element] ?? 0
+        const elementId = ELEMENT_NAME_TO_ID[element] ?? 0
         if (elementId !== 0) { // Don't push empty
           this.inputBuffer.pushBrush(worldX, worldY, radius, elementId)
         }
@@ -3381,6 +3975,7 @@ export class WorkerBridge {
       y: screenY,
       radius,
       element,
+      brushShape,
       tool
     })
   }
@@ -3397,6 +3992,79 @@ export class WorkerBridge {
    */
   removeParticles(screenX: number, screenY: number, radius: number): void {
     this.handleInput(screenX, screenY, radius, 'empty', 'eraser')
+  }
+
+  /**
+   * Flood fill tool (worker only)
+   */
+  fill(screenX: number, screenY: number, element: ElementType): void {
+    const viewport = { width: this._width, height: this._height }
+    const world = invertTransform(
+      screenX,
+      screenY,
+      { zoom: this.zoom, panX: this.panX, panY: this.panY },
+      viewport
+    )
+    this.worker?.postMessage({
+      type: 'FILL',
+      x: Math.floor(world.x),
+      y: Math.floor(world.y),
+      element
+    })
+  }
+  
+  /**
+   * Spawn a rigid body at world coordinates
+   */
+  spawnRigidBody(
+    worldX: number, 
+    worldY: number, 
+    size: number, 
+    shape: 'box' | 'circle', 
+    element: ElementType
+  ): void {
+    this.worker?.postMessage({
+      type: 'SPAWN_RIGID_BODY',
+      x: Math.floor(worldX),
+      y: Math.floor(worldY),
+      size: Math.floor(size),
+      shape,
+      element
+    })
+  }
+
+  /**
+   * Pipette tool - returns element under cursor
+   */
+  pipette(screenX: number, screenY: number): Promise<ElementType | null> {
+    const id = this.requestId++
+    return new Promise((resolve) => {
+      this.pipetteResolvers.set(id, resolve)
+      this.worker?.postMessage({
+        type: 'PIPETTE',
+        id,
+        x: screenX,
+        y: screenY,
+      })
+    })
+  }
+
+  /**
+   * Capture snapshot of world (types only)
+   */
+  saveSnapshot(): Promise<ArrayBuffer | null> {
+    const id = this.requestId++
+    return new Promise((resolve) => {
+      this.snapshotResolvers.set(id, resolve)
+      this.worker?.postMessage({ type: 'SNAPSHOT', id })
+    })
+  }
+
+  /**
+   * Load snapshot buffer (must match world dimensions)
+   */
+  loadSnapshot(buffer: ArrayBuffer): void {
+    this.worker?.postMessage({ type: 'LOAD_SNAPSHOT', buffer }, [buffer])
   }
   
   /**
@@ -4093,18 +4761,43 @@ export const CATEGORY_NAME_TO_ID: Record<CategoryType, CategoryId> = {
 // ELEMENT PROPERTIES
 // ============================================================================
 
+// ============================================================================
+// ELEMENT FLAGS - Phase 1 Data-Driven
+// ============================================================================
+
+export const FLAG_NONE = 0
+export const FLAG_FLAMMABLE = 1
+export const FLAG_CONDUCTIVE = 2
+export const FLAG_LIQUID = 4
+export const FLAG_GAS = 8
+export const FLAG_POWDER = 16
+export const FLAG_SOLID = 32
+export const FLAG_ENERGY = 64
+export const FLAG_UTILITY = 128
+export const FLAG_BIO = 256
+export const FLAG_IGNORE_GRAVITY = 512
+export const FLAG_CORROSIVE = 1024
+export const FLAG_HOT = 2048
+export const FLAG_COLD = 4096
+export const FLAG_RIGID = 8192
+
+export type ElementFlags = number
+
+export function hasFlag(flags: ElementFlags, flag: ElementFlags): boolean {
+  return (flags & flag) !== 0
+}
+
 export interface ElementProps {
   id: ElementId
   name: ElementType
   category: CategoryId
+  flags: ElementFlags
   color: number
   density: number
   dispersion: number
   lifetime: number
   defaultTemp: number
   heatConductivity: number
-  flammable: boolean
-  conductive: boolean
   hidden?: boolean
 }
 
@@ -4113,275 +4806,292 @@ export const ELEMENT_DATA: ElementProps[] = [
     id: EL_EMPTY,
     name: 'empty',
     category: CAT_SOLID,
+    flags: 32,
     color: 0xFF0A0A0A,
     density: 0,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
-    heatConductivity: 5,
-    flammable: false,
-    conductive: false, hidden: true,
+    heatConductivity: 5, hidden: true,
   },
   {
     id: EL_STONE,
     name: 'stone',
     category: CAT_SOLID,
+    flags: 32,
     color: 0xFF808080,
     density: 2500,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_SAND,
     name: 'sand',
     category: CAT_POWDER,
+    flags: 16,
     color: 0xFFC2B280,
     density: 1600,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 15,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_WOOD,
     name: 'wood',
     category: CAT_SOLID,
+    flags: 33,
     color: 0xFF8B4513,
     density: 600,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 5,
-    flammable: true,
-    conductive: false,
   },
   {
     id: EL_METAL,
     name: 'metal',
     category: CAT_SOLID,
+    flags: 34,
     color: 0xFFA9A9A9,
     density: 7800,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 90,
-    flammable: false,
-    conductive: true,
   },
   {
     id: EL_ICE,
     name: 'ice',
     category: CAT_SOLID,
+    flags: 4128,
     color: 0xFFA5F2F3,
     density: 916,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: -10,
     heatConductivity: 20,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_WATER,
     name: 'water',
     category: CAT_LIQUID,
+    flags: 6,
     color: 0xFF4169E1,
     density: 1000,
     dispersion: 8,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 40,
-    flammable: false,
-    conductive: true,
   },
   {
     id: EL_OIL,
     name: 'oil',
     category: CAT_LIQUID,
+    flags: 5,
     color: 0xFF4A4A2A,
     density: 800,
     dispersion: 5,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 15,
-    flammable: true,
-    conductive: false,
   },
   {
     id: EL_LAVA,
     name: 'lava',
     category: CAT_LIQUID,
+    flags: 2052,
     color: 0xFFFF4500,
     density: 2500,
     dispersion: 2,
     lifetime: 0,
     defaultTemp: 1000,
     heatConductivity: 30,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_ACID,
     name: 'acid',
     category: CAT_LIQUID,
+    flags: 1030,
     color: 0xFF39FF14,
     density: 1050,
     dispersion: 5,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 35,
-    flammable: false,
-    conductive: true,
   },
   {
     id: EL_STEAM,
     name: 'steam',
     category: CAT_GAS,
+    flags: 8,
     color: 0xB4E0E0E0,
     density: 0.6,
     dispersion: 6,
     lifetime: 0,
     defaultTemp: 100,
     heatConductivity: 10,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_SMOKE,
     name: 'smoke',
     category: CAT_GAS,
+    flags: 8,
     color: 0xC83F3F3F,
     density: 1.1,
     dispersion: 4,
     lifetime: 0,
     defaultTemp: 50,
     heatConductivity: 5,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_FIRE,
     name: 'fire',
     category: CAT_ENERGY,
+    flags: 2112,
     color: 0xFFFF6600,
     density: 0.3,
     dispersion: 0,
     lifetime: 60,
     defaultTemp: 800,
     heatConductivity: 50,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_SPARK,
     name: 'spark',
     category: CAT_ENERGY,
+    flags: 64,
     color: 0xFFFFFF00,
     density: 0.1,
     dispersion: 0,
     lifetime: 10,
     defaultTemp: 500,
     heatConductivity: 50,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_ELECTRICITY,
     name: 'electricity',
     category: CAT_ENERGY,
+    flags: 64,
     color: 0xFF00FFFF,
     density: 0,
     dispersion: 0,
     lifetime: 3,
     defaultTemp: 200,
     heatConductivity: 80,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_GUNPOWDER,
     name: 'gunpowder',
     category: CAT_POWDER,
+    flags: 17,
     color: 0xFF404040,
     density: 1400,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
-    flammable: true,
-    conductive: false,
   },
   {
     id: EL_CLONE,
     name: 'clone',
     category: CAT_UTILITY,
+    flags: 640,
     color: 0xFF00FF00,
     density: Infinity,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 0,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_VOID,
     name: 'void',
     category: CAT_UTILITY,
+    flags: 640,
     color: 0xFF000000,
     density: Infinity,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 0,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_DIRT,
     name: 'dirt',
     category: CAT_POWDER,
+    flags: 16,
     color: 0xFF5C4033,
     density: 1200,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
-    flammable: false,
-    conductive: false,
   },
   {
     id: EL_SEED,
     name: 'seed',
     category: CAT_BIO,
+    flags: 257,
     color: 0xFFE2C489,
     density: 1100,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 5,
-    flammable: true,
-    conductive: false,
   },
   {
     id: EL_PLANT,
     name: 'plant',
     category: CAT_BIO,
+    flags: 257,
     color: 0xFF228B22,
     density: 900,
     dispersion: 0,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
-    flammable: true,
-    conductive: false,
   },
+]
+
+// ============================================================================
+// REACTIONS - Phase 1 Data-Driven
+// ============================================================================
+
+export interface Reaction {
+  aggressor: ElementType
+  victim: ElementType
+  resultAggressor: ElementType | null
+  resultVictim: ElementType | null
+  chance: number
+  spawn: ElementType | null
+}
+
+export const REACTIONS: Reaction[] = [
+  { aggressor: 'fire', victim: 'wood', resultAggressor: 'smoke', resultVictim: 'fire', chance: 0.1, spawn: 'smoke' },
+  { aggressor: 'fire', victim: 'oil', resultAggressor: 'smoke', resultVictim: 'fire', chance: 0.2, spawn: 'smoke' },
+  { aggressor: 'fire', victim: 'water', resultAggressor: 'empty', resultVictim: 'steam', chance: 0.5, spawn: null },
+  { aggressor: 'fire', victim: 'ice', resultAggressor: 'empty', resultVictim: 'water', chance: 0.3, spawn: 'steam' },
+  { aggressor: 'fire', victim: 'gunpowder', resultAggressor: 'fire', resultVictim: 'fire', chance: 1, spawn: 'smoke' },
+  { aggressor: 'fire', victim: 'plant', resultAggressor: 'smoke', resultVictim: 'fire', chance: 0.1, spawn: 'smoke' },
+  { aggressor: 'fire', victim: 'seed', resultAggressor: 'smoke', resultVictim: 'fire', chance: 0.2, spawn: null },
+  { aggressor: 'lava', victim: 'water', resultAggressor: 'stone', resultVictim: 'steam', chance: 0.15, spawn: 'steam' },
+  { aggressor: 'lava', victim: 'wood', resultAggressor: null, resultVictim: 'fire', chance: 0.3, spawn: 'smoke' },
+  { aggressor: 'lava', victim: 'oil', resultAggressor: null, resultVictim: 'fire', chance: 0.4, spawn: 'smoke' },
+  { aggressor: 'lava', victim: 'ice', resultAggressor: 'stone', resultVictim: 'steam', chance: 0.3, spawn: null },
+  { aggressor: 'lava', victim: 'gunpowder', resultAggressor: null, resultVictim: 'fire', chance: 1, spawn: 'smoke' },
+  { aggressor: 'lava', victim: 'plant', resultAggressor: null, resultVictim: 'fire', chance: 0.5, spawn: 'smoke' },
+  { aggressor: 'lava', victim: 'dirt', resultAggressor: null, resultVictim: 'stone', chance: 0.05, spawn: null },
+  { aggressor: 'acid', victim: 'stone', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.1, spawn: 'smoke' },
+  { aggressor: 'acid', victim: 'metal', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.05, spawn: null },
+  { aggressor: 'acid', victim: 'wood', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.2, spawn: null },
+  { aggressor: 'acid', victim: 'ice', resultAggressor: 'empty', resultVictim: 'water', chance: 0.2, spawn: null },
+  { aggressor: 'acid', victim: 'plant', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.15, spawn: null },
+  { aggressor: 'acid', victim: 'dirt', resultAggressor: 'empty', resultVictim: 'empty', chance: 0.05, spawn: null },
+  { aggressor: 'water', victim: 'lava', resultAggressor: 'steam', resultVictim: 'stone', chance: 0.15, spawn: 'steam' },
+  { aggressor: 'water', victim: 'fire', resultAggressor: 'steam', resultVictim: 'empty', chance: 0.3, spawn: null },
 ]
 
 // ============================================================================
@@ -4759,8 +5469,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(<App />)
 --- File: apps/web/src/stores/simulationStore.ts ---
 
 import { create } from 'zustand'
-import { getEngine } from '@/components/Canvas'
 import type { RenderMode } from '@/lib/engine'
+import * as SimulationController from '@/lib/engine/SimulationController'
 
 interface SimulationState {
   // State
@@ -4798,33 +5508,39 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   ambientTemperature: 20,
   
   // Actions
-  play: () => set({ isPlaying: true }),
-  pause: () => set({ isPlaying: false }),
+  play: () => {
+    SimulationController.play()
+    set({ isPlaying: true })
+  },
+  pause: () => {
+    SimulationController.pause()
+    set({ isPlaying: false })
+  },
   step: () => {
-    const engine = getEngine()
-    if (engine) {
-      engine.step()
-    }
+    SimulationController.step()
   },
   reset: () => {
-    const engine = getEngine()
-    if (engine) {
-      engine.clear()
-    }
+    SimulationController.reset()
     set({ particleCount: 0, isPlaying: false })
   },
-  setSpeed: (speed) => set({ speed }),
-  setGravity: (gravity) => set({ gravity }),
-  setAmbientTemperature: (ambientTemperature) => set({ ambientTemperature }),
+  setSpeed: (speed) => {
+    SimulationController.setSpeed(speed)
+    set({ speed })
+  },
+  setGravity: (gravity) => {
+    SimulationController.setGravity(gravity)
+    set({ gravity })
+  },
+  setAmbientTemperature: (ambientTemperature) => {
+    SimulationController.setAmbientTemperature(ambientTemperature)
+    set({ ambientTemperature })
+  },
   setFps: (fps) => set({ fps }),
   setParticleCount: (particleCount) => set({ particleCount }),
   toggleRenderMode: () => {
-    const engine = getEngine()
     const currentMode = get().renderMode
     const newMode: RenderMode = currentMode === 'normal' ? 'thermal' : 'normal'
-    if (engine) {
-      engine.setRenderMode(newMode)
-    }
+    SimulationController.setRenderMode(newMode)
     set({ renderMode: newMode })
   },
 }))
@@ -4837,8 +5553,9 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
 import { create } from 'zustand'
 import type { ElementType } from '@/lib/engine'
 
-type ToolType = 'brush' | 'eraser' | 'pipette' | 'fill' | 'move'
+type ToolType = 'brush' | 'eraser' | 'pipette' | 'fill' | 'move' | 'rigid_body'
 type BrushShape = 'circle' | 'square' | 'line'
+type RigidBodyShape = 'box' | 'circle'
 
 interface ToolState {
   // Current tool
@@ -4849,11 +5566,19 @@ interface ToolState {
   // Selected element
   selectedElement: ElementType
   
+  // Rigid body settings
+  rigidBodyShape: RigidBodyShape
+  rigidBodySize: number
+  rigidBodyElement: ElementType
+  
   // Actions
   setTool: (tool: ToolType) => void
   setBrushShape: (shape: BrushShape) => void
   setBrushSize: (size: number) => void
   setElement: (element: ElementType) => void
+  setRigidBodyShape: (shape: RigidBodyShape) => void
+  setRigidBodySize: (size: number) => void
+  setRigidBodyElement: (element: ElementType) => void
 }
 
 export const useToolStore = create<ToolState>((set) => ({
@@ -4863,11 +5588,19 @@ export const useToolStore = create<ToolState>((set) => ({
   brushSize: 10,
   selectedElement: 'sand',
   
+  // Rigid body defaults
+  rigidBodyShape: 'box',
+  rigidBodySize: 20,
+  rigidBodyElement: 'stone',
+  
   // Actions
   setTool: (selectedTool) => set({ selectedTool }),
   setBrushShape: (brushShape) => set({ brushShape }),
   setBrushSize: (brushSize) => set({ brushSize: Math.min(50, Math.max(1, brushSize)) }),
   setElement: (selectedElement) => set({ selectedElement, selectedTool: 'brush' }),
+  setRigidBodyShape: (rigidBodyShape) => set({ rigidBodyShape, selectedTool: 'rigid_body' }),
+  setRigidBodySize: (rigidBodySize) => set({ rigidBodySize: Math.min(50, Math.max(5, rigidBodySize)) }),
+  setRigidBodyElement: (rigidBodyElement) => set({ rigidBodyElement }),
 }))
 
 --- End of File: apps/web/src/stores/toolStore.ts ---
@@ -4904,6 +5637,7 @@ type ToolType = 'brush' | 'eraser' | 'pipette' | 'move'
 // Phase 5: Import SharedInputBuffer for zero-latency input
 import { SharedInputBuffer, INPUT_TYPE_ERASE, INPUT_TYPE_END_STROKE, INPUT_TYPE_BRUSH_OFFSET } from '../lib/InputBuffer'
 import { screenToWorld as invertTransform } from '../lib/engine/transform'
+import { ELEMENT_NAME_TO_ID, ELEMENT_ID_TO_NAME } from '../lib/engine/generated_elements'
 
 // Phase 3: WebGL Renderer for GPU-accelerated rendering
 import { WebGLRenderer } from '../lib/engine/WebGLRenderer'
@@ -4927,6 +5661,7 @@ interface InputMessage {
   radius: number
   element: ElementType
   tool: ToolType
+  brushShape?: 'circle' | 'square' | 'line'
 }
 
 interface TransformMessage {
@@ -4963,8 +5698,14 @@ type WorkerMessage =
   | ResizeMessage
   | { type: 'PLAY' }
   | { type: 'PAUSE' }
+  | { type: 'STEP' }   // Single-step when paused
   | { type: 'CLEAR' }
+  | { type: 'FILL'; x: number; y: number; element: ElementType }
+  | { type: 'PIPETTE'; id: number; x: number; y: number }
+  | { type: 'SNAPSHOT'; id: number }
+  | { type: 'LOAD_SNAPSHOT'; buffer: ArrayBuffer }
   | { type: 'INPUT_END' }  // Phase 5: Reset Bresenham tracking
+  | { type: 'SPAWN_RIGID_BODY'; x: number; y: number; size: number; shape: 'box' | 'circle'; element: ElementType }
 
 // Worker state
 let engine: any = null
@@ -5018,34 +5759,22 @@ const BG_COLOR_32 = 0xFF0A0A0A
 const EL_EMPTY = 0
 
 // === DEBUG: Dirty chunk logging ===
-const DEBUG_DIRTY = true  // Set to false to disable logging
+const DEBUG_DIRTY =
+  (
+    typeof process !== 'undefined' &&
+    process.env?.NODE_ENV === 'development' &&
+    process.env?.VITE_DEBUG_DIRTY !== 'false'
+  ) ||
+  (
+    typeof import.meta !== 'undefined' &&
+    (import.meta as any).env?.MODE === 'development' &&
+    (import.meta as any).env?.VITE_DEBUG_DIRTY !== 'false'
+  )
 let debugLogInterval = 0
 const DEBUG_LOG_EVERY = 60  // Log every N frames
 
-// Element mapping - MUST match Rust elements.rs exactly!
-const ELEMENT_MAP: Record<ElementType, number> = {
-  empty: 0,
-  stone: 1,
-  sand: 2,
-  wood: 3,
-  metal: 4,
-  ice: 5,
-  water: 6,
-  oil: 7,
-  lava: 8,
-  acid: 9,
-  steam: 10,
-  smoke: 11,
-  fire: 12,
-  spark: 13,
-  electricity: 14,
-  gunpowder: 15,
-  clone: 16,
-  void: 17,
-  dirt: 18,
-  seed: 19,
-  plant: 20
-}
+// Element mapping from generated definitions
+const ELEMENT_MAP: Record<ElementType, number> = ELEMENT_NAME_TO_ID
 
 // ============================================================================
 // INITIALIZATION
@@ -5163,6 +5892,7 @@ function renderLoop(time: number) {
     if (fpsCount < FPS_SAMPLES) fpsCount++
   }
   lastTime = time
+  const dtSeconds = Math.min(Math.max(delta / 1000, 0), 0.25)
   
   // Phase 5: Process shared input buffer (zero-latency!)
   processSharedInput()
@@ -5170,10 +5900,8 @@ function renderLoop(time: number) {
   // Physics step (Phase 5: wrapped in try-catch for crash recovery)
   if (isPlaying) {
     try {
-      const steps = speed >= 1 ? Math.floor(speed) : 1
-      for (let i = 0; i < steps; i++) {
-        engine.step()
-      }
+      const simDt = dtSeconds * speed
+      engine.step_with_dt(simDt)
       // Memory might have grown
       updateMemoryViews()
     } catch (e) {
@@ -5381,7 +6109,14 @@ function drawWorldBorder(width: number, height: number) {
 // INPUT HANDLING
 // ============================================================================
 
-function handleInput(x: number, y: number, radius: number, element: ElementType, tool: ToolType) {
+function handleInput(
+  x: number,
+  y: number,
+  radius: number,
+  element: ElementType,
+  tool: ToolType,
+  brushShape: 'circle' | 'square' | 'line' = 'circle'
+) {
   if (!engine) return
   
   // Apply camera transform to convert screen coords to world coords
@@ -5397,12 +6132,27 @@ function handleInput(x: number, y: number, radius: number, element: ElementType,
   
   const wasmElement = ELEMENT_MAP[element] ?? 0
   
-  if (tool === 'eraser') {
-    engine.remove_particles_in_radius(worldX, worldY, radius)
-  } else if (tool === 'brush') {
-    if (wasmElement !== 0) {
-      engine.add_particles_in_radius(worldX, worldY, radius, wasmElement)
+  const applyBrush = (wx: number, wy: number) => {
+    if (tool === 'eraser') {
+      engine.remove_particles_in_radius(wx, wy, radius)
+    } else if (tool === 'brush') {
+      if (wasmElement !== 0) {
+        engine.add_particles_in_radius(wx, wy, radius, wasmElement)
+      }
     }
+  }
+
+  if (brushShape === 'square') {
+    const half = Math.max(1, radius)
+    for (let dy = -half; dy <= half; dy++) {
+      for (let dx = -half; dx <= half; dx++) {
+        applyBrush(worldX + dx, worldY + dy)
+      }
+    }
+  } else if (brushShape === 'line') {
+    drawLine(worldX - radius, worldY, worldX + radius, worldY, radius, wasmElement, tool === 'eraser')
+  } else {
+    applyBrush(worldX, worldY)
   }
   // pipette and move are handled on main thread (UI concerns)
 }
@@ -5410,6 +6160,7 @@ function handleInput(x: number, y: number, radius: number, element: ElementType,
 // Phase 5: State for Bresenham line interpolation
 let lastInputX: number | null = null
 let lastInputY: number | null = null
+const FILL_LIMIT = 200_000 // safety guard to prevent freezes
 
 /**
  * Bresenham's Line Algorithm for smooth drawing
@@ -5512,6 +6263,99 @@ function resetInputTracking() {
   lastInputY = null
 }
 
+function captureSnapshot(): ArrayBuffer | null {
+  if (!memoryManager || !engine) return null
+  const types = memoryManager.types
+  // Copy into new ArrayBuffer to transfer
+  return new Uint8Array(types).buffer
+}
+
+function loadSnapshotBuffer(buffer: ArrayBuffer) {
+  if (!engine || !wasmModule) return
+  const types = new Uint8Array(buffer)
+  const width = engine.width as number
+  const height = engine.height as number
+  const expected = width * height
+  if (types.length !== expected) {
+    console.warn('Snapshot size mismatch, skipping load')
+    return
+  }
+  // Reset world
+  engine = new wasmModule.World(width, height)
+  updateMemoryViews()
+  // Re-apply particles
+  for (let i = 0; i < types.length; i++) {
+    const elId = types[i]
+    if (elId === 0) continue
+    const x = i % width
+    const y = Math.floor(i / width)
+    engine.add_particle(x, y, elId)
+  }
+  // Force full upload on renderer next frame
+  if (renderer) renderer.requestFullUpload()
+}
+
+/**
+ * Read element at world coordinate
+ */
+function readElementAt(x: number, y: number): ElementType | null {
+  if (!memoryManager || !engine) return null
+  const width = engine.width as number
+  const height = engine.height as number
+  if (x < 0 || y < 0 || x >= width || y >= height) return null
+  const types = memoryManager.types
+  const idx = y * width + x
+  const elId = types[idx] ?? 0
+  return ELEMENT_ID_TO_NAME[elId] ?? null
+}
+
+/**
+ * Flood fill contiguous area of the same element id
+ */
+function floodFill(startX: number, startY: number, targetElementId: number) {
+  if (!memoryManager || !engine) return
+  const width = engine.width as number
+  const height = engine.height as number
+  if (startX < 0 || startY < 0 || startX >= width || startY >= height) return
+
+  const types = memoryManager.types
+  const startIdx = startY * width + startX
+  const sourceId = types[startIdx] ?? 0
+
+  // nothing to do
+  if (sourceId === targetElementId) return
+
+  const visited = new Uint8Array(width * height)
+  const stack: Array<{ x: number; y: number }> = [{ x: startX, y: startY }]
+  let processed = 0
+
+  while (stack.length > 0) {
+    const { x, y } = stack.pop() as { x: number; y: number }
+    if (x < 0 || y < 0 || x >= width || y >= height) continue
+    const idx = y * width + x
+    if (visited[idx]) continue
+    if (types[idx] !== sourceId) continue
+
+    visited[idx] = 1
+    processed++
+    if (processed > FILL_LIMIT) break
+
+    // Replace
+    if (targetElementId === 0) {
+      engine.remove_particle(x, y)
+    } else {
+      // If there is something else, remove then add to ensure overwrite
+      engine.remove_particle(x, y)
+      engine.add_particle(x, y, targetElementId)
+    }
+
+    stack.push({ x: x + 1, y })
+    stack.push({ x: x - 1, y })
+    stack.push({ x, y: y + 1 })
+    stack.push({ x, y: y - 1 })
+  }
+}
+
 // ============================================================================
 // STATS
 // ============================================================================
@@ -5553,8 +6397,63 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
       isPlaying = false
       break
       
+    case 'STEP':
+      if (engine) {
+        engine.step()
+        updateMemoryViews()
+      }
+      break
+    
+    case 'FILL': {
+      if (!engine || !memoryManager) break
+      const elementId = ELEMENT_MAP[msg.element] ?? 0
+      floodFill(msg.x, msg.y, elementId)
+      break
+    }
+    
+    case 'SPAWN_RIGID_BODY': {
+      if (!engine) break
+      const elementId = ELEMENT_MAP[msg.element] ?? 1 // Default to stone
+      if (msg.shape === 'circle') {
+        engine.spawn_rigid_circle(msg.x, msg.y, Math.floor(msg.size / 2), elementId)
+      } else {
+        engine.spawn_rigid_body(msg.x, msg.y, msg.size, msg.size, elementId)
+      }
+      break
+    }
+    
+    case 'PIPETTE': {
+      const viewport = canvas ? { width: canvas.width, height: canvas.height } : { width: 0, height: 0 }
+      const world = invertTransform(
+        msg.x,
+        msg.y,
+        { zoom, panX, panY },
+        viewport
+      )
+      const worldX = Math.floor(world.x)
+      const worldY = Math.floor(world.y)
+      const element = readElementAt(worldX, worldY)
+      self.postMessage({ type: 'PIPETTE_RESULT', id: msg.id, element })
+      break
+    }
+    
+    case 'SNAPSHOT': {
+      const buffer = captureSnapshot()
+      if (buffer) {
+        self.postMessage({ type: 'SNAPSHOT_RESULT', id: msg.id, buffer }, { transfer: [buffer] })
+      } else {
+        self.postMessage({ type: 'SNAPSHOT_RESULT', id: msg.id, buffer: null })
+      }
+      break
+    }
+    
+    case 'LOAD_SNAPSHOT': {
+      loadSnapshotBuffer(msg.buffer)
+      break
+    }
+      
     case 'INPUT':
-      handleInput(msg.x, msg.y, msg.radius, msg.element, msg.tool)
+      handleInput(msg.x, msg.y, msg.radius, msg.element, msg.tool, msg.brushShape ?? 'circle')
       break
       
     case 'INPUT_END':
@@ -5631,6 +6530,685 @@ export {}
 --- End of File: apps/web/src/workers/simulation.worker.ts ---
 
 
+--- File: apps/web/tsconfig.json ---
+
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src", "src/lib/engine/WebGLRenderer.ts"],
+  "exclude": [
+    "src/lib/engine/_LEGACY",
+    "src/lib/engine/__tests__"
+  ]
+}
+
+--- End of File: apps/web/tsconfig.json ---
+
+
+--- File: apps/web/tsconfig.node.json ---
+
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["vite.config.ts"]
+}
+
+--- End of File: apps/web/tsconfig.node.json ---
+
+
+--- File: definitions/elements.json ---
+
+{
+  "$schema": "./elements.schema.json",
+  "version": "3.0.0",
+  "description": "Single Source of Truth for all element definitions in Particula - Phase 2 Newtonian Physics",
+  
+  "flags": {
+    "FLAG_NONE":           0,
+    "FLAG_FLAMMABLE":      1,
+    "FLAG_CONDUCTIVE":     2,
+    "FLAG_LIQUID":         4,
+    "FLAG_GAS":            8,
+    "FLAG_POWDER":        16,
+    "FLAG_SOLID":         32,
+    "FLAG_ENERGY":        64,
+    "FLAG_UTILITY":      128,
+    "FLAG_BIO":          256,
+    "FLAG_IGNORE_GRAVITY": 512,
+    "FLAG_CORROSIVE":   1024,
+    "FLAG_HOT":         2048,
+    "FLAG_COLD":        4096,
+    "FLAG_RIGID":       8192
+  },
+  
+  "physics": {
+    "gravity": 0.5,
+    "airFriction": 0.98,
+    "maxVelocity": 10.0
+  },
+  
+  "categories": [
+    { "id": 0, "name": "solid",   "rustName": "CAT_SOLID" },
+    { "id": 1, "name": "powder",  "rustName": "CAT_POWDER" },
+    { "id": 2, "name": "liquid",  "rustName": "CAT_LIQUID" },
+    { "id": 3, "name": "gas",     "rustName": "CAT_GAS" },
+    { "id": 4, "name": "energy",  "rustName": "CAT_ENERGY" },
+    { "id": 5, "name": "utility", "rustName": "CAT_UTILITY" },
+    { "id": 6, "name": "bio",     "rustName": "CAT_BIO" }
+  ],
+  
+  "elements": [
+    {
+      "id": 0,
+      "name": "empty",
+      "rustName": "EL_EMPTY",
+      "category": "solid",
+      "color": "0xFF0A0A0A",
+      "density": 0.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 5,
+      "flammable": false,
+      "conductive": false,
+      "hidden": true
+    },
+    {
+      "id": 1,
+      "name": "stone",
+      "rustName": "EL_STONE",
+      "category": "solid",
+      "color": "0xFF808080",
+      "density": 2500.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 10,
+      "flammable": false,
+      "conductive": false,
+      "phaseChange": { "high": { "temp": 900.0, "to": "lava" } }
+    },
+    {
+      "id": 2,
+      "name": "sand",
+      "rustName": "EL_SAND",
+      "category": "powder",
+      "color": "0xFFC2B280",
+      "density": 1600.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 15,
+      "flammable": false,
+      "conductive": false,
+      "phaseChange": { "high": { "temp": 1700.0, "to": "lava" } }
+    },
+    {
+      "id": 3,
+      "name": "wood",
+      "rustName": "EL_WOOD",
+      "category": "solid",
+      "color": "0xFF8B4513",
+      "density": 600.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 5,
+      "flammable": true,
+      "conductive": false
+    },
+    {
+      "id": 4,
+      "name": "metal",
+      "rustName": "EL_METAL",
+      "category": "solid",
+      "color": "0xFFA9A9A9",
+      "density": 7800.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 90,
+      "flammable": false,
+      "conductive": true,
+      "phaseChange": { "high": { "temp": 1500.0, "to": "lava" } }
+    },
+    {
+      "id": 5,
+      "name": "ice",
+      "rustName": "EL_ICE",
+      "category": "solid",
+      "color": "0xFFA5F2F3",
+      "density": 916.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": -10.0,
+      "heatConductivity": 20,
+      "flammable": false,
+      "conductive": false,
+      "phaseChange": { "high": { "temp": 0.0, "to": "water" } }
+    },
+    {
+      "id": 6,
+      "name": "water",
+      "rustName": "EL_WATER",
+      "category": "liquid",
+      "color": "0xFF4169E1",
+      "density": 1000.0,
+      "dispersion": 8,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 40,
+      "flammable": false,
+      "conductive": true,
+      "phaseChange": {
+        "high": { "temp": 100.0, "to": "steam" },
+        "low": { "temp": 0.0, "to": "ice" }
+      }
+    },
+    {
+      "id": 7,
+      "name": "oil",
+      "rustName": "EL_OIL",
+      "category": "liquid",
+      "color": "0xFF4A4A2A",
+      "density": 800.0,
+      "dispersion": 5,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 15,
+      "flammable": true,
+      "conductive": false
+    },
+    {
+      "id": 8,
+      "name": "lava",
+      "rustName": "EL_LAVA",
+      "category": "liquid",
+      "color": "0xFFFF4500",
+      "density": 2500.0,
+      "dispersion": 2,
+      "lifetime": 0,
+      "defaultTemp": 1000.0,
+      "heatConductivity": 30,
+      "flammable": false,
+      "conductive": false,
+      "phaseChange": { "low": { "temp": 700.0, "to": "stone" } }
+    },
+    {
+      "id": 9,
+      "name": "acid",
+      "rustName": "EL_ACID",
+      "category": "liquid",
+      "color": "0xFF39FF14",
+      "density": 1050.0,
+      "dispersion": 5,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 35,
+      "flammable": false,
+      "conductive": true
+    },
+    {
+      "id": 10,
+      "name": "steam",
+      "rustName": "EL_STEAM",
+      "category": "gas",
+      "color": "0xB4E0E0E0",
+      "density": 0.6,
+      "dispersion": 6,
+      "lifetime": 0,
+      "defaultTemp": 100.0,
+      "heatConductivity": 10,
+      "flammable": false,
+      "conductive": false,
+      "phaseChange": { "low": { "temp": 90.0, "to": "water" } }
+    },
+    {
+      "id": 11,
+      "name": "smoke",
+      "rustName": "EL_SMOKE",
+      "category": "gas",
+      "color": "0xC83F3F3F",
+      "density": 1.1,
+      "dispersion": 4,
+      "lifetime": 0,
+      "defaultTemp": 50.0,
+      "heatConductivity": 5,
+      "flammable": false,
+      "conductive": false
+    },
+    {
+      "id": 12,
+      "name": "fire",
+      "rustName": "EL_FIRE",
+      "category": "energy",
+      "color": "0xFFFF6600",
+      "density": 0.3,
+      "dispersion": 0,
+      "lifetime": 60,
+      "defaultTemp": 800.0,
+      "heatConductivity": 50,
+      "flammable": false,
+      "conductive": false
+    },
+    {
+      "id": 13,
+      "name": "spark",
+      "rustName": "EL_SPARK",
+      "category": "energy",
+      "color": "0xFFFFFF00",
+      "density": 0.1,
+      "dispersion": 0,
+      "lifetime": 10,
+      "defaultTemp": 500.0,
+      "heatConductivity": 50,
+      "flammable": false,
+      "conductive": false
+    },
+    {
+      "id": 14,
+      "name": "electricity",
+      "rustName": "EL_ELECTRICITY",
+      "category": "energy",
+      "color": "0xFF00FFFF",
+      "density": 0.0,
+      "dispersion": 0,
+      "lifetime": 3,
+      "defaultTemp": 200.0,
+      "heatConductivity": 80,
+      "flammable": false,
+      "conductive": false
+    },
+    {
+      "id": 15,
+      "name": "gunpowder",
+      "rustName": "EL_GUNPOWDER",
+      "category": "powder",
+      "color": "0xFF404040",
+      "density": 1400.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 10,
+      "flammable": true,
+      "conductive": false
+    },
+    {
+      "id": 16,
+      "name": "clone",
+      "rustName": "EL_CLONE",
+      "category": "utility",
+      "color": "0xFF00FF00",
+      "density": "Infinity",
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 0,
+      "flammable": false,
+      "conductive": false
+    },
+    {
+      "id": 17,
+      "name": "void",
+      "rustName": "EL_VOID",
+      "category": "utility",
+      "color": "0xFF000000",
+      "density": "Infinity",
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 0,
+      "flammable": false,
+      "conductive": false
+    },
+    {
+      "id": 18,
+      "name": "dirt",
+      "rustName": "EL_DIRT",
+      "category": "powder",
+      "color": "0xFF5C4033",
+      "density": 1200.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 10,
+      "flammable": false,
+      "conductive": false
+    },
+    {
+      "id": 19,
+      "name": "seed",
+      "rustName": "EL_SEED",
+      "category": "bio",
+      "color": "0xFFE2C489",
+      "density": 1100.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 5,
+      "flammable": true,
+      "conductive": false
+    },
+    {
+      "id": 20,
+      "name": "plant",
+      "rustName": "EL_PLANT",
+      "category": "bio",
+      "color": "0xFF228B22",
+      "density": 900.0,
+      "dispersion": 0,
+      "lifetime": 0,
+      "defaultTemp": 20.0,
+      "heatConductivity": 10,
+      "flammable": true,
+      "conductive": false
+    }
+  ]
+}
+
+--- End of File: definitions/elements.json ---
+
+
+--- File: definitions/reactions.json ---
+
+{
+  "$schema": "./reactions.schema.json",
+  "version": "1.0.0",
+  "description": "Chemical reactions between elements - Data-driven bilateral system",
+  
+  "reactions": [
+    {
+      "id": "fire_wood",
+      "aggressor": "fire",
+      "victim": "wood",
+      "result_aggressor": "smoke",
+      "result_victim": "fire",
+      "chance": 0.10,
+      "spawn": "smoke",
+      "comment": "Fire spreads to wood, producing smoke"
+    },
+    {
+      "id": "fire_oil",
+      "aggressor": "fire",
+      "victim": "oil",
+      "result_aggressor": "smoke",
+      "result_victim": "fire",
+      "chance": 0.20,
+      "spawn": "smoke",
+      "comment": "Oil catches fire easily"
+    },
+    {
+      "id": "fire_water",
+      "aggressor": "fire",
+      "victim": "water",
+      "result_aggressor": "empty",
+      "result_victim": "steam",
+      "chance": 0.50,
+      "spawn": null,
+      "comment": "Water extinguishes fire, becomes steam"
+    },
+    {
+      "id": "fire_ice",
+      "aggressor": "fire",
+      "victim": "ice",
+      "result_aggressor": "empty",
+      "result_victim": "water",
+      "chance": 0.30,
+      "spawn": "steam",
+      "comment": "Fire melts ice"
+    },
+    {
+      "id": "fire_gunpowder",
+      "aggressor": "fire",
+      "victim": "gunpowder",
+      "result_aggressor": "fire",
+      "result_victim": "fire",
+      "chance": 1.00,
+      "spawn": "smoke",
+      "comment": "Gunpowder explodes instantly"
+    },
+    {
+      "id": "fire_plant",
+      "aggressor": "fire",
+      "victim": "plant",
+      "result_aggressor": "smoke",
+      "result_victim": "fire",
+      "chance": 0.10,
+      "spawn": "smoke",
+      "comment": "Plants burn like wood"
+    },
+    {
+      "id": "fire_seed",
+      "aggressor": "fire",
+      "victim": "seed",
+      "result_aggressor": "smoke",
+      "result_victim": "fire",
+      "chance": 0.20,
+      "spawn": null,
+      "comment": "Seeds burn quickly"
+    },
+    {
+      "id": "lava_water",
+      "aggressor": "lava",
+      "victim": "water",
+      "result_aggressor": "stone",
+      "result_victim": "steam",
+      "chance": 0.15,
+      "spawn": "steam",
+      "comment": "Lava cools to stone, water becomes steam"
+    },
+    {
+      "id": "lava_wood",
+      "aggressor": "lava",
+      "victim": "wood",
+      "result_aggressor": null,
+      "result_victim": "fire",
+      "chance": 0.30,
+      "spawn": "smoke",
+      "comment": "Lava ignites wood"
+    },
+    {
+      "id": "lava_oil",
+      "aggressor": "lava",
+      "victim": "oil",
+      "result_aggressor": null,
+      "result_victim": "fire",
+      "chance": 0.40,
+      "spawn": "smoke",
+      "comment": "Lava ignites oil"
+    },
+    {
+      "id": "lava_ice",
+      "aggressor": "lava",
+      "victim": "ice",
+      "result_aggressor": "stone",
+      "result_victim": "steam",
+      "chance": 0.30,
+      "spawn": null,
+      "comment": "Lava melts ice completely"
+    },
+    {
+      "id": "lava_gunpowder",
+      "aggressor": "lava",
+      "victim": "gunpowder",
+      "result_aggressor": null,
+      "result_victim": "fire",
+      "chance": 1.00,
+      "spawn": "smoke",
+      "comment": "Gunpowder explodes from lava heat"
+    },
+    {
+      "id": "lava_plant",
+      "aggressor": "lava",
+      "victim": "plant",
+      "result_aggressor": null,
+      "result_victim": "fire",
+      "chance": 0.50,
+      "spawn": "smoke",
+      "comment": "Lava burns plants"
+    },
+    {
+      "id": "lava_dirt",
+      "aggressor": "lava",
+      "victim": "dirt",
+      "result_aggressor": null,
+      "result_victim": "stone",
+      "chance": 0.05,
+      "spawn": null,
+      "comment": "Lava slowly hardens dirt to stone"
+    },
+    {
+      "id": "acid_stone",
+      "aggressor": "acid",
+      "victim": "stone",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.10,
+      "spawn": "smoke",
+      "comment": "Acid dissolves stone"
+    },
+    {
+      "id": "acid_metal",
+      "aggressor": "acid",
+      "victim": "metal",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.05,
+      "spawn": null,
+      "comment": "Acid slowly dissolves metal"
+    },
+    {
+      "id": "acid_wood",
+      "aggressor": "acid",
+      "victim": "wood",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.20,
+      "spawn": null,
+      "comment": "Acid dissolves wood"
+    },
+    {
+      "id": "acid_ice",
+      "aggressor": "acid",
+      "victim": "ice",
+      "result_aggressor": "empty",
+      "result_victim": "water",
+      "chance": 0.20,
+      "spawn": null,
+      "comment": "Acid melts ice to water"
+    },
+    {
+      "id": "acid_plant",
+      "aggressor": "acid",
+      "victim": "plant",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.15,
+      "spawn": null,
+      "comment": "Acid dissolves plants"
+    },
+    {
+      "id": "acid_dirt",
+      "aggressor": "acid",
+      "victim": "dirt",
+      "result_aggressor": "empty",
+      "result_victim": "empty",
+      "chance": 0.05,
+      "spawn": null,
+      "comment": "Acid dissolves dirt slowly"
+    },
+    {
+      "id": "water_lava",
+      "aggressor": "water",
+      "victim": "lava",
+      "result_aggressor": "steam",
+      "result_victim": "stone",
+      "chance": 0.15,
+      "spawn": "steam",
+      "comment": "Water cools lava to stone"
+    },
+    {
+      "id": "water_fire",
+      "aggressor": "water",
+      "victim": "fire",
+      "result_aggressor": "steam",
+      "result_victim": "empty",
+      "chance": 0.30,
+      "spawn": null,
+      "comment": "Water extinguishes fire"
+    }
+  ]
+}
+
+--- End of File: definitions/reactions.json ---
+
+
+--- File: package.json ---
+
+{
+  "name": "particula",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "codegen": "node scripts/generate-elements.js",
+    "build:wasm": "npm run codegen && cd packages/engine && wasm-pack build --target web --out-dir ../engine-wasm",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "turbo": "latest",
+    "typescript": "latest"
+  },
+  "packageManager": "npm@10.8.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+
+--- End of File: package.json ---
+
+
 --- File: packages/engine/src/behaviors/energy.rs ---
 
 //! EnergyBehavior - Physics for energy particles (fire, spark, electricity)
@@ -5640,7 +7218,7 @@ export {}
 //! 
 //! Fire rises erratically, spark/electricity move through conductors
 
-use super::{Behavior, UpdateContext};
+use super::{Behavior, UpdateContext, xorshift32};
 use crate::elements::{EL_EMPTY, EL_FIRE, EL_SPARK, EL_ELECTRICITY};
 
 pub struct EnergyBehavior;
@@ -5659,41 +7237,29 @@ impl EnergyBehavior {
         let xi = x as i32;
         let yi = y as i32;
         
-        // Fire rises erratically (EXACT TypeScript: const rand = (frame * x * y) & 3)
-        let rand = (ctx.frame as u32).wrapping_mul(x).wrapping_mul(y) & 3;
+        // Fire drifts mostly upward but can spread sideways a bit.
+        let rand = xorshift32(ctx.rng);
+        let lateral = if rand & 1 == 0 { -1 } else { 1 };
         
-        match rand {
-            0 => {
-                let ty = yi - 1;
-                if ctx.grid.in_bounds(xi, ty) {
-                    // SAFETY: We just checked in_bounds
-                    let target = unsafe { ctx.grid.get_type_unchecked(x, ty as u32) };
-                    if target == EL_EMPTY {
-                        unsafe { ctx.grid.swap_unchecked(x, y, x, ty as u32); }
-                    }
-                }
+        // Randomize attempt order to avoid straight pillars
+        let attempts = match rand & 3 {
+            0 => [(0, -1), (lateral, -1), (lateral, 0), (-lateral, 0)],
+            1 => [(lateral, -1), (0, -1), (-lateral, -1), (lateral, 0)],
+            2 => [(0, -1), (-lateral, -1), (lateral, 0), (-lateral, 0)],
+            _ => [(lateral, 0), (0, -1), (lateral, -1), (-lateral, -1)],
+        };
+        
+        for (dx, dy) in attempts {
+            let tx = xi + dx;
+            let ty = yi + dy;
+            if !ctx.grid.in_bounds(tx, ty) { continue; }
+            
+            // SAFETY: bounds checked above
+            let target = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
+            if target == EL_EMPTY {
+                unsafe { ctx.grid.swap_unchecked(x, y, tx as u32, ty as u32); }
+                break;
             }
-            1 => {
-                let tx = xi - 1;
-                let ty = yi - 1;
-                if ctx.grid.in_bounds(tx, ty) {
-                    let target = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
-                    if target == EL_EMPTY {
-                        unsafe { ctx.grid.swap_unchecked(x, y, tx as u32, ty as u32); }
-                    }
-                }
-            }
-            2 => {
-                let tx = xi + 1;
-                let ty = yi - 1;
-                if ctx.grid.in_bounds(tx, ty) {
-                    let target = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
-                    if target == EL_EMPTY {
-                        unsafe { ctx.grid.swap_unchecked(x, y, tx as u32, ty as u32); }
-                    }
-                }
-            }
-            _ => {}
         }
     }
     
@@ -5912,18 +7478,19 @@ impl Behavior for GasBehavior {
 
 --- File: packages/engine/src/behaviors/liquid.rs ---
 
-//! LiquidBehavior - Pure dispersion-based liquid physics
+//! LiquidBehavior - Horizontal dispersion only
 //! 
-//! Port from: apps/web/src/lib/engine/behaviors/LiquidBehavior.ts
-//! PHASE 1: Optimized with unsafe access after bounds check
+//! Phase 2: Vertical movement handled by physics.rs
 //! 
 //! Philosophy:
 //! - No mass, no pressure formulas - just discrete particle movement
 //! - Liquids "scan & teleport" up to N cells horizontally (dispersion rate)
 //! - Prioritizes falling into holes/cliffs for waterfall effect
 //! - Heavier liquids can push lighter ones horizontally for level equalization
+//! 
+//! Phase 2: Vertical falling is now done by velocity-based physics
 
-use super::{Behavior, UpdateContext, get_random_dir, xorshift32};
+use super::{Behavior, UpdateContext, xorshift32};
 use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_LIQUID, CAT_GAS};
 
 /// Result of scanning a horizontal line
@@ -5978,6 +7545,9 @@ impl LiquidBehavior {
         let mut best_x = start_x;
         let mut found = false;
         let mut has_cliff = false;
+
+        let gy = if ctx.gravity_y > 0.0 { 1 } else if ctx.gravity_y < 0.0 { -1 } else { 0 };
+        let gravity_y = if gy == 0 { 1 } else { gy }; // default downward when zero
         
         for i in 1..=range {
             let tx = start_x + (dir * i);
@@ -5993,7 +7563,7 @@ impl LiquidBehavior {
                 found = true;
                 
                 // Check for cliff below (waterfall effect)
-                let below_y = y + 1;
+                let below_y = y + gravity_y;
                 if ctx.grid.in_bounds(tx, below_y) {
                     // SAFETY: We just checked in_bounds above
                     let below_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, below_y as u32) };
@@ -6036,26 +7606,64 @@ impl Behavior for LiquidBehavior {
         let xi = x as i32;
         let yi = y as i32;
         
-        // SAFETY: x,y come from update_particle_chunked which guarantees valid coords
         let element = unsafe { ctx.grid.get_type_unchecked(x, y) };
         if element == EL_EMPTY { return; }
         if (element as usize) >= ELEMENT_DATA.len() { return; }
         
         let props = &ELEMENT_DATA[element as usize];
         let density = props.density;
-        // Match TypeScript: props.dispersion || 5 (fallback to 5 if 0)
         let range = if props.dispersion > 0 { props.dispersion as i32 } else { 5 };
+
+        // Gravity direction (sign)
+        let gy = if ctx.gravity_y > 0.0 { 1 } else if ctx.gravity_y < 0.0 { -1 } else { 0 };
+        let gravity_y = if gy == 0 { 1 } else { gy }; // fallback to downwards when gravity is zero
         
-        let (dx1, dx2) = get_random_dir(ctx.frame, x);
+        // Phase 2: Check if we should do dispersion
+        // We disperse when:
+        // 1. At boundary in gravity direction
+        // 2. Blocked by solid/heavy particle in gravity direction
+        // 3. Has very low velocity (settled/resting state)
+        let adj_y = yi + gravity_y;
         
-        // --- 1. Gravity: Fall Down ---
-        if self.try_move(ctx, x, y, xi, yi + 1, density) { return; }
+        // Check velocity - if we have significant velocity in gravity direction, let physics handle it
+        let idx = ctx.grid.index(x, y);
+        let vy = ctx.grid.vy[idx];
+        let moving_in_gravity_dir = if gy > 0 { vy > 0.3 } else if gy < 0 { vy < -0.3 } else { false };
         
-        // --- 2. Gravity: Fall Diagonally ---
-        if self.try_move(ctx, x, y, xi + dx1, yi + 1, density) { return; }
-        if self.try_move(ctx, x, y, xi + dx2, yi + 1, density) { return; }
+        // If actively moving in gravity direction with velocity, skip dispersion - physics will handle it
+        if moving_in_gravity_dir {
+            return;
+        }
         
-        // --- 3. Dispersion: Scan & Teleport (EXACT TypeScript algorithm) ---
+        let blocked_in_gravity_dir = if !ctx.grid.in_bounds(xi, adj_y) {
+            true // boundary is blocking
+        } else {
+            let adj_type = unsafe { ctx.grid.get_type_unchecked(x, adj_y as u32) };
+            // Blocked if cell in gravity direction is occupied (not empty)
+            adj_type != EL_EMPTY
+        };
+        
+        // If not blocked and not moving, still try dispersion (particle might be settling)
+        // This fixes the issue where particles wait for physics when they should spread
+        if !blocked_in_gravity_dir {
+            // Check if there's a "cliff" nearby - empty space in gravity direction at neighboring X
+            // If so, we should still try to spread towards it
+            let has_nearby_cliff = {
+                let left_cliff = if ctx.grid.in_bounds(xi - 1, adj_y) {
+                    unsafe { ctx.grid.get_type_unchecked((x - 1) as u32, adj_y as u32) == EL_EMPTY }
+                } else { false };
+                let right_cliff = if ctx.grid.in_bounds(xi + 1, adj_y) {
+                    unsafe { ctx.grid.get_type_unchecked((x + 1) as u32, adj_y as u32) == EL_EMPTY }
+                } else { false };
+                left_cliff || right_cliff
+            };
+            
+            if !has_nearby_cliff {
+                return;
+            }
+        }
+        
+        // --- Dispersion: Scan & Teleport (EXACT TypeScript algorithm) ---
         let left_target = self.scan_line(ctx, xi, yi, -1, range, density);
         let right_target = self.scan_line(ctx, xi, yi, 1, range, density);
         
@@ -6066,7 +7674,6 @@ impl Behavior for LiquidBehavior {
             } else if !left_target.has_cliff && right_target.has_cliff {
                 right_target.x
             } else {
-                // Both have space - random choice (using frame + x for determinism)
                 let rand = xorshift32(ctx.rng);
                 if rand & 1 == 0 { left_target.x } else { right_target.x }
             }
@@ -6075,11 +7682,10 @@ impl Behavior for LiquidBehavior {
         } else if right_target.found {
             right_target.x
         } else {
-            xi // No movement
+            xi
         };
         
         if target_x != xi {
-            // SAFETY: target_x comes from scan_line which verified bounds
             unsafe { ctx.grid.swap_unchecked(x, y, target_x as u32, y); }
         }
     }
@@ -6423,10 +8029,10 @@ impl Behavior for PlantBehavior {
 
 //! PowderBehavior - Physics for powder particles (sand, dirt, gunpowder)
 //! 
-//! Port from: apps/web/src/lib/engine/behaviors/PowderBehavior.ts
-//! PHASE 1: Optimized with unsafe access after bounds check
+//! Phase 2: Dispersion only - vertical movement handled by physics.rs
 //! 
-//! Falls down, piles up, can sink into lighter liquids
+//! Only handles diagonal "rolling" when blocked below.
+//! Vertical falling is now done by velocity-based physics.
 
 use super::{Behavior, UpdateContext, get_random_dir};
 use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_LIQUID};
@@ -6438,19 +8044,16 @@ impl PowderBehavior {
         Self
     }
     
-    /// Check if powder can move to target cell
-    /// PHASE 1: Uses unsafe after bounds check to avoid double-checking
+    /// Check if powder can move to target cell (for dispersion only)
     #[inline]
     fn can_displace(&self, ctx: &UpdateContext, x: i32, y: i32, my_density: f32) -> bool {
         if !ctx.grid.in_bounds(x, y) { return false; }
         
-        // SAFETY: We just checked in_bounds above
         let target_type = unsafe { ctx.grid.get_type_unchecked(x as u32, y as u32) };
         
         // Empty = can move
         if target_type == EL_EMPTY { return true; }
         
-        // Check bounds for target element
         if (target_type as usize) >= ELEMENT_DATA.len() { return false; }
         
         let target_cat = ELEMENT_DATA[target_type as usize].category;
@@ -6461,6 +8064,16 @@ impl PowderBehavior {
         // Heavier sinks into lighter
         my_density > ELEMENT_DATA[target_type as usize].density
     }
+    
+    /// Check if blocked below (for dispersion trigger)
+    #[inline]
+    fn is_blocked_below(&self, ctx: &UpdateContext, xi: i32, yi: i32, gy: i32) -> bool {
+        let ty = yi + gy;
+        if !ctx.grid.in_bounds(xi, ty) { return true; }
+        
+        let below_type = unsafe { ctx.grid.get_type_unchecked(xi as u32, ty as u32) };
+        below_type != EL_EMPTY
+    }
 }
 
 impl Behavior for PowderBehavior {
@@ -6470,39 +8083,37 @@ impl Behavior for PowderBehavior {
         let xi = x as i32;
         let yi = y as i32;
         
-        // SAFETY: x,y come from update_particle_chunked which guarantees valid coords
         let element = unsafe { ctx.grid.get_type_unchecked(x, y) };
         if element == EL_EMPTY { return; }
         if (element as usize) >= ELEMENT_DATA.len() { return; }
         
         let my_density = ELEMENT_DATA[element as usize].density;
         
-        // Get gravity direction (from TypeScript getGravityDirection)
+        // Get gravity direction
         let gx = if ctx.gravity_x > 0.0 { 1 } else if ctx.gravity_x < 0.0 { -1 } else { 0 };
         let gy = if ctx.gravity_y > 0.0 { 1 } else if ctx.gravity_y < 0.0 { -1 } else { 0 };
         
-        // No gravity = no movement
         if gy == 0 && gx == 0 { return; }
         
-        // 1. Try to fall in gravity direction
-        let tx = xi + gx;
-        let ty = yi + gy;
-        if self.can_displace(ctx, tx, ty, my_density) {
-            // SAFETY: can_displace verified bounds
-            unsafe { ctx.grid.swap_unchecked(x, y, tx as u32, ty as u32); }
+        // Phase 2: NO vertical falling here - physics.rs handles that!
+        // Only do diagonal dispersion when blocked below
+        
+        if !self.is_blocked_below(ctx, xi, yi, gy) {
+            // Not blocked - physics will handle the fall
             return;
         }
         
-        // 2. Try diagonal movement (mirrors TypeScript)
+        // Blocked below - try to roll diagonally
+        let ty = yi + gy;
         let (dx1, dx2) = get_random_dir(ctx.frame, x);
         
-        let tx1 = xi + dx1 + gx;
+        let tx1 = xi + dx1;
         if self.can_displace(ctx, tx1, ty, my_density) {
             unsafe { ctx.grid.swap_unchecked(x, y, tx1 as u32, ty as u32); }
             return;
         }
         
-        let tx2 = xi + dx2 + gx;
+        let tx2 = xi + dx2;
         if self.can_displace(ctx, tx2, ty, my_density) {
             unsafe { ctx.grid.swap_unchecked(x, y, tx2 as u32, ty as u32); }
         }
@@ -7269,10 +8880,11 @@ pub use crate::generated_elements::*;
 
 //! Generated Element Definitions - DO NOT EDIT MANUALLY!
 //!
+//! Phase 1: Data-Driven Core
 //! This file is auto-generated by scripts/generate-elements.js
-//! Source: definitions/elements.json
+//! Sources: definitions/elements.json, definitions/reactions.json
 //!
-//! To add a new element: edit definitions/elements.json and run 'npm run codegen'
+//! To add a new element or reaction: edit JSON files and run 'npm run codegen'
 
 use wasm_bindgen::prelude::*;
 
@@ -7320,21 +8932,76 @@ pub const CAT_UTILITY: CategoryId = 5;
 pub const CAT_BIO: CategoryId = 6;
 
 // ============================================================================
+// ELEMENT FLAGS (BitMask) - Phase 1 Data-Driven
+// ============================================================================
+
+pub type ElementFlags = u32;
+
+pub const FLAG_NONE: ElementFlags = 0;
+pub const FLAG_FLAMMABLE: ElementFlags = 1;
+pub const FLAG_CONDUCTIVE: ElementFlags = 2;
+pub const FLAG_LIQUID: ElementFlags = 4;
+pub const FLAG_GAS: ElementFlags = 8;
+pub const FLAG_POWDER: ElementFlags = 16;
+pub const FLAG_SOLID: ElementFlags = 32;
+pub const FLAG_ENERGY: ElementFlags = 64;
+pub const FLAG_UTILITY: ElementFlags = 128;
+pub const FLAG_BIO: ElementFlags = 256;
+pub const FLAG_IGNORE_GRAVITY: ElementFlags = 512;
+pub const FLAG_CORROSIVE: ElementFlags = 1024;
+pub const FLAG_HOT: ElementFlags = 2048;
+pub const FLAG_COLD: ElementFlags = 4096;
+pub const FLAG_RIGID: ElementFlags = 8192;
+
+// ============================================================================
+// PHYSICS CONSTANTS - Phase 2 Newtonian Physics
+// ============================================================================
+
+pub const GRAVITY: f32 = 0.5;
+pub const AIR_FRICTION: f32 = 0.98;
+pub const MAX_VELOCITY: f32 = 10.0;
+
+/// Check if element has flag (branchless)
+#[inline(always)]
+pub fn has_flag(flags: ElementFlags, flag: ElementFlags) -> bool {
+    (flags & flag) != 0
+}
+
+// ============================================================================
 // ELEMENT PROPERTIES
 // ============================================================================
 
-/// Element properties struct
+/// Element properties struct - Phase 2: includes physics (bounce, friction)
 #[derive(Clone, Copy)]
 pub struct ElementProps {
     pub color: u32,
     pub density: f32,
     pub category: CategoryId,
+    pub flags: ElementFlags,
     pub dispersion: u8,
     pub lifetime: u16,
     pub default_temp: f32,
     pub heat_conductivity: u8,
-    pub flammable: bool,
-    pub conductive: bool,
+    // Phase 2: Newtonian Physics
+    pub bounce: f32,      // Collision bounce factor (0.0 = no bounce, 1.0 = full bounce)
+    pub friction: f32,    // Velocity decay per frame (1.0 = no decay, 0.0 = instant stop)
+}
+
+impl ElementProps {
+    #[inline(always)]
+    pub fn flammable(&self) -> bool { has_flag(self.flags, FLAG_FLAMMABLE) }
+    #[inline(always)]
+    pub fn conductive(&self) -> bool { has_flag(self.flags, FLAG_CONDUCTIVE) }
+    #[inline(always)]
+    pub fn is_liquid(&self) -> bool { has_flag(self.flags, FLAG_LIQUID) }
+    #[inline(always)]
+    pub fn is_gas(&self) -> bool { has_flag(self.flags, FLAG_GAS) }
+    #[inline(always)]
+    pub fn is_solid(&self) -> bool { has_flag(self.flags, FLAG_SOLID) }
+    #[inline(always)]
+    pub fn is_powder(&self) -> bool { has_flag(self.flags, FLAG_POWDER) }
+    #[inline(always)]
+    pub fn ignores_gravity(&self) -> bool { has_flag(self.flags, FLAG_IGNORE_GRAVITY) }
 }
 
 /// Static element data - indexed by ElementId
@@ -7344,254 +9011,362 @@ pub static ELEMENT_DATA: [ElementProps; ELEMENT_COUNT] = [
         color: 0xFF0A0A0A,
         density: 0.0,
         category: CAT_SOLID,
+        flags: 32, // 0x0020
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 5,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 0.0,
     },
     // 1: Stone
     ElementProps {
         color: 0xFF808080,
         density: 2500.0,
         category: CAT_SOLID,
+        flags: 32, // 0x0020
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 10,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 0.0,
     },
     // 2: Sand
     ElementProps {
         color: 0xFFC2B280,
         density: 1600.0,
         category: CAT_POWDER,
+        flags: 16, // 0x0010
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 15,
-        flammable: false,
-        conductive: false,
+        bounce: 0.2,
+        friction: 0.9,
     },
     // 3: Wood
     ElementProps {
         color: 0xFF8B4513,
         density: 600.0,
         category: CAT_SOLID,
+        flags: 33, // 0x0021
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 5,
-        flammable: true,
-        conductive: false,
+        bounce: 0.0,
+        friction: 0.0,
     },
     // 4: Metal
     ElementProps {
         color: 0xFFA9A9A9,
         density: 7800.0,
         category: CAT_SOLID,
+        flags: 34, // 0x0022
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 90,
-        flammable: false,
-        conductive: true,
+        bounce: 0.0,
+        friction: 0.0,
     },
     // 5: Ice
     ElementProps {
         color: 0xFFA5F2F3,
         density: 916.0,
         category: CAT_SOLID,
+        flags: 4128, // 0x1020
         dispersion: 0,
         lifetime: 0,
         default_temp: -10.0,
         heat_conductivity: 20,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 0.0,
     },
     // 6: Water
     ElementProps {
         color: 0xFF4169E1,
         density: 1000.0,
         category: CAT_LIQUID,
+        flags: 6, // 0x0006
         dispersion: 8,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 40,
-        flammable: false,
-        conductive: true,
+        bounce: 0.0,
+        friction: 0.95,
     },
     // 7: Oil
     ElementProps {
         color: 0xFF4A4A2A,
         density: 800.0,
         category: CAT_LIQUID,
+        flags: 5, // 0x0005
         dispersion: 5,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 15,
-        flammable: true,
-        conductive: false,
+        bounce: 0.0,
+        friction: 0.95,
     },
     // 8: Lava
     ElementProps {
         color: 0xFFFF4500,
         density: 2500.0,
         category: CAT_LIQUID,
+        flags: 2052, // 0x0804
         dispersion: 2,
         lifetime: 0,
         default_temp: 1000.0,
         heat_conductivity: 30,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 0.95,
     },
     // 9: Acid
     ElementProps {
         color: 0xFF39FF14,
         density: 1050.0,
         category: CAT_LIQUID,
+        flags: 1030, // 0x0406
         dispersion: 5,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 35,
-        flammable: false,
-        conductive: true,
+        bounce: 0.0,
+        friction: 0.95,
     },
     // 10: Steam
     ElementProps {
         color: 0xB4E0E0E0,
         density: 0.6,
         category: CAT_GAS,
+        flags: 8, // 0x0008
         dispersion: 6,
         lifetime: 0,
         default_temp: 100.0,
         heat_conductivity: 10,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 0.99,
     },
     // 11: Smoke
     ElementProps {
         color: 0xC83F3F3F,
         density: 1.1,
         category: CAT_GAS,
+        flags: 8, // 0x0008
         dispersion: 4,
         lifetime: 0,
         default_temp: 50.0,
         heat_conductivity: 5,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 0.99,
     },
     // 12: Fire
     ElementProps {
         color: 0xFFFF6600,
         density: 0.3,
         category: CAT_ENERGY,
+        flags: 2112, // 0x0840
         dispersion: 0,
         lifetime: 60,
         default_temp: 800.0,
         heat_conductivity: 50,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 1.0,
     },
     // 13: Spark
     ElementProps {
         color: 0xFFFFFF00,
         density: 0.1,
         category: CAT_ENERGY,
+        flags: 64, // 0x0040
         dispersion: 0,
         lifetime: 10,
         default_temp: 500.0,
         heat_conductivity: 50,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 1.0,
     },
     // 14: Electricity
     ElementProps {
         color: 0xFF00FFFF,
         density: 0.0,
         category: CAT_ENERGY,
+        flags: 64, // 0x0040
         dispersion: 0,
         lifetime: 3,
         default_temp: 200.0,
         heat_conductivity: 80,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 1.0,
     },
     // 15: Gunpowder
     ElementProps {
         color: 0xFF404040,
         density: 1400.0,
         category: CAT_POWDER,
+        flags: 17, // 0x0011
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 10,
-        flammable: true,
-        conductive: false,
+        bounce: 0.2,
+        friction: 0.9,
     },
     // 16: Clone
     ElementProps {
         color: 0xFF00FF00,
         density: f32::INFINITY,
         category: CAT_UTILITY,
+        flags: 640, // 0x0280
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 0,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 1.0,
     },
     // 17: Void
     ElementProps {
         color: 0xFF000000,
         density: f32::INFINITY,
         category: CAT_UTILITY,
+        flags: 640, // 0x0280
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 0,
-        flammable: false,
-        conductive: false,
+        bounce: 0.0,
+        friction: 1.0,
     },
     // 18: Dirt
     ElementProps {
         color: 0xFF5C4033,
         density: 1200.0,
         category: CAT_POWDER,
+        flags: 16, // 0x0010
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 10,
-        flammable: false,
-        conductive: false,
+        bounce: 0.2,
+        friction: 0.9,
     },
     // 19: Seed
     ElementProps {
         color: 0xFFE2C489,
         density: 1100.0,
         category: CAT_BIO,
+        flags: 257, // 0x0101
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 5,
-        flammable: true,
-        conductive: false,
+        bounce: 0.1,
+        friction: 0.85,
     },
     // 20: Plant
     ElementProps {
         color: 0xFF228B22,
         density: 900.0,
         category: CAT_BIO,
+        flags: 257, // 0x0101
         dispersion: 0,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 10,
-        flammable: true,
-        conductive: false,
+        bounce: 0.1,
+        friction: 0.85,
     },
 ];
+
+// ============================================================================
+// REACTION LOOKUP TABLE (LUT) - O(1) Access
+// ============================================================================
+
+/// Reaction result from LUT
+#[derive(Clone, Copy, Debug)]
+pub struct Reaction {
+    /// What victim becomes (EL_EMPTY = destroyed)
+    pub target_becomes: ElementId,
+    /// What aggressor becomes (255 = unchanged, EL_EMPTY = destroyed)
+    pub source_becomes: u8,
+    /// Probability 0-255 (255 = 100%)
+    pub chance: u8,
+    /// Spawn byproduct (EL_EMPTY = none)
+    pub spawn: ElementId,
+}
+
+impl Reaction {
+    pub const NO_CHANGE: u8 = 255;
+}
+
+/// Reaction LUT size: 256 * 256 = 65536 entries
+pub const REACTION_LUT_SIZE: usize = 65536;
+
+/// Reaction LUT initialization data (sparse): (index, reaction)
+pub static REACTION_INIT_DATA: [(usize, Reaction); 22] = [
+    (1544, Reaction { target_becomes: 1, source_becomes: 10, chance: 38, spawn: 10 }), // water_lava
+    (1548, Reaction { target_becomes: 0, source_becomes: 10, chance: 77, spawn: 0 }), // water_fire
+    (2051, Reaction { target_becomes: 12, source_becomes: 255, chance: 77, spawn: 11 }), // lava_wood
+    (2053, Reaction { target_becomes: 10, source_becomes: 1, chance: 77, spawn: 0 }), // lava_ice
+    (2054, Reaction { target_becomes: 10, source_becomes: 1, chance: 38, spawn: 10 }), // lava_water
+    (2055, Reaction { target_becomes: 12, source_becomes: 255, chance: 102, spawn: 11 }), // lava_oil
+    (2063, Reaction { target_becomes: 12, source_becomes: 255, chance: 255, spawn: 11 }), // lava_gunpowder
+    (2066, Reaction { target_becomes: 1, source_becomes: 255, chance: 13, spawn: 0 }), // lava_dirt
+    (2068, Reaction { target_becomes: 12, source_becomes: 255, chance: 128, spawn: 11 }), // lava_plant
+    (2305, Reaction { target_becomes: 0, source_becomes: 0, chance: 26, spawn: 11 }), // acid_stone
+    (2307, Reaction { target_becomes: 0, source_becomes: 0, chance: 51, spawn: 0 }), // acid_wood
+    (2308, Reaction { target_becomes: 0, source_becomes: 0, chance: 13, spawn: 0 }), // acid_metal
+    (2309, Reaction { target_becomes: 6, source_becomes: 0, chance: 51, spawn: 0 }), // acid_ice
+    (2322, Reaction { target_becomes: 0, source_becomes: 0, chance: 13, spawn: 0 }), // acid_dirt
+    (2324, Reaction { target_becomes: 0, source_becomes: 0, chance: 38, spawn: 0 }), // acid_plant
+    (3075, Reaction { target_becomes: 12, source_becomes: 11, chance: 26, spawn: 11 }), // fire_wood
+    (3077, Reaction { target_becomes: 6, source_becomes: 0, chance: 77, spawn: 10 }), // fire_ice
+    (3078, Reaction { target_becomes: 10, source_becomes: 0, chance: 128, spawn: 0 }), // fire_water
+    (3079, Reaction { target_becomes: 12, source_becomes: 11, chance: 51, spawn: 11 }), // fire_oil
+    (3087, Reaction { target_becomes: 12, source_becomes: 12, chance: 255, spawn: 11 }), // fire_gunpowder
+    (3091, Reaction { target_becomes: 12, source_becomes: 11, chance: 51, spawn: 0 }), // fire_seed
+    (3092, Reaction { target_becomes: 12, source_becomes: 11, chance: 26, spawn: 11 }), // fire_plant
+];
+
+/// Reaction System with O(1) lookup
+pub struct ReactionSystem {
+    lut: [Option<Reaction>; REACTION_LUT_SIZE],
+}
+
+impl ReactionSystem {
+    /// Create new reaction system from init data
+    pub fn new() -> Self {
+        // Initialize with None
+        let mut lut = [None; REACTION_LUT_SIZE];
+        
+        // Populate from generated data
+        for (idx, reaction) in REACTION_INIT_DATA.iter() {
+            lut[*idx] = Some(*reaction);
+        }
+        
+        Self { lut }
+    }
+    
+    /// O(1) reaction lookup - FAST!
+    #[inline(always)]
+    pub fn get(&self, aggressor: ElementId, victim: ElementId) -> Option<&Reaction> {
+        let idx = ((aggressor as usize) << 8) | (victim as usize);
+        // SAFETY: idx is always < 65536 since both IDs are u8
+        #[cfg(not(debug_assertions))]
+        unsafe { self.lut.get_unchecked(idx).as_ref() }
+        #[cfg(debug_assertions)]
+        self.lut[idx].as_ref()
+    }
+}
+
+impl Default for ReactionSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Get element properties by ID
 #[inline]
@@ -7735,6 +9510,10 @@ pub struct Grid {
     pub updated: Vec<u8>,           // 0 = not updated, 1 = updated this frame
     pub temperature: Vec<f32>,      // Temperature in °C
     
+    // Phase 2: Newtonian Physics - Velocity arrays
+    pub vx: Vec<f32>,               // Horizontal velocity (pixels/frame)
+    pub vy: Vec<f32>,               // Vertical velocity (pixels/frame)
+    
     // Phase 4: Zero-allocation move buffer
     pub pending_moves: MoveBuffer,
 }
@@ -7752,6 +9531,9 @@ impl Grid {
             life: vec![0; size],
             updated: vec![0; size],
             temperature: vec![20.0; size],
+            // Phase 2: Velocity arrays (start at 0)
+            vx: vec![0.0; size],
+            vy: vec![0.0; size],
             // Phase 4: Fixed buffer for ~100k moves (~1.6MB RAM)
             // Enough for nuclear explosions, never reallocates!
             pending_moves: MoveBuffer::new(100_000),
@@ -7875,6 +9657,36 @@ impl Grid {
         self.temperature[idx] = t;
     }
     
+    // === Phase 2: Velocity access ===
+    #[inline]
+    pub fn get_vx(&self, x: u32, y: u32) -> f32 {
+        self.vx[self.index(x, y)]
+    }
+    
+    #[inline]
+    pub fn get_vy(&self, x: u32, y: u32) -> f32 {
+        self.vy[self.index(x, y)]
+    }
+    
+    #[inline]
+    pub fn set_vx(&mut self, x: u32, y: u32, v: f32) {
+        let idx = self.index(x, y);
+        self.vx[idx] = v;
+    }
+    
+    #[inline]
+    pub fn set_vy(&mut self, x: u32, y: u32, v: f32) {
+        let idx = self.index(x, y);
+        self.vy[idx] = v;
+    }
+    
+    #[inline]
+    pub fn add_velocity(&mut self, x: u32, y: u32, dvx: f32, dvy: f32) {
+        let idx = self.index(x, y);
+        self.vx[idx] += dvx;
+        self.vy[idx] += dvy;
+    }
+    
     // === Swap two cells (all data) ===
     // Phase 4: Records the move for chunk tracking
     pub fn swap(&mut self, x1: u32, y1: u32, x2: u32, y2: u32) {
@@ -7897,6 +9709,9 @@ impl Grid {
         self.life.swap(idx1, idx2);
         self.updated.swap(idx1, idx2);
         self.temperature.swap(idx1, idx2);
+        // Phase 2: Swap velocity too
+        self.vx.swap(idx1, idx2);
+        self.vy.swap(idx1, idx2);
     }
     
     // === Phase 4: Move tracking for chunks (Zero-Allocation) ===
@@ -7916,6 +9731,9 @@ impl Grid {
         self.life[idx] = life;
         self.updated[idx] = 0;  // NOT updated - can move this frame!
         self.temperature[idx] = temp;
+        // Phase 2: New particles start with zero velocity
+        self.vx[idx] = 0.0;
+        self.vy[idx] = 0.0;
     }
     
     // === Clear single cell ===
@@ -7925,6 +9743,9 @@ impl Grid {
         self.colors[idx] = BG_COLOR;
         self.life[idx] = 0;
         self.temperature[idx] = 20.0;
+        // Phase 2: Clear velocity
+        self.vx[idx] = 0.0;
+        self.vy[idx] = 0.0;
     }
     
     // === Clear entire grid ===
@@ -7934,6 +9755,9 @@ impl Grid {
         self.life.fill(0);
         self.updated.fill(0);
         self.temperature.fill(20.0);
+        // Phase 2: Clear velocity
+        self.vx.fill(0.0);
+        self.vy.fill(0.0);
     }
     
     // === Get raw pointers for JS interop ===
@@ -8034,12 +9858,17 @@ impl Grid {
         let ptr_life = self.life.as_mut_ptr();
         let ptr_updated = self.updated.as_mut_ptr();
         let ptr_temp = self.temperature.as_mut_ptr();
+        let ptr_vx = self.vx.as_mut_ptr();
+        let ptr_vy = self.vy.as_mut_ptr();
         
         std::ptr::swap(ptr_types.add(idx1), ptr_types.add(idx2));
         std::ptr::swap(ptr_colors.add(idx1), ptr_colors.add(idx2));
         std::ptr::swap(ptr_life.add(idx1), ptr_life.add(idx2));
         std::ptr::swap(ptr_updated.add(idx1), ptr_updated.add(idx2));
         std::ptr::swap(ptr_temp.add(idx1), ptr_temp.add(idx2));
+        // Swap velocity vectors as well so momentum moves with the particle
+        std::ptr::swap(ptr_vx.add(idx1), ptr_vx.add(idx2));
+        std::ptr::swap(ptr_vy.add(idx1), ptr_vy.add(idx2));
     }
     
     /// Fast clear cell - UNSAFE: caller must ensure x,y are valid
@@ -8296,6 +10125,9 @@ mod chunks;
 mod behaviors;
 mod reactions;
 mod temperature;
+mod physics;  // Phase 2: Newtonian Physics
+mod rigid_body;  // Rigid body structure
+mod rigid_body_system;  // Rigid body manager
 mod world;
 
 use wasm_bindgen::prelude::*;
@@ -8372,114 +10204,1260 @@ pub fn el_plant() -> u8 { elements::EL_PLANT }
 --- End of File: packages/engine/src/lib.rs ---
 
 
---- File: packages/engine/src/reactions.rs ---
+--- File: packages/engine/src/physics.rs ---
 
-//! Chemical Reactions - Data-Driven Bilateral Reaction System
+//! Physics System - Phase 2: Newtonian Particle Physics
 //! 
-//! Port from: apps/web/src/lib/engine/reactions.ts
-//! EXACT 1:1 port of the TypeScript reaction rules
+//! Implements velocity-based movement with DDA raycasting for collision detection.
 //! 
-//! Philosophy:
-//! - Rules are data, not code (OCP: Open for extension, Closed for modification)
-//! - BILATERAL: Both aggressor AND victim can transform
-//! - Solves "infinite lava" problem (conservation of energy)
-//! - Simple lookup: Aggressor -> Victim -> Result
+//! Key concepts:
+//! - Particles have velocity (vx, vy) that persists across frames
+//! - Gravity accelerates particles downward each frame
+//! - Friction decays velocity based on material properties
+//! - DDA raycast detects collisions along the velocity vector
+//! - Bounce factor determines energy retained after collision
 
-use crate::elements::ElementId;
-use crate::elements::{
-    EL_EMPTY, EL_STONE, EL_WOOD, EL_METAL, EL_ICE,
-    EL_WATER, EL_OIL, EL_LAVA, EL_ACID,
-    EL_STEAM, EL_SMOKE, EL_FIRE,
-    EL_GUNPOWDER, EL_DIRT, EL_SEED, EL_PLANT
-};
+use crate::grid::Grid;
+use crate::elements::{ElementId, EL_EMPTY, ELEMENT_DATA, GRAVITY, AIR_FRICTION, MAX_VELOCITY, CAT_GAS, CAT_SOLID, CAT_ENERGY};
+use crate::chunks::ChunkGrid;
 
-/// Reaction result
-#[derive(Clone, Copy)]
-pub struct Reaction {
-    /// What victim becomes (EL_EMPTY = destroyed, same = unchanged)
-    pub target_becomes: ElementId,
-    /// What aggressor becomes (255 = unchanged, EL_EMPTY = destroyed)
-    pub source_becomes: u8,  // 255 = no change
-    /// Probability 0-100 (100 = 100%)
-    pub chance: u8,
-    /// Spawn byproduct (EL_EMPTY = none)
-    pub spawn: ElementId,
+/// Baseline simulation framerate used to scale frame-relative constants.
+/// Legacy code assumed one "frame step" was roughly 1/60s.
+const BASE_FPS: f32 = 60.0;
+
+/// Result of a physics step for a single particle
+#[derive(Clone, Copy, Debug)]
+pub struct PhysicsResult {
+    /// New X position (may be same as old if blocked)
+    pub new_x: u32,
+    /// New Y position
+    pub new_y: u32,
+    /// Did particle collide with something?
+    pub collided: bool,
+    /// Element that was hit (if collided)
+    pub hit_element: ElementId,
 }
 
-impl Reaction {
-    /// No change marker for source
-    pub const NO_CHANGE: u8 = 255;
+/// Apply gravity to a particle's velocity
+/// Gases get INVERTED gravity (they rise instead of fall)
+#[inline]
+pub fn apply_gravity(grid: &mut Grid, x: u32, y: u32, gravity_y: f32, dt: f32) {
+    let idx = grid.index(x, y);
+    let element = grid.types[idx];
+    
+    if element == EL_EMPTY {
+        return;
+    }
+    
+    let props = &ELEMENT_DATA[element as usize];
+    
+    // Gases rise (inverted gravity)
+    let effective_gravity = if props.category == CAT_GAS {
+        -gravity_y * 0.5  // Gases rise slower than solids fall
+    } else {
+        gravity_y
+    };
+    
+    // Legacy tuning assumed per-frame increments; scale by dt * BASE_FPS to preserve feel.
+    let frame_scale = dt * BASE_FPS;
+    grid.vy[idx] += effective_gravity * GRAVITY * frame_scale;
+    
+    // Clamp to max velocity
+    grid.vy[idx] = grid.vy[idx].clamp(-MAX_VELOCITY, MAX_VELOCITY);
+    grid.vx[idx] = grid.vx[idx].clamp(-MAX_VELOCITY, MAX_VELOCITY);
 }
 
-/// Get reaction between aggressor and victim
-/// Uses match instead of 2D array for simpler initialization
-pub fn get_reaction(aggressor: ElementId, victim: ElementId) -> Option<&'static Reaction> {
-    // FIRE reactions
-    static FIRE_WOOD: Reaction = Reaction { target_becomes: EL_FIRE, source_becomes: EL_SMOKE, chance: 10, spawn: EL_SMOKE };
-    static FIRE_OIL: Reaction = Reaction { target_becomes: EL_FIRE, source_becomes: EL_SMOKE, chance: 20, spawn: EL_SMOKE };
-    static FIRE_WATER: Reaction = Reaction { target_becomes: EL_STEAM, source_becomes: EL_EMPTY, chance: 50, spawn: EL_EMPTY };
-    static FIRE_ICE: Reaction = Reaction { target_becomes: EL_WATER, source_becomes: EL_EMPTY, chance: 30, spawn: EL_STEAM };
-    static FIRE_GUNPOWDER: Reaction = Reaction { target_becomes: EL_FIRE, source_becomes: EL_FIRE, chance: 100, spawn: EL_SMOKE };
-    static FIRE_PLANT: Reaction = Reaction { target_becomes: EL_FIRE, source_becomes: EL_SMOKE, chance: 10, spawn: EL_SMOKE };
-    static FIRE_SEED: Reaction = Reaction { target_becomes: EL_FIRE, source_becomes: EL_SMOKE, chance: 20, spawn: EL_EMPTY };
+/// Apply friction to a particle's velocity
+#[inline]
+pub fn apply_friction(grid: &mut Grid, x: u32, y: u32, dt: f32) {
+    let idx = grid.index(x, y);
+    let element = grid.types[idx];
     
-    // LAVA reactions
-    static LAVA_WATER: Reaction = Reaction { target_becomes: EL_STEAM, source_becomes: EL_STONE, chance: 15, spawn: EL_STEAM };
-    static LAVA_WOOD: Reaction = Reaction { target_becomes: EL_FIRE, source_becomes: Reaction::NO_CHANGE, chance: 30, spawn: EL_SMOKE };
-    static LAVA_OIL: Reaction = Reaction { target_becomes: EL_FIRE, source_becomes: Reaction::NO_CHANGE, chance: 40, spawn: EL_SMOKE };
-    static LAVA_ICE: Reaction = Reaction { target_becomes: EL_STEAM, source_becomes: EL_STONE, chance: 30, spawn: EL_EMPTY };
-    static LAVA_GUNPOWDER: Reaction = Reaction { target_becomes: EL_FIRE, source_becomes: Reaction::NO_CHANGE, chance: 100, spawn: EL_SMOKE };
-    static LAVA_PLANT: Reaction = Reaction { target_becomes: EL_FIRE, source_becomes: Reaction::NO_CHANGE, chance: 50, spawn: EL_SMOKE };
-    static LAVA_DIRT: Reaction = Reaction { target_becomes: EL_STONE, source_becomes: Reaction::NO_CHANGE, chance: 5, spawn: EL_EMPTY };
+    if element == EL_EMPTY {
+        return;
+    }
     
-    // ACID reactions
-    static ACID_STONE: Reaction = Reaction { target_becomes: EL_EMPTY, source_becomes: EL_EMPTY, chance: 10, spawn: EL_SMOKE };
-    static ACID_METAL: Reaction = Reaction { target_becomes: EL_EMPTY, source_becomes: EL_EMPTY, chance: 5, spawn: EL_EMPTY };
-    static ACID_WOOD: Reaction = Reaction { target_becomes: EL_EMPTY, source_becomes: EL_EMPTY, chance: 20, spawn: EL_EMPTY };
-    static ACID_ICE: Reaction = Reaction { target_becomes: EL_WATER, source_becomes: EL_EMPTY, chance: 20, spawn: EL_EMPTY };
-    static ACID_PLANT: Reaction = Reaction { target_becomes: EL_EMPTY, source_becomes: EL_EMPTY, chance: 15, spawn: EL_EMPTY };
-    static ACID_DIRT: Reaction = Reaction { target_becomes: EL_EMPTY, source_becomes: EL_EMPTY, chance: 5, spawn: EL_EMPTY };
+    let props = &ELEMENT_DATA[element as usize];
     
-    // WATER reactions (reverse)
-    static WATER_LAVA: Reaction = Reaction { target_becomes: EL_STONE, source_becomes: EL_STEAM, chance: 15, spawn: EL_STEAM };
-    static WATER_FIRE: Reaction = Reaction { target_becomes: EL_EMPTY, source_becomes: EL_STEAM, chance: 30, spawn: EL_EMPTY };
+    // Use 1.0 (no decay) if friction is zero to avoid "static" elements ignoring physics
+    let friction = if props.friction == 0.0 { 1.0 } else { props.friction };
+    let frame_scale = dt * BASE_FPS;
+    let friction_factor = friction.powf(frame_scale);
+    let air_factor = AIR_FRICTION.powf(frame_scale);
     
-    match (aggressor, victim) {
-        // Fire
-        (EL_FIRE, EL_WOOD) => Some(&FIRE_WOOD),
-        (EL_FIRE, EL_OIL) => Some(&FIRE_OIL),
-        (EL_FIRE, EL_WATER) => Some(&FIRE_WATER),
-        (EL_FIRE, EL_ICE) => Some(&FIRE_ICE),
-        (EL_FIRE, EL_GUNPOWDER) => Some(&FIRE_GUNPOWDER),
-        (EL_FIRE, EL_PLANT) => Some(&FIRE_PLANT),
-        (EL_FIRE, EL_SEED) => Some(&FIRE_SEED),
-        
-        // Lava
-        (EL_LAVA, EL_WATER) => Some(&LAVA_WATER),
-        (EL_LAVA, EL_WOOD) => Some(&LAVA_WOOD),
-        (EL_LAVA, EL_OIL) => Some(&LAVA_OIL),
-        (EL_LAVA, EL_ICE) => Some(&LAVA_ICE),
-        (EL_LAVA, EL_GUNPOWDER) => Some(&LAVA_GUNPOWDER),
-        (EL_LAVA, EL_PLANT) => Some(&LAVA_PLANT),
-        (EL_LAVA, EL_DIRT) => Some(&LAVA_DIRT),
-        
-        // Acid
-        (EL_ACID, EL_STONE) => Some(&ACID_STONE),
-        (EL_ACID, EL_METAL) => Some(&ACID_METAL),
-        (EL_ACID, EL_WOOD) => Some(&ACID_WOOD),
-        (EL_ACID, EL_ICE) => Some(&ACID_ICE),
-        (EL_ACID, EL_PLANT) => Some(&ACID_PLANT),
-        (EL_ACID, EL_DIRT) => Some(&ACID_DIRT),
-        
-        // Water (reverse reactions)
-        (EL_WATER, EL_LAVA) => Some(&WATER_LAVA),
-        (EL_WATER, EL_FIRE) => Some(&WATER_FIRE),
-        
-        _ => None
+    // Apply element-specific friction
+    grid.vx[idx] *= friction_factor;
+    grid.vy[idx] *= friction_factor;
+    
+    // Apply global air friction
+    grid.vx[idx] *= air_factor;
+    grid.vy[idx] *= air_factor;
+    
+    // Zero out very small velocities (prevents floating point creep)
+    if grid.vx[idx].abs() < 0.01 {
+        grid.vx[idx] = 0.0;
+    }
+    if grid.vy[idx].abs() < 0.01 {
+        grid.vy[idx] = 0.0;
     }
 }
 
+/// DDA Raycast - move particle along velocity vector, stopping at first collision
+/// 
+/// Uses Bresenham-style DDA (Digital Differential Analyzer) to step through
+/// grid cells along the velocity vector until we hit something or reach the end.
+/// 
+/// Returns (final_x, final_y, hit_element_or_none)
+pub fn raycast_move(
+    grid: &Grid,
+    start_x: u32,
+    start_y: u32,
+    vx: f32,
+    vy: f32,
+    dt: f32,
+) -> PhysicsResult {
+    let frame_scale = dt * BASE_FPS;
+    let dx = vx * frame_scale;
+    let dy = vy * frame_scale;
+
+    // If no velocity, stay in place
+    if dx.abs() < 0.01 && dy.abs() < 0.01 {
+        return PhysicsResult {
+            new_x: start_x,
+            new_y: start_y,
+            collided: false,
+            hit_element: EL_EMPTY,
+        };
+    }
+    
+    let mut x = start_x as f32;
+    let mut y = start_y as f32;
+    
+    // Number of steps = max of |dx| and |dy|, at least 1
+    let steps = dx.abs().max(dy.abs()).ceil() as i32;
+    if steps == 0 {
+        return PhysicsResult {
+            new_x: start_x,
+            new_y: start_y,
+            collided: false,
+            hit_element: EL_EMPTY,
+        };
+    }
+    
+    let step_x = dx / steps as f32;
+    let step_y = dy / steps as f32;
+    
+    let mut last_valid_x = start_x;
+    let mut last_valid_y = start_y;
+    
+    for _ in 0..steps {
+        x += step_x;
+        y += step_y;
+        
+        let ix = x.round() as i32;
+        let iy = y.round() as i32;
+        
+        // Check bounds
+        if !grid.in_bounds(ix, iy) {
+            // Hit world boundary
+            return PhysicsResult {
+                new_x: last_valid_x,
+                new_y: last_valid_y,
+                collided: true,
+                hit_element: EL_EMPTY, // Boundary
+            };
+        }
+        
+        let ux = ix as u32;
+        let uy = iy as u32;
+        
+        // Skip if we're at start position
+        if ux == start_x && uy == start_y {
+            continue;
+        }
+        
+        // Check if cell is occupied
+        let hit_element = grid.get_type(ix, iy);
+        if hit_element != EL_EMPTY {
+            // Collision!
+            return PhysicsResult {
+                new_x: last_valid_x,
+                new_y: last_valid_y,
+                collided: true,
+                hit_element,
+            };
+        }
+        
+        // Cell is empty, we can move here
+        last_valid_x = ux;
+        last_valid_y = uy;
+    }
+    
+    // Reached end without collision
+    PhysicsResult {
+        new_x: last_valid_x,
+        new_y: last_valid_y,
+        collided: false,
+        hit_element: EL_EMPTY,
+    }
+}
+
+/// Handle collision response - apply bounce or stop
+pub fn handle_collision(
+    grid: &mut Grid,
+    x: u32,
+    y: u32,
+    result: &PhysicsResult,
+) {
+    if !result.collided {
+        return;
+    }
+    
+    let idx = grid.index(x, y);
+    let element = grid.types[idx];
+    
+    if element == EL_EMPTY {
+        return;
+    }
+    
+    let props = &ELEMENT_DATA[element as usize];
+    let bounce = props.bounce;
+    
+    // Determine collision direction and apply bounce
+    let vx = grid.vx[idx];
+    let vy = grid.vy[idx];
+    
+    // Simple bounce: reverse velocity component and apply bounce factor
+    // If we hit something below, reverse vy
+    // If we hit something to the side, reverse vx
+    
+    let dx = result.new_x as i32 - x as i32;
+    let dy = result.new_y as i32 - y as i32;
+    
+    // Vertical collision (hit floor/ceiling)
+    if dy.abs() < vy.abs() as i32 && vy.abs() > 0.1 {
+        grid.vy[idx] = -vy * bounce;
+        // Add some horizontal scatter when bouncing
+        grid.vx[idx] += (vx.signum()) * vy.abs() * 0.1;
+    }
+    
+    // Horizontal collision (hit wall)
+    if dx.abs() < vx.abs() as i32 && vx.abs() > 0.1 {
+        grid.vx[idx] = -vx * bounce;
+    }
+    
+    // If bounce is very small, just stop
+    if bounce < 0.1 {
+        if vy.abs() < 1.0 {
+            grid.vy[idx] = 0.0;
+        }
+        if vx.abs() < 1.0 {
+            grid.vx[idx] = 0.0;
+        }
+    }
+}
+
+/// Full physics update for a single particle
+/// Returns true if particle moved
+/// 
+/// NOTE: No `updated` flag check here - we rely on correct processing order
+/// (bottom-to-top for gravity) to prevent double-processing.
+/// This allows behaviors to still run after physics.
+/// 
+/// GASES are skipped - they use inverted gravity and are handled by gas.rs behavior
+pub fn update_particle_physics(
+    grid: &mut Grid,
+    chunks: &mut ChunkGrid,
+    x: u32,
+    y: u32,
+    gravity_y: f32,
+    dt: f32,
+) -> bool {
+    let idx = grid.index(x, y);
+    
+    let element = grid.types[idx];
+    if element == EL_EMPTY {
+        return false;
+    }
+    
+    let props = &ELEMENT_DATA[element as usize];
+    
+    // Static solids should not be accelerated by physics
+    if props.category == CAT_SOLID {
+        grid.set_vx(x, y, 0.0);
+        grid.set_vy(x, y, 0.0);
+        return false;
+    }
+    
+    // Energy (fire/spark/electricity) is driven by its own behavior, not gravity
+    if props.category == CAT_ENERGY {
+        grid.set_vx(x, y, 0.0);
+        grid.set_vy(x, y, 0.0);
+        return false;
+    }
+    
+    // Respect explicit "ignore gravity" flag for future elements
+    if props.ignores_gravity() {
+        return false;
+    }
+    
+    // Skip gases - they rise (inverted gravity) and are handled by gas.rs behavior
+    // Processing them here would cause double-processing issues
+    if props.category == CAT_GAS {
+        return false;
+    }
+    
+    // 1. Apply gravity
+    apply_gravity(grid, x, y, gravity_y, dt);
+    
+    // 2. Apply friction
+    apply_friction(grid, x, y, dt);
+    
+    // 3. Get current velocity
+    let vx = grid.get_vx(x, y);
+    let vy = grid.get_vy(x, y);
+    
+    // 4. No movement if velocity is zero
+    if vx.abs() < 0.1 && vy.abs() < 0.1 {
+        return false;
+    }
+    
+    // 5. Raycast to find collision point
+    let result = raycast_move(grid, x, y, vx, vy, dt);
+    
+    // 6. Handle collision (apply bounce)
+    if result.collided {
+        handle_collision(grid, x, y, &result);
+    }
+    
+    // 7. Move particle if position changed
+    if result.new_x != x || result.new_y != y {
+        grid.swap(x, y, result.new_x, result.new_y);
+        
+        // Mark chunks as dirty
+        chunks.mark_dirty(x, y);
+        chunks.mark_dirty(result.new_x, result.new_y);
+        
+        return true;
+    }
+    
+    false
+}
+
+--- End of File: packages/engine/src/physics.rs ---
+
+
+--- File: packages/engine/src/reactions.rs ---
+
+//! Chemical Reactions - Phase 1 Data-Driven System
+//! 
+//! This module is now a thin re-export layer.
+//! All reaction definitions are in definitions/reactions.json
+//! and generated into generated_elements.rs
+//! 
+//! Benefits:
+//! - O(1) reaction lookup via LUT (vs O(N) match statements)
+//! - No Rust recompilation needed to add reactions
+//! - Edit JSON, run codegen, done!
+
+// Re-export from generated code
+pub use crate::generated_elements::{Reaction, ReactionSystem, REACTION_LUT_SIZE, REACTION_INIT_DATA};
+
+/// Legacy compatibility: get_reaction function
+/// Deprecated: Use ReactionSystem::get() instead for O(1) lookup
+/// 
+/// This wrapper exists only for gradual migration.
+/// New code should use ReactionSystem directly.
+#[deprecated(note = "Use ReactionSystem::get() for O(1) lookup")]
+pub fn get_reaction(_aggressor: crate::elements::ElementId, _victim: crate::elements::ElementId) -> Option<&'static Reaction> {
+    // Legacy function - should not be called
+    // All callers should migrate to ReactionSystem
+    None
+}
+
 --- End of File: packages/engine/src/reactions.rs ---
+
+
+--- File: packages/engine/src/rigid_body.rs ---
+
+//! RigidBody - A solid body that moves as a unit
+//!
+//! Phase: Hybrid Physics System
+//! 
+//! The body stores its shape in local coordinates (relative to center 0,0)
+//! and transforms them to world coordinates using position and rotation.
+
+use crate::elements::ElementId;
+
+/// 2D Vector for physics calculations
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Vec2 {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Vec2 {
+    pub fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+    
+    pub fn zero() -> Self {
+        Self { x: 0.0, y: 0.0 }
+    }
+    
+    pub fn length(&self) -> f32 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+    
+    pub fn length_squared(&self) -> f32 {
+        self.x * self.x + self.y * self.y
+    }
+    
+    pub fn dot(&self, other: Vec2) -> f32 {
+        self.x * other.x + self.y * other.y
+    }
+    
+    pub fn normalize(&self) -> Self {
+        let len = self.length();
+        if len > 0.0001 {
+            Self { x: self.x / len, y: self.y / len }
+        } else {
+            Self::zero()
+        }
+    }
+}
+
+impl std::ops::Add for Vec2 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self { x: self.x + rhs.x, y: self.y + rhs.y }
+    }
+}
+
+impl std::ops::Sub for Vec2 {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        Self { x: self.x - rhs.x, y: self.y - rhs.y }
+    }
+}
+
+impl std::ops::Mul<f32> for Vec2 {
+    type Output = Self;
+    fn mul(self, rhs: f32) -> Self {
+        Self { x: self.x * rhs, y: self.y * rhs }
+    }
+}
+
+/// A single pixel in the rigid body's local space
+#[derive(Clone, Copy)]
+pub struct BodyPixel {
+    /// Offset from center (local coords)
+    pub dx: i8,
+    pub dy: i8,
+    /// Element type for this pixel
+    pub element: ElementId,
+    /// Color variation seed
+    pub color_seed: u8,
+}
+
+/// Rigid Body - moves as a single unit
+pub struct RigidBody {
+    // === Physics State ===
+    /// World position (center of mass)
+    pub pos: Vec2,
+    /// Velocity vector (pixels per frame)
+    pub velocity: Vec2,
+    /// Rotation angle (radians)
+    pub angle: f32,
+    /// Angular velocity (radians per frame)
+    pub angular_vel: f32,
+    /// Total mass (sum of pixel masses)
+    pub mass: f32,
+    /// Moment of inertia for rotation (I = Σ m*r²)
+    pub moment_of_inertia: f32,
+    /// Is body active (simulated)?
+    pub active: bool,
+    /// Unique ID for this body
+    pub id: u32,
+    
+    // === Shape Definition ===
+    /// Pixels relative to center (0,0)
+    pub pixels: Vec<BodyPixel>,
+    
+    // === Bounding Box (AABB) ===
+    pub half_width: f32,
+    pub half_height: f32,
+    
+    // === Previous frame position (for clearing) ===
+    pub prev_pos: Vec2,
+    pub prev_angle: f32,
+    
+    /// Cached world coordinates from last rasterization (for accurate clearing)
+    pub prev_world_coords: Vec<(i32, i32)>,
+    
+    // === Material properties ===
+    /// Bounciness (0.0 = no bounce, 1.0 = full elastic)
+    pub restitution: f32,
+}
+
+impl RigidBody {
+    /// Create a rectangular rigid body
+    pub fn new_rect(x: f32, y: f32, w: i32, h: i32, element: ElementId, id: u32) -> Self {
+        let mut pixels = Vec::new();
+        let half_w = w / 2;
+        let half_h = h / 2;
+        
+        // Generate rectangle of pixels centered at (0,0)
+        for dy in -half_h..=half_h {
+            for dx in -half_w..=half_w {
+                // Generate color variation seed based on position
+                let color_seed = ((dx.abs() as u32 * 7 + dy.abs() as u32 * 13) & 31) as u8;
+                
+                pixels.push(BodyPixel {
+                    dx: dx as i8,
+                    dy: dy as i8,
+                    element,
+                    color_seed,
+                });
+            }
+        }
+        
+        let mass = pixels.len() as f32;
+        
+        // Calculate moment of inertia: I = Σ m*r² (assuming unit mass per pixel)
+        let mut moment_of_inertia = 0.0f32;
+        for pixel in &pixels {
+            let r2 = (pixel.dx as f32).powi(2) + (pixel.dy as f32).powi(2);
+            moment_of_inertia += r2; // m = 1 per pixel
+        }
+        // Ensure minimum moment to avoid division issues
+        moment_of_inertia = moment_of_inertia.max(1.0);
+        
+        let pixel_count = pixels.len();
+        
+        Self {
+            pos: Vec2::new(x, y),
+            velocity: Vec2::zero(),
+            angle: 0.0,
+            angular_vel: 0.0,
+            mass,
+            moment_of_inertia,
+            active: true,
+            id,
+            pixels,
+            half_width: half_w as f32,
+            half_height: half_h as f32,
+            prev_pos: Vec2::new(x, y),
+            prev_angle: 0.0,
+            prev_world_coords: Vec::with_capacity(pixel_count),
+            restitution: 0.3, // Default: slight bounce like stone
+        }
+    }
+    
+    /// Create a circular rigid body
+    pub fn new_circle(x: f32, y: f32, radius: i32, element: ElementId, id: u32) -> Self {
+        let mut pixels = Vec::new();
+        // Use (r + 0.5)^2 for smoother circle edges (Midpoint circle algorithm style)
+        let r_adj = radius as f32 + 0.5;
+        let r2 = r_adj * r_adj;
+        
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                // Use floating point distance for smoother circle
+                let dist2 = (dx as f32 * dx as f32) + (dy as f32 * dy as f32);
+                if dist2 < r2 {
+                    let color_seed = ((dx.abs() as u32 * 7 + dy.abs() as u32 * 13) & 31) as u8;
+                    
+                    pixels.push(BodyPixel {
+                        dx: dx as i8,
+                        dy: dy as i8,
+                        element,
+                        color_seed,
+                    });
+                }
+            }
+        }
+        
+        let mass = pixels.len() as f32;
+        
+        // Calculate moment of inertia for circle: I = 0.5 * m * r²
+        // But we compute exactly: I = Σ m*r² for all pixels
+        let mut moment_of_inertia = 0.0f32;
+        for pixel in &pixels {
+            let r2 = (pixel.dx as f32).powi(2) + (pixel.dy as f32).powi(2);
+            moment_of_inertia += r2;
+        }
+        moment_of_inertia = moment_of_inertia.max(1.0);
+        
+        let pixel_count = pixels.len();
+        
+        Self {
+            pos: Vec2::new(x, y),
+            velocity: Vec2::zero(),
+            angle: 0.0,
+            angular_vel: 0.0,
+            mass,
+            moment_of_inertia,
+            active: true,
+            id,
+            pixels,
+            half_width: radius as f32,
+            half_height: radius as f32,
+            prev_pos: Vec2::new(x, y),
+            prev_angle: 0.0,
+            prev_world_coords: Vec::with_capacity(pixel_count),
+            restitution: 0.3,
+        }
+    }
+    
+    /// Transform local pixel coordinates to world coordinates
+    #[inline]
+    pub fn local_to_world(&self, dx: f32, dy: f32) -> (i32, i32) {
+        let (sin, cos) = self.angle.sin_cos();
+        let rx = dx * cos - dy * sin;
+        let ry = dx * sin + dy * cos;
+        
+        ((self.pos.x + rx).round() as i32, (self.pos.y + ry).round() as i32)
+    }
+    
+    /// Transform local pixel coordinates to world using previous frame's transform
+    #[inline]
+    pub fn local_to_world_prev(&self, dx: f32, dy: f32) -> (i32, i32) {
+        let (sin, cos) = self.prev_angle.sin_cos();
+        let rx = dx * cos - dy * sin;
+        let ry = dx * sin + dy * cos;
+        
+        ((self.prev_pos.x + rx).round() as i32, (self.prev_pos.y + ry).round() as i32)
+    }
+    
+    /// Save current position as previous (call before physics update)
+    pub fn save_prev_state(&mut self) {
+        self.prev_pos = self.pos;
+        self.prev_angle = self.angle;
+    }
+    
+    /// Apply impulse at center of mass
+    pub fn apply_impulse(&mut self, impulse: Vec2) {
+        self.velocity = self.velocity + impulse * (1.0 / self.mass);
+    }
+    
+    /// Apply force for one frame
+    pub fn apply_force(&mut self, force: Vec2) {
+        self.velocity = self.velocity + force * (1.0 / self.mass);
+    }
+    
+    /// Apply torque (rotational force)
+    pub fn apply_torque(&mut self, torque: f32) {
+        self.angular_vel += torque / self.moment_of_inertia;
+    }
+    
+    /// Set restitution (bounciness)
+    pub fn set_restitution(&mut self, r: f32) {
+        self.restitution = r.clamp(0.0, 1.0);
+    }
+}
+
+--- End of File: packages/engine/src/rigid_body.rs ---
+
+
+--- File: packages/engine/src/rigid_body_system.rs ---
+
+//! RigidBodySystem - Manager for all rigid bodies
+//!
+//! Phase: Advanced Physics with Torque, Momentum Transfer, and Bounce
+//!
+//! The Loop:
+//! 1. ERASE: Clear bodies from old positions in grid
+//! 2. UPDATE: Apply gravity/velocity, update positions
+//! 3. COLLISION: Check for collisions with world (with momentum transfer!)
+//! 4. TORQUE: Apply rotational forces from asymmetric contacts
+//! 5. BOUNCE: Reflect velocity based on collision normal
+//! 6. RASTERIZE: Draw bodies at new positions
+
+use crate::grid::Grid;
+use crate::rigid_body::{RigidBody, Vec2};
+use crate::chunks::ChunkGrid;
+use crate::elements::{
+    EL_EMPTY, ELEMENT_DATA, CAT_SOLID, CAT_POWDER, CAT_LIQUID, CAT_GAS,
+    get_color_with_variation, get_props,
+};
+
+/// Baseline simulation framerate used to scale legacy per-frame constants.
+const BASE_FPS: f32 = 60.0;
+
+// === Physics Constants ===
+/// Minimum momentum to penetrate soft materials (powder/liquid)
+const PENETRATION_THRESHOLD: f32 = 30.0;
+/// How much velocity is transferred to kicked particles (0.0-1.0)
+const KICK_TRANSFER: f32 = 0.6;
+/// Random spread for particle splashes
+const SPLASH_SPREAD: f32 = 2.0;
+/// Velocity below which body comes to rest
+const REST_THRESHOLD: f32 = 0.1;
+/// Angular velocity below which rotation stops  
+const ANGULAR_REST_THRESHOLD: f32 = 0.05;
+/// Damping factor for angular velocity (lower = more friction)
+const ANGULAR_DAMPING: f32 = 0.85;
+/// Maximum angular velocity (prevent crazy spinning)
+const MAX_ANGULAR_VEL: f32 = 0.3;
+
+/// Extended collision result with contact information
+struct CollisionResult {
+    /// Did any collision occur?
+    hit: bool,
+    /// Hit on X axis specifically?
+    hit_x: bool,
+    /// Hit on Y axis specifically?
+    hit_y: bool,
+    /// Number of contact points
+    contact_count: u32,
+    /// Sum of contact X positions (divide by count for average)
+    contact_sum_x: f32,
+    /// Sum of contact Y positions
+    contact_sum_y: f32,
+    /// Accumulated collision normal (sum of individual normals)
+    normal_sum: Vec2,
+    /// Number of soft contacts that were penetrated
+    penetrated_count: u32,
+}
+
+/// Clear body pixels from grid (using cached world coordinates)
+fn clear_body_from_grid(body: &RigidBody, grid: &mut Grid, chunks: &mut ChunkGrid) {
+    // Use cached world coordinates for accurate clearing (prevents black spots)
+    for (i, &(x, y)) in body.prev_world_coords.iter().enumerate() {
+        if grid.in_bounds(x, y) {
+            let ux = x as u32;
+            let uy = y as u32;
+            
+            // Only clear if this cell belongs to our rigid body
+            let current_type = grid.get_type(x, y);
+            // Check against the element type of this pixel
+            if i < body.pixels.len() && current_type == body.pixels[i].element {
+                grid.clear_cell(ux, uy);
+                chunks.mark_dirty(ux, uy);
+            }
+        }
+    }
+}
+
+/// Draw body pixels to grid (using CURRENT position)
+fn displace_soft_cell(
+    grid: &mut Grid,
+    chunks: &mut ChunkGrid,
+    x: u32,
+    y: u32,
+    candidates: &[(i32, i32)],
+) -> bool {
+    for (dx, dy) in candidates {
+        let tx = x as i32 + dx;
+        let ty = y as i32 + dy;
+        if !grid.in_bounds(tx, ty) { continue; }
+        let target = grid.get_type(tx, ty);
+        if target == EL_EMPTY {
+            grid.swap(x, y, tx as u32, ty as u32);
+            chunks.mark_dirty(x, y);
+            chunks.mark_dirty(tx as u32, ty as u32);
+            return true;
+        }
+    }
+    false
+}
+
+fn rasterize_body(body: &mut RigidBody, grid: &mut Grid, chunks: &mut ChunkGrid) {
+    // Clear and prepare to collect new world coordinates
+    body.prev_world_coords.clear();
+    
+    for pixel in &body.pixels {
+        let (x, y) = body.local_to_world(pixel.dx as f32, pixel.dy as f32);
+        
+        // Always record the world coordinate for this pixel (for accurate clearing later)
+        body.prev_world_coords.push((x, y));
+        
+        if grid.in_bounds(x, y) {
+            let ux = x as u32;
+            let uy = y as u32;
+            
+            // If cell contains powder or liquid, try to push it aside instead of deleting
+            let existing = grid.get_type(x, y);
+            if existing != EL_EMPTY && existing != pixel.element {
+                if (existing as usize) < ELEMENT_DATA.len() {
+                    let cat = ELEMENT_DATA[existing as usize].category;
+                    if cat == CAT_POWDER || cat == CAT_LIQUID {
+                        // When falling, do NOT tunnel through soft material—stop drawing here.
+                        if body.velocity.y > 0.05 {
+                            continue;
+                        }
+                        // Build displacement candidates based on velocity and pixel offset
+                        let mut candidates: [(i32, i32); 8] = [(0, 0); 8];
+                        let mut count = 0;
+                        
+                        let sign_vx = if body.velocity.x > 0.1 { 1 } else if body.velocity.x < -0.1 { -1 } else { 0 };
+                        let sign_vy = if body.velocity.y > 0.1 { 1 } else if body.velocity.y < -0.1 { -1 } else { 0 };
+                        
+                        if sign_vx != 0 || sign_vy != 0 {
+                            candidates[count] = (sign_vx, sign_vy); count += 1;
+                            if sign_vx != 0 { candidates[count] = (sign_vx, 0); count += 1; }
+                            if sign_vy != 0 { candidates[count] = (0, sign_vy); count += 1; }
+                            if sign_vx != 0 || sign_vy != 0 {
+                                candidates[count] = (sign_vy, -sign_vx); count += 1; // perpendicular
+                                candidates[count] = (-sign_vy, sign_vx); count += 1;
+                            }
+                        }
+                        
+                        // Outward from body center as fallback
+                        let outward_x = (pixel.dx as i32).signum();
+                        let outward_y = (pixel.dy as i32).signum();
+                        if outward_x != 0 || outward_y != 0 {
+                            candidates[count] = (outward_x, outward_y); count += 1;
+                            if outward_x != 0 { candidates[count] = (outward_x, 0); count += 1; }
+                            if outward_y != 0 { candidates[count] = (0, outward_y); count += 1; }
+                        }
+                        
+                        if !displace_soft_cell(grid, chunks, ux, uy, &candidates[..count]) {
+                            // Could not push out soft material; leave it intact and skip placing this pixel
+                            continue;
+                        }
+                    }
+                }
+            }
+            
+            // Get element properties
+            let props = get_props(pixel.element);
+            
+            // Generate color with variation
+            let color = get_color_with_variation(pixel.element, pixel.color_seed);
+            
+            // Set particle with rigid flag
+            grid.set_particle(
+                ux, uy,
+                pixel.element,
+                color,
+                props.lifetime,
+                props.default_temp,
+            );
+            
+            // Mark as updated so behaviors don't touch it
+            grid.set_updated(ux, uy, true);
+            
+            chunks.mark_dirty(ux, uy);
+        }
+    }
+}
+
+/// Simple PRNG for splash randomness (no std lib dependency)
+fn simple_random(seed: u32) -> f32 {
+    let x = seed.wrapping_mul(1103515245).wrapping_add(12345);
+    ((x >> 16) & 0x7FFF) as f32 / 32768.0 - 0.5 // Range: -0.5 to 0.5
+}
+
+/// Kick a particle - transfer momentum from rigid body to grid particle
+/// Creates the "splash" effect when heavy objects hit soft materials
+fn kick_particle(
+    grid: &mut Grid,
+    chunks: &mut ChunkGrid,
+    x: i32,
+    y: i32,
+    body_velocity: Vec2,
+    body_pos: Vec2,
+    seed: u32,
+) {
+    if !grid.in_bounds(x, y) { return; }
+    
+    let ux = x as u32;
+    let uy = y as u32;
+    
+    // Calculate kick direction: away from body center + along body velocity
+    let dx = x as f32 - body_pos.x;
+    let dy = y as f32 - body_pos.y;
+    let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+    
+    // Normalize direction from body center
+    let dir_x = dx / dist;
+    let dir_y = dy / dist;
+    
+    // Random spread for splash effect
+    let rand1 = simple_random(seed);
+    let rand2 = simple_random(seed.wrapping_mul(7));
+    
+    // Combine: body velocity transfer + radial push + random spread
+    let kick_x = body_velocity.x * KICK_TRANSFER 
+               + dir_x * body_velocity.length() * 0.3
+               + rand1 * SPLASH_SPREAD;
+    let kick_y = body_velocity.y * KICK_TRANSFER 
+               + dir_y * body_velocity.length() * 0.3 
+               - 1.5  // Slight upward bias for splash
+               + rand2 * SPLASH_SPREAD;
+    
+    // Apply velocity to particle
+    grid.add_velocity(ux, uy, kick_x, kick_y);
+    chunks.mark_dirty(ux, uy);
+}
+
+/// Check if body would collide at new position
+/// Now with momentum-based penetration of soft materials!
+fn check_collision_advanced(
+    new_x: f32,
+    new_y: f32,
+    body: &RigidBody,
+    grid: &mut Grid,
+    chunks: &mut ChunkGrid,
+    skip_self_overlap: bool,
+) -> CollisionResult {
+    let mut hit_x = false;
+    let mut hit_y = false;
+    let mut contact_count = 0u32;
+    let mut contact_sum_x = 0.0f32;
+    let mut contact_sum_y = 0.0f32;
+    let mut normal_sum = Vec2::zero();
+    let mut penetrated_count = 0u32;
+    
+    // Calculate body momentum for penetration check
+    let momentum = body.velocity.length() * body.mass;
+    let can_penetrate = momentum > PENETRATION_THRESHOLD;
+    
+    // Seed for random kicks
+    let mut kick_seed = (new_x as u32).wrapping_mul(31337).wrapping_add(new_y as u32);
+    
+    // Temporarily modify position for checking
+    let temp_pos = Vec2::new(new_x, new_y);
+    
+    for pixel in &body.pixels {
+        let (sin, cos) = body.angle.sin_cos();
+        let dx = pixel.dx as f32;
+        let dy = pixel.dy as f32;
+        let rx = dx * cos - dy * sin;
+        let ry = dx * sin + dy * cos;
+        
+        let world_x = (temp_pos.x + rx).round() as i32;
+        let world_y = (temp_pos.y + ry).round() as i32;
+        
+        // Old position for axis detection
+        let old_wx = (body.pos.x + rx).round() as i32;
+        let old_wy = (body.pos.y + ry).round() as i32;
+        
+        // Check world bounds
+        if !grid.in_bounds(world_x, world_y) {
+            if world_x != old_wx { hit_x = true; }
+            if world_y != old_wy { hit_y = true; }
+            
+            // Record contact at boundary
+            contact_count += 1;
+            contact_sum_x += world_x as f32;
+            contact_sum_y += world_y as f32;
+            normal_sum.x += body.pos.x - world_x as f32;
+            normal_sum.y += body.pos.y - world_y as f32;
+            continue;
+        }
+        
+        // Check cell content
+        let cell_type = grid.get_type(world_x, world_y);
+        
+        if cell_type != EL_EMPTY {
+            let cell_props = &ELEMENT_DATA[cell_type as usize];
+            let category = cell_props.category;
+            
+            // === SOFT MATERIALS: Powder, Liquid, Gas ===
+            if category == CAT_POWDER || category == CAT_LIQUID || category == CAT_GAS {
+                if can_penetrate {
+                    // === BULLDOZER MODE: Penetrate and kick! ===
+                    kick_seed = kick_seed.wrapping_mul(1103515245).wrapping_add(12345);
+                    kick_particle(grid, chunks, world_x, world_y, body.velocity, body.pos, kick_seed);
+                    penetrated_count += 1;
+                    
+                    // Don't count as hard collision - body continues through
+                    continue;
+                } else {
+                    // Low momentum - treat powder as solid, but liquids/gases pass through
+                    if category == CAT_POWDER {
+                        // Record contact for torque calculation
+                        contact_count += 1;
+                        contact_sum_x += world_x as f32;
+                        contact_sum_y += world_y as f32;
+                        normal_sum.x += body.pos.x - world_x as f32;
+                        normal_sum.y += body.pos.y - world_y as f32;
+                        
+                        if skip_self_overlap && old_wx == world_x && old_wy == world_y {
+                            continue;
+                        }
+                        
+                        if world_x != old_wx { hit_x = true; }
+                        if world_y != old_wy { hit_y = true; }
+                    }
+                    // Liquids and gases at low speed - pass through
+                    continue;
+                }
+            }
+            
+            // === SOLID MATERIALS: Always collide ===
+            if category == CAT_SOLID {
+                // Skip self-overlap during movement
+                if skip_self_overlap && old_wx == world_x && old_wy == world_y {
+                    continue;
+                }
+                
+                // Record contact point for torque
+                contact_count += 1;
+                contact_sum_x += world_x as f32;
+                contact_sum_y += world_y as f32;
+                
+                // Accumulate normal (direction from obstacle to body center)
+                normal_sum.x += (body.pos.x - world_x as f32);
+                normal_sum.y += (body.pos.y - world_y as f32);
+                
+                // Determine collision axis
+                if world_x != old_wx { hit_x = true; }
+                if world_y != old_wy { hit_y = true; }
+            }
+        }
+    }
+    
+    CollisionResult {
+        hit: hit_x || hit_y,
+        hit_x,
+        hit_y,
+        contact_count,
+        contact_sum_x,
+        contact_sum_y,
+        normal_sum,
+        penetrated_count,
+    }
+}
+
+/// Simple collision check (for spawn validation - no momentum transfer)
+fn check_collision_simple(new_x: f32, new_y: f32, body: &RigidBody, grid: &Grid) -> bool {
+    for pixel in &body.pixels {
+        let (sin, cos) = body.angle.sin_cos();
+        let dx = pixel.dx as f32;
+        let dy = pixel.dy as f32;
+        let rx = dx * cos - dy * sin;
+        let ry = dx * sin + dy * cos;
+        
+        let world_x = (new_x + rx).round() as i32;
+        let world_y = (new_y + ry).round() as i32;
+        
+        if !grid.in_bounds(world_x, world_y) {
+            return true;
+        }
+        
+        let cell_type = grid.get_type(world_x, world_y);
+        if cell_type != EL_EMPTY {
+            let props = &ELEMENT_DATA[cell_type as usize];
+            if props.category == CAT_SOLID || props.category == CAT_POWDER {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Manages all rigid bodies in the simulation
+pub struct RigidBodySystem {
+    /// All rigid bodies
+    bodies: Vec<RigidBody>,
+    /// Gravity (pixels per frame squared)
+    gravity: f32,
+    /// Next body ID
+    next_id: u32,
+    /// Friction for sliding (0-1)
+    friction: f32,
+}
+
+impl RigidBodySystem {
+    pub fn new() -> Self {
+        Self {
+            bodies: Vec::new(),
+            gravity: 0.5, // Match physics.rs GRAVITY constant
+            next_id: 1,
+            friction: 0.8,
+        }
+    }
+    
+    /// Set gravity (can be negative for inverted gravity)
+    pub fn set_gravity(&mut self, g: f32) {
+        self.gravity = g;
+    }
+    
+    /// Add a new rigid body. Returns 0 if placement collides with existing solids.
+    pub fn add_body(&mut self, mut body: RigidBody, grid: &mut Grid, chunks: &mut ChunkGrid) -> u32 {
+        // Reject spawn if it intersects existing solids/powders/rigid bodies
+        if check_collision_simple(body.pos.x, body.pos.y, &body, grid) {
+            return 0;
+        }
+        
+        let id = self.next_id;
+        body.id = id;
+        self.next_id += 1;
+        
+        // Draw immediately so new body is visible and blocks future spawns this frame
+        rasterize_body(&mut body, grid, chunks);
+        body.prev_pos = body.pos;
+        body.prev_angle = body.angle;
+        
+        self.bodies.push(body);
+        id
+    }
+    
+    /// Remove a rigid body by ID
+    pub fn remove_body(&mut self, id: u32) {
+        self.bodies.retain(|b| b.id != id);
+    }
+    
+    /// Get body count
+    pub fn body_count(&self) -> usize {
+        self.bodies.len()
+    }
+    
+    /// Main update loop - call BEFORE particle simulation
+    /// Now with Torque, Bounce, and Momentum Transfer!
+    pub fn update(&mut self, grid: &mut Grid, chunks: &mut ChunkGrid, gravity_y: f32, dt: f32) {
+        // Update gravity from world
+        self.gravity = gravity_y.abs() * 0.5;
+        let gravity_sign = if gravity_y >= 0.0 { 1.0 } else { -1.0 };
+        let frame_scale = dt * BASE_FPS;
+        
+        // Process each body sequentially
+        for body in &mut self.bodies {
+            if !body.active { continue; }
+            
+            // === PHASE 1: ERASE from previous position ===
+            clear_body_from_grid(body, grid, chunks);
+            body.save_prev_state();
+            
+            // === PHASE 2: APPLY FORCES ===
+            // Gravity
+            body.velocity.y += self.gravity * gravity_sign * frame_scale;
+            
+            // Clamp velocity
+            body.velocity.x = body.velocity.x.clamp(-10.0, 10.0);
+            body.velocity.y = body.velocity.y.clamp(-10.0, 10.0);
+            
+            // Predict next position
+            let next_x = body.pos.x + body.velocity.x * frame_scale;
+            let next_y = body.pos.y + body.velocity.y * frame_scale;
+            
+            // === PHASE 3: COLLISION DETECTION with Momentum Transfer ===
+            let collision = check_collision_advanced(next_x, next_y, body, grid, chunks, true);
+            
+            // Slow down body if it penetrated soft materials (drag effect)
+            if collision.penetrated_count > 0 {
+                let drag = 0.95_f32.powi(collision.penetrated_count as i32);
+                body.velocity = body.velocity * drag;
+            }
+            
+            if collision.hit {
+                // === PHASE 4: TORQUE from asymmetric contact ===
+                if collision.contact_count > 0 {
+                    // Calculate contact center
+                    let contact_x = collision.contact_sum_x / collision.contact_count as f32;
+                    let contact_y = collision.contact_sum_y / collision.contact_count as f32;
+                    
+                    // Vector from body center to contact center ("arm")
+                    let arm_x = contact_x - body.pos.x;
+                    let arm_y = contact_y - body.pos.y;
+                    
+                    // Reaction force (opposite to gravity when resting on ground)
+                    // Simplified: use velocity magnitude as proxy for impact force
+                    let impact_force = body.velocity.length() * body.mass * 0.1;
+                    
+                    // 2D cross product: torque = arm × force
+                    // If contact is to the LEFT of center (arm_x < 0) and force pushes UP,
+                    // torque is positive (counter-clockwise)
+                    let torque = arm_x * impact_force * gravity_sign;
+                    
+                    // Apply torque
+                    body.angular_vel += torque / body.moment_of_inertia;
+                }
+                
+                // === PHASE 5: BOUNCE - Reflect velocity off collision normal ===
+                if collision.normal_sum.length_squared() > 0.01 {
+                    let normal = collision.normal_sum.normalize();
+                    
+                    // Only bounce if we have significant velocity
+                    if body.velocity.length_squared() > 2.0 {
+                        // Vector reflection: V' = V - 2(V·N)N
+                        let dot = body.velocity.dot(normal);
+                        
+                        // Only reflect if moving INTO the surface (dot < 0 means moving away)
+                        if dot < 0.0 {
+                            let bounce_vel = Vec2::new(
+                                body.velocity.x - 2.0 * dot * normal.x,
+                                body.velocity.y - 2.0 * dot * normal.y,
+                            );
+                            
+                            // Apply restitution (bounciness)
+                            body.velocity = bounce_vel * body.restitution;
+                            
+                            // Add spin from glancing collision
+                            body.angular_vel += dot * 0.02;
+                        }
+                    } else {
+                        // Low velocity - come to rest
+                        body.velocity = Vec2::zero();
+                    }
+                }
+                
+                // === Resolve position: try axis-separated movement ===
+                if collision.hit_y && !collision.hit_x {
+                    // Can still move horizontally
+                    let friction_factor = self.friction.powf(frame_scale);
+                    body.velocity.x *= friction_factor;
+                    let next_x_only = body.pos.x + body.velocity.x;
+                    if !check_collision_simple(next_x_only, body.pos.y, body, grid) {
+                        body.pos.x = next_x_only;
+                    }
+                } else if collision.hit_x && !collision.hit_y {
+                    // Can still move vertically
+                    let next_y_only = body.pos.y + body.velocity.y;
+                    if !check_collision_simple(body.pos.x, next_y_only, body, grid) {
+                        body.pos.y = next_y_only;
+                    }
+                }
+                // If both axes blocked - body stays in place
+                
+                // Rest threshold
+                if body.velocity.length_squared() < REST_THRESHOLD * REST_THRESHOLD {
+                    body.velocity = Vec2::zero();
+                }
+            } else {
+                // === No collision - move freely ===
+                body.pos.x = next_x;
+                body.pos.y = next_y;
+            }
+            
+            // === PHASE 6: ROTATION ===
+            // Clamp angular velocity to prevent crazy spinning
+            body.angular_vel = body.angular_vel.clamp(-MAX_ANGULAR_VEL, MAX_ANGULAR_VEL);
+            
+            body.angle += body.angular_vel * frame_scale;
+            body.angular_vel *= ANGULAR_DAMPING.powf(frame_scale);
+            
+            // Angular rest threshold - stop small oscillations
+            if body.angular_vel.abs() < ANGULAR_REST_THRESHOLD {
+                body.angular_vel = 0.0;
+            }
+            
+            // Keep angle in reasonable range to avoid float precision issues
+            if body.angle.abs() > std::f32::consts::TAU {
+                body.angle = body.angle % std::f32::consts::TAU;
+            }
+            
+            // === PHASE 7: RASTERIZE at new position ===
+            rasterize_body(body, grid, chunks);
+            
+            // Update prev state for next frame
+            body.prev_pos = body.pos;
+            body.prev_angle = body.angle;
+        }
+    }
+}
+
+impl Default for RigidBodySystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+--- End of File: packages/engine/src/rigid_body_system.rs ---
 
 
 --- File: packages/engine/src/temperature.rs ---
@@ -9101,8 +12079,17 @@ use crate::elements::{
     get_color_with_variation, get_props
 };
 use crate::behaviors::{BehaviorRegistry, UpdateContext};
-use crate::reactions::{get_reaction, Reaction};
+use crate::reactions::{Reaction, ReactionSystem};
 use crate::temperature::process_temperature_grid_chunked;
+use crate::physics::update_particle_physics;
+use crate::rigid_body::RigidBody;
+use crate::rigid_body_system::RigidBodySystem;
+
+// === Time configuration (Phase 1: Fixed timestep + substeps) ===
+const FIXED_DT: f32 = 1.0 / 60.0;
+const MAX_STEPS_PER_FRAME: u32 = 8;
+const SUBSTEPS: u32 = 4;
+const SUB_DT: f32 = FIXED_DT / SUBSTEPS as f32;
 
 /// Random number generator (xorshift32)
 #[inline]
@@ -9121,6 +12108,8 @@ pub struct World {
     grid: Grid,
     chunks: ChunkGrid,
     behaviors: BehaviorRegistry,
+    reactions: ReactionSystem,  // Phase 1: Data-driven O(1) reaction lookup
+    rigid_bodies: RigidBodySystem,  // Rigid body physics system
     
     // Settings
     gravity_x: f32,
@@ -9131,6 +12120,7 @@ pub struct World {
     particle_count: u32,
     frame: u64,
     rng_state: u32,
+    accumulated_time: f32,
     
     // Phase 3: Smart Rendering buffers
     dirty_list: Vec<u32>,           // List of dirty chunk indices for rendering
@@ -9150,12 +12140,15 @@ impl World {
             grid: Grid::new(width, height),
             chunks: ChunkGrid::new(width, height),
             behaviors: BehaviorRegistry::new(),
+            reactions: ReactionSystem::new(), // Phase 1: O(1) reaction lookup
+            rigid_bodies: RigidBodySystem::new(), // Rigid body physics
             gravity_x: 0.0,
             gravity_y: 1.0,
             ambient_temperature: 20.0,
             particle_count: 0,
             frame: 0,
             rng_state: 12345,
+            accumulated_time: 0.0,
             // Phase 3: Smart Rendering
             dirty_list: Vec::with_capacity(1000),
             chunk_transfer_buffer: vec![0u32; (CHUNK_SIZE * CHUNK_SIZE) as usize],
@@ -9179,9 +12172,10 @@ impl World {
     pub fn frame(&self) -> u64 { self.frame }
 
     pub fn set_gravity(&mut self, x: f32, y: f32) {
-        // Match TypeScript: gx/gy = sign of gravity, can be 0
-        self.gravity_x = if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
-        self.gravity_y = if y > 0.0 { 1.0 } else if y < 0.0 { -1.0 } else { 0.0 };
+        // Phase 2: Use actual gravity values for velocity-based physics
+        // Higher values = faster acceleration
+        self.gravity_x = x;
+        self.gravity_y = y;
     }
 
     pub fn set_ambient_temperature(&mut self, temp: f32) {
@@ -9286,10 +12280,62 @@ impl World {
         self.particle_count = 0;
         self.frame = 0;
     }
+    
+    // === RIGID BODY API ===
+    
+    /// Spawn a rectangular rigid body at position (x, y) with size (w, h)
+    /// Returns the body ID
+    pub fn spawn_rigid_body(&mut self, x: f32, y: f32, w: i32, h: i32, element_id: u8) -> u32 {
+        let body = RigidBody::new_rect(x, y, w, h, element_id, 0);
+        self.rigid_bodies.add_body(body, &mut self.grid, &mut self.chunks)
+    }
+    
+    /// Spawn a circular rigid body at position (x, y) with given radius
+    /// Returns the body ID
+    pub fn spawn_rigid_circle(&mut self, x: f32, y: f32, radius: i32, element_id: u8) -> u32 {
+        let body = RigidBody::new_circle(x, y, radius, element_id, 0);
+        self.rigid_bodies.add_body(body, &mut self.grid, &mut self.chunks)
+    }
+    
+    /// Remove a rigid body by ID
+    pub fn remove_rigid_body(&mut self, id: u32) {
+        self.rigid_bodies.remove_body(id);
+    }
+    
+    /// Get number of active rigid bodies
+    pub fn rigid_body_count(&self) -> usize {
+        self.rigid_bodies.body_count()
+    }
 
     /// Step the simulation forward
     /// Phase 4: Only process active chunks!
+    /// Phase 2: Newtonian physics with velocity
     pub fn step(&mut self) {
+        // Backward-compatible single fixed tick (60 FPS baseline)
+        self.step_with_dt(FIXED_DT);
+    }
+
+    /// Step simulation with variable frame delta (seconds).
+    /// Uses accumulator + sub-stepping to keep physics stable across frame rates.
+    pub fn step_with_dt(&mut self, dt_seconds: f32) {
+        // Clamp extreme pauses to avoid spiral-of-death
+        let clamped = dt_seconds.clamp(0.0, FIXED_DT * MAX_STEPS_PER_FRAME as f32);
+        // Accumulate time and limit catch-up
+        self.accumulated_time = (self.accumulated_time + clamped).min(FIXED_DT * MAX_STEPS_PER_FRAME as f32);
+
+        let mut steps = 0;
+        while self.accumulated_time >= FIXED_DT && steps < MAX_STEPS_PER_FRAME {
+            self.accumulated_time -= FIXED_DT;
+            // Sub-steps for stability (contact resolution, stacking)
+            for _ in 0..SUBSTEPS {
+                self.fixed_step(SUB_DT);
+            }
+            steps += 1;
+        }
+    }
+
+    /// Single fixed sub-step with explicit dt (seconds)
+    fn fixed_step(&mut self, dt: f32) {
         // === LAZY HYDRATION: Process waking chunks ===
         // When a chunk transitions Sleep -> Active, we need to fill its air cells
         // with the current virtual_temp (which has been smoothly animating)
@@ -9302,17 +12348,25 @@ impl World {
         // Phase 4: Begin frame for chunk tracking
         self.chunks.begin_frame();
         
+        // === RIGID BODY PHYSICS ===
+        // Update rigid bodies BEFORE particle physics so particles can react to new body positions
+        self.rigid_bodies.update(&mut self.grid, &mut self.chunks, self.gravity_y, dt);
+        
+        // === PHASE 2: PHYSICS PASS ===
+        // Apply gravity and velocity-based movement BEFORE behavior pass
+        self.process_physics(dt);
+        
         let go_right = (self.frame & 1) == 0;
         let (chunks_x, chunks_y) = self.chunks.dimensions();
         
         // Process chunks from bottom to top (for gravity)
         if self.gravity_y >= 0.0 {
             for cy in (0..chunks_y).rev() {
-                self.process_chunk_row(cy, chunks_x, go_right);
+                self.process_chunk_row(cy, chunks_x, go_right, dt);
             }
         } else {
             for cy in 0..chunks_y {
-                self.process_chunk_row(cy, chunks_x, go_right);
+                self.process_chunk_row(cy, chunks_x, go_right, dt);
             }
         }
         
@@ -9321,7 +12375,8 @@ impl World {
         
         // Temperature pass - run every other frame for performance
         // Lazy Hydration: now updates virtual_temp for sleeping chunks!
-        if self.frame % 2 == 0 {
+        const TEMP_STRIDE: u64 = (2 * SUBSTEPS) as u64;
+        if self.frame % TEMP_STRIDE == 0 {
             process_temperature_grid_chunked(
                 &mut self.grid,
                 &mut self.chunks,  // Now mutable for virtual_temp updates
@@ -9367,6 +12422,68 @@ impl World {
             for i in 0..count {
                 let (from_x, from_y, to_x, to_y) = *moves_ptr.add(i);
                 self.chunks.move_particle(from_x, from_y, to_x, to_y);
+            }
+        }
+    }
+    
+    /// Phase 2: Process physics for all particles in active chunks
+    /// Applies gravity and velocity-based movement
+    /// 
+    /// CRITICAL: Processing order depends on gravity direction!
+    /// - Positive gravity (down): process bottom-to-top
+    /// - Negative gravity (up): process top-to-bottom
+    fn process_physics(&mut self, dt: f32) {
+        let (chunks_x, chunks_y) = self.chunks.dimensions();
+        let gravity_y = self.gravity_y;
+        
+        // Choose processing order based on gravity direction
+        if gravity_y >= 0.0 {
+            // Positive gravity: particles fall DOWN → process bottom-to-top
+            for cy in (0..chunks_y).rev() {
+                for cx in 0..chunks_x {
+                    self.process_physics_chunk(cx, cy, gravity_y, false, dt);
+                }
+            }
+        } else {
+            // Negative gravity: particles fly UP → process top-to-bottom
+            for cy in 0..chunks_y {
+                for cx in 0..chunks_x {
+                    self.process_physics_chunk(cx, cy, gravity_y, true, dt);
+                }
+            }
+        }
+    }
+    
+    /// Process physics for a single chunk
+    fn process_physics_chunk(&mut self, cx: u32, cy: u32, gravity_y: f32, top_to_bottom: bool, dt: f32) {
+        if self.chunks.is_sleeping(cx, cy) {
+            return;
+        }
+        
+        let start_x = cx * CHUNK_SIZE;
+        let start_y = cy * CHUNK_SIZE;
+        let end_x = (start_x + CHUNK_SIZE).min(self.grid.width());
+        let end_y = (start_y + CHUNK_SIZE).min(self.grid.height());
+        
+        if top_to_bottom {
+            // For negative gravity: process top-to-bottom
+            for y in start_y..end_y {
+                for x in start_x..end_x {
+                    let element = self.grid.get_type(x as i32, y as i32);
+                    if element != EL_EMPTY {
+                        update_particle_physics(&mut self.grid, &mut self.chunks, x, y, gravity_y, dt);
+                    }
+                }
+            }
+        } else {
+            // For positive gravity: process bottom-to-top
+            for y in (start_y..end_y).rev() {
+                for x in start_x..end_x {
+                    let element = self.grid.get_type(x as i32, y as i32);
+                    if element != EL_EMPTY {
+                        update_particle_physics(&mut self.grid, &mut self.chunks, x, y, gravity_y, dt);
+                    }
+                }
             }
         }
     }
@@ -9598,20 +12715,20 @@ impl World {
 // Private simulation methods
 impl World {
     /// Process a row of chunks
-    fn process_chunk_row(&mut self, cy: u32, chunks_x: u32, go_right: bool) {
+    fn process_chunk_row(&mut self, cy: u32, chunks_x: u32, go_right: bool, dt: f32) {
         if go_right {
             for cx in 0..chunks_x {
-                self.process_chunk(cx, cy, go_right);
+                self.process_chunk(cx, cy, go_right, dt);
             }
         } else {
             for cx in (0..chunks_x).rev() {
-                self.process_chunk(cx, cy, go_right);
+                self.process_chunk(cx, cy, go_right, dt);
             }
         }
     }
     
     /// Process a single chunk
-    fn process_chunk(&mut self, cx: u32, cy: u32, go_right: bool) {
+    fn process_chunk(&mut self, cx: u32, cy: u32, go_right: bool, dt: f32) {
         // Skip sleeping chunks with no activity
         if !self.chunks.should_process(cx, cy) {
             return;
@@ -9630,13 +12747,13 @@ impl World {
             for y in (start_y..end_y).rev() {
                 if go_right {
                     for x in start_x..end_x {
-                        if self.update_particle_chunked(x, y) {
+                        if self.update_particle_chunked(x, y, dt) {
                             had_movement = true;
                         }
                     }
                 } else {
                     for x in (start_x..end_x).rev() {
-                        if self.update_particle_chunked(x, y) {
+                        if self.update_particle_chunked(x, y, dt) {
                             had_movement = true;
                         }
                     }
@@ -9646,13 +12763,13 @@ impl World {
             for y in start_y..end_y {
                 if go_right {
                     for x in start_x..end_x {
-                        if self.update_particle_chunked(x, y) {
+                        if self.update_particle_chunked(x, y, dt) {
                             had_movement = true;
                         }
                     }
                 } else {
                     for x in (start_x..end_x).rev() {
-                        if self.update_particle_chunked(x, y) {
+                        if self.update_particle_chunked(x, y, dt) {
                             had_movement = true;
                         }
                     }
@@ -9666,7 +12783,7 @@ impl World {
     
     /// Update particle and return true if it moved
     /// PHASE 1: Optimized with unsafe access - coordinates are guaranteed valid by process_chunk bounds
-    fn update_particle_chunked(&mut self, x: u32, y: u32) -> bool {
+    fn update_particle_chunked(&mut self, x: u32, y: u32, _dt: f32) -> bool {
         // SAFETY: x,y are bounded by process_chunk's min() calls
         unsafe {
             // Fast type read without bounds check
@@ -9746,19 +12863,19 @@ impl World {
     }
     
     // Legacy method for compatibility
-    fn process_row(&mut self, y: u32, w: u32, go_right: bool) {
+    fn process_row(&mut self, y: u32, w: u32, go_right: bool, dt: f32) {
         if go_right {
             for x in 0..w {
-                self.update_particle(x, y);
+                self.update_particle(x, y, dt);
             }
         } else {
             for x in (0..w).rev() {
-                self.update_particle(x, y);
+                self.update_particle(x, y, dt);
             }
         }
     }
 
-    fn update_particle(&mut self, x: u32, y: u32) {
+    fn update_particle(&mut self, x: u32, y: u32, _dt: f32) {
         let xi = x as i32;
         let yi = y as i32;
         
@@ -9834,15 +12951,15 @@ impl World {
         let neighbor_type = self.grid.get_type(nx, ny);
         if neighbor_type == EL_EMPTY { return; }
         
-        // Check if there's a reaction
-        if let Some(reaction) = get_reaction(element, neighbor_type) {
-            // Roll the dice
-            // PHASE 1 OPT: fast-range reduction instead of % 100
-            let roll = ((xorshift32(&mut self.rng_state) as u64 * 100) >> 32) as u8;
+        // Phase 1: O(1) reaction lookup from LUT
+        if let Some(reaction) = self.reactions.get(element, neighbor_type) {
+            // Roll the dice (chance is 0-255 in new system)
+            let roll = (xorshift32(&mut self.rng_state) & 0xFF) as u8;
             if roll >= reaction.chance { return; }
             
-            // Apply the reaction
-            self.apply_reaction(x, y, nx as u32, ny as u32, reaction);
+            // Copy reaction to release the borrow before apply
+            let r = *reaction;
+            self.apply_reaction(x, y, nx as u32, ny as u32, &r);
         }
     }
     
@@ -9907,3 +13024,54 @@ impl World {
 }
 
 --- End of File: packages/engine/src/world.rs ---
+
+
+--- File: packages/engine-wasm/package.json ---
+
+{
+  "name": "particula-engine",
+  "type": "module",
+  "collaborators": [
+    "Particula Team"
+  ],
+  "description": "Physics engine for Particula sandbox simulation",
+  "version": "0.1.0",
+  "files": [
+    "particula_engine_bg.wasm",
+    "particula_engine.js",
+    "particula_engine.d.ts"
+  ],
+  "main": "particula_engine.js",
+  "types": "particula_engine.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
+
+--- End of File: packages/engine-wasm/package.json ---
+
+
+--- File: turbo.json ---
+
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["**/.env.*local"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "clean": {
+      "cache": false
+    }
+  }
+}
+
+--- End of File: turbo.json ---

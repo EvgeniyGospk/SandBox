@@ -1,6 +1,7 @@
 import { useToolStore } from '@/stores/toolStore'
 import { useSimulationStore } from '@/stores/simulationStore'
 import { resetCamera } from '@/components/Canvas'
+import * as SimulationController from '@/lib/engine/SimulationController'
 import { 
   Circle, 
   Square, 
@@ -141,23 +142,23 @@ export function TopToolbar() {
       <div className="flex items-center gap-1">
         <ToolButton
           icon={<Undo size={16} />}
-          onClick={() => console.log('Undo')}
+          onClick={() => SimulationController.undo()}
           tooltip="Undo"
         />
         <ToolButton
           icon={<Redo size={16} />}
-          onClick={() => console.log('Redo')}
+          onClick={() => SimulationController.redo()}
           tooltip="Redo"
         />
         <div className="w-px h-6 bg-border mx-1" />
         <ToolButton
           icon={<Save size={16} />}
-          onClick={() => console.log('Save')}
+          onClick={() => SimulationController.saveSnapshot()}
           tooltip="Save"
         />
         <ToolButton
           icon={<FolderOpen size={16} />}
-          onClick={() => console.log('Load')}
+          onClick={() => SimulationController.loadSnapshot()}
           tooltip="Load"
         />
       </div>

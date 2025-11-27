@@ -1,15 +1,16 @@
-//! LiquidBehavior - Pure dispersion-based liquid physics
+//! LiquidBehavior - Horizontal dispersion only
 //! 
-//! Port from: apps/web/src/lib/engine/behaviors/LiquidBehavior.ts
-//! PHASE 1: Optimized with unsafe access after bounds check
+//! Phase 2: Vertical movement handled by physics.rs
 //! 
 //! Philosophy:
 //! - No mass, no pressure formulas - just discrete particle movement
 //! - Liquids "scan & teleport" up to N cells horizontally (dispersion rate)
 //! - Prioritizes falling into holes/cliffs for waterfall effect
 //! - Heavier liquids can push lighter ones horizontally for level equalization
+//! 
+//! Phase 2: Vertical falling is now done by velocity-based physics
 
-use super::{Behavior, UpdateContext, get_random_dir, xorshift32};
+use super::{Behavior, UpdateContext, xorshift32};
 use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_LIQUID, CAT_GAS};
 
 /// Result of scanning a horizontal line
@@ -64,6 +65,9 @@ impl LiquidBehavior {
         let mut best_x = start_x;
         let mut found = false;
         let mut has_cliff = false;
+
+        let gy = if ctx.gravity_y > 0.0 { 1 } else if ctx.gravity_y < 0.0 { -1 } else { 0 };
+        let gravity_y = if gy == 0 { 1 } else { gy }; // default downward when zero
         
         for i in 1..=range {
             let tx = start_x + (dir * i);
@@ -79,7 +83,7 @@ impl LiquidBehavior {
                 found = true;
                 
                 // Check for cliff below (waterfall effect)
-                let below_y = y + 1;
+                let below_y = y + gravity_y;
                 if ctx.grid.in_bounds(tx, below_y) {
                     // SAFETY: We just checked in_bounds above
                     let below_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, below_y as u32) };
@@ -122,26 +126,64 @@ impl Behavior for LiquidBehavior {
         let xi = x as i32;
         let yi = y as i32;
         
-        // SAFETY: x,y come from update_particle_chunked which guarantees valid coords
         let element = unsafe { ctx.grid.get_type_unchecked(x, y) };
         if element == EL_EMPTY { return; }
         if (element as usize) >= ELEMENT_DATA.len() { return; }
         
         let props = &ELEMENT_DATA[element as usize];
         let density = props.density;
-        // Match TypeScript: props.dispersion || 5 (fallback to 5 if 0)
         let range = if props.dispersion > 0 { props.dispersion as i32 } else { 5 };
+
+        // Gravity direction (sign)
+        let gy = if ctx.gravity_y > 0.0 { 1 } else if ctx.gravity_y < 0.0 { -1 } else { 0 };
+        let gravity_y = if gy == 0 { 1 } else { gy }; // fallback to downwards when gravity is zero
         
-        let (dx1, dx2) = get_random_dir(ctx.frame, x);
+        // Phase 2: Check if we should do dispersion
+        // We disperse when:
+        // 1. At boundary in gravity direction
+        // 2. Blocked by solid/heavy particle in gravity direction
+        // 3. Has very low velocity (settled/resting state)
+        let adj_y = yi + gravity_y;
         
-        // --- 1. Gravity: Fall Down ---
-        if self.try_move(ctx, x, y, xi, yi + 1, density) { return; }
+        // Check velocity - if we have significant velocity in gravity direction, let physics handle it
+        let idx = ctx.grid.index(x, y);
+        let vy = ctx.grid.vy[idx];
+        let moving_in_gravity_dir = if gy > 0 { vy > 0.3 } else if gy < 0 { vy < -0.3 } else { false };
         
-        // --- 2. Gravity: Fall Diagonally ---
-        if self.try_move(ctx, x, y, xi + dx1, yi + 1, density) { return; }
-        if self.try_move(ctx, x, y, xi + dx2, yi + 1, density) { return; }
+        // If actively moving in gravity direction with velocity, skip dispersion - physics will handle it
+        if moving_in_gravity_dir {
+            return;
+        }
         
-        // --- 3. Dispersion: Scan & Teleport (EXACT TypeScript algorithm) ---
+        let blocked_in_gravity_dir = if !ctx.grid.in_bounds(xi, adj_y) {
+            true // boundary is blocking
+        } else {
+            let adj_type = unsafe { ctx.grid.get_type_unchecked(x, adj_y as u32) };
+            // Blocked if cell in gravity direction is occupied (not empty)
+            adj_type != EL_EMPTY
+        };
+        
+        // If not blocked and not moving, still try dispersion (particle might be settling)
+        // This fixes the issue where particles wait for physics when they should spread
+        if !blocked_in_gravity_dir {
+            // Check if there's a "cliff" nearby - empty space in gravity direction at neighboring X
+            // If so, we should still try to spread towards it
+            let has_nearby_cliff = {
+                let left_cliff = if ctx.grid.in_bounds(xi - 1, adj_y) {
+                    unsafe { ctx.grid.get_type_unchecked((x - 1) as u32, adj_y as u32) == EL_EMPTY }
+                } else { false };
+                let right_cliff = if ctx.grid.in_bounds(xi + 1, adj_y) {
+                    unsafe { ctx.grid.get_type_unchecked((x + 1) as u32, adj_y as u32) == EL_EMPTY }
+                } else { false };
+                left_cliff || right_cliff
+            };
+            
+            if !has_nearby_cliff {
+                return;
+            }
+        }
+        
+        // --- Dispersion: Scan & Teleport (EXACT TypeScript algorithm) ---
         let left_target = self.scan_line(ctx, xi, yi, -1, range, density);
         let right_target = self.scan_line(ctx, xi, yi, 1, range, density);
         
@@ -152,7 +194,6 @@ impl Behavior for LiquidBehavior {
             } else if !left_target.has_cliff && right_target.has_cliff {
                 right_target.x
             } else {
-                // Both have space - random choice (using frame + x for determinism)
                 let rand = xorshift32(ctx.rng);
                 if rand & 1 == 0 { left_target.x } else { right_target.x }
             }
@@ -161,11 +202,10 @@ impl Behavior for LiquidBehavior {
         } else if right_target.found {
             right_target.x
         } else {
-            xi // No movement
+            xi
         };
         
         if target_x != xi {
-            // SAFETY: target_x comes from scan_line which verified bounds
             unsafe { ctx.grid.swap_unchecked(x, y, target_x as u32, y); }
         }
     }

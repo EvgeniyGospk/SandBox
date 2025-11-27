@@ -4,6 +4,8 @@ import { useToolStore } from '@/stores/toolStore'
 import { WorkerBridge, isWorkerSupported } from '@/lib/engine/WorkerBridge'
 import { WasmParticleEngine } from '@/lib/engine'
 import { screenToWorld as invertTransform, solvePanForZoom } from '@/lib/engine/transform'
+import { ELEMENT_ID_TO_NAME } from '@/lib/engine/generated_elements'
+import * as SimulationController from '@/lib/engine/SimulationController'
 
 // Global bridge for external access (reset, etc.)
 let globalBridge: WorkerBridge | null = null
@@ -54,7 +56,15 @@ export function Canvas() {
   
   // FIX 2: Достаем renderMode из стора
   const { isPlaying, speed, gravity, ambientTemperature, renderMode, setFps, setParticleCount } = useSimulationStore()
-  const { selectedElement, brushSize, selectedTool } = useToolStore()
+  const { 
+    selectedElement, 
+    brushSize, 
+    brushShape, 
+    selectedTool,
+    rigidBodyShape,
+    rigidBodySize,
+    rigidBodyElement,
+  } = useToolStore()
 
   // Register callbacks
   useEffect(() => {
@@ -149,6 +159,12 @@ export function Canvas() {
       bridge.onError = (msg) => {
         console.error('Worker error:', msg)
         // Fall back to main thread mode
+        setUseWorker(false)
+        initFallbackEngine(canvas, width, height)
+      }
+      
+      bridge.onCrash = (msg) => {
+        console.error('Worker crash:', msg)
         setUseWorker(false)
         initFallbackEngine(canvas, width, height)
       }
@@ -306,18 +322,53 @@ export function Canvas() {
       
       bridgeRef.current.setTransform(cam.zoom, cam.x, cam.y)
 
-      // Worker mode: send screen coordinates, worker converts to world
-      bridgeRef.current.handleInput(screenX, screenY, radius, selectedElement, selectedTool)
+      // Fill is one-shot, handle separately
+      if (selectedTool === 'fill') {
+        bridgeRef.current.fill(screenX, screenY, selectedElement)
+      } else if (selectedTool === 'rigid_body') {
+        // Rigid body placement - convert to world coords and spawn
+        const worldPos = screenToWorld(screenX, screenY)
+        bridgeRef.current.spawnRigidBody(
+          worldPos.x, 
+          worldPos.y, 
+          rigidBodySize, 
+          rigidBodyShape, 
+          rigidBodyElement
+        )
+      } else {
+        // Worker mode: send screen coordinates, worker converts to world
+        bridgeRef.current.handleInput(screenX, screenY, radius, selectedElement, selectedTool as any, brushShape)
+      }
     } else if (engineRef.current) {
       // Fallback: convert to world and call engine
       const worldPos = screenToWorld(screenX, screenY)
       if (selectedTool === 'eraser') {
         engineRef.current.removeParticlesInRadius(worldPos.x, worldPos.y, radius)
       } else if (selectedTool === 'brush') {
-        engineRef.current.addParticlesInRadius(worldPos.x, worldPos.y, radius, selectedElement)
+        if (brushShape === 'square') {
+          const half = Math.max(1, radius)
+          for (let dy = -half; dy <= half; dy++) {
+            for (let dx = -half; dx <= half; dx++) {
+              engineRef.current.addParticlesInRadius(worldPos.x + dx, worldPos.y + dy, 1, selectedElement)
+            }
+          }
+        } else if (brushShape === 'line') {
+          engineRef.current.addParticlesInRadius(worldPos.x, worldPos.y, radius, selectedElement)
+        } else {
+          engineRef.current.addParticlesInRadius(worldPos.x, worldPos.y, radius, selectedElement)
+        }
+      } else if (selectedTool === 'fill') {
+        engineRef.current.floodFill(worldPos.x, worldPos.y, selectedElement)
+      } else if (selectedTool === 'rigid_body') {
+        // Spawn rigid body in fallback mode
+        if (rigidBodyShape === 'circle') {
+          engineRef.current.spawnRigidCircle(worldPos.x, worldPos.y, Math.floor(rigidBodySize / 2), rigidBodyElement)
+        } else {
+          engineRef.current.spawnRigidBody(worldPos.x, worldPos.y, rigidBodySize, rigidBodySize, rigidBodyElement)
+        }
       }
     }
-  }, [brushSize, selectedElement, selectedTool, screenToWorld])
+  }, [brushSize, brushShape, selectedElement, selectedTool, screenToWorld, rigidBodyShape, rigidBodySize, rigidBodyElement])
 
   // Zoom handler - uses native event (not React) to allow preventDefault
   const handleWheel = useCallback((e: WheelEvent) => {
@@ -368,10 +419,27 @@ export function Canvas() {
     const pos = getCanvasPosition(e)
     lastMousePos.current = { x: e.clientX, y: e.clientY }
 
+    // Capture snapshot for undo before mutation
+    SimulationController.captureSnapshotForUndo()
+
     // Pan mode
     if (selectedTool === 'move' || e.button === 1) {
       isDragging.current = true
       e.preventDefault()
+      return
+    }
+
+    // Pipette
+    if (selectedTool === 'pipette') {
+      if (bridgeRef.current) {
+        bridgeRef.current.pipette(pos.x, pos.y)
+          .then((el) => { if (el) useToolStore.getState().setElement(el) })
+      } else if (engineRef.current) {
+        const world = screenToWorld(pos.x, pos.y)
+        const elId = engineRef.current.getElementAt(world.x, world.y)
+        const el = ELEMENT_ID_TO_NAME[elId] ?? null
+        if (el) useToolStore.getState().setElement(el)
+      }
       return
     }
 
