@@ -1,10 +1,25 @@
 import { useState } from 'react'
-import { useSimulationStore } from '@/stores/simulationStore'
+import { useSimulationStore, WORLD_SIZE_PRESETS, type WorldSizePreset } from '@/stores/simulationStore'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
+
+const WORLD_SIZE_LABELS: Record<WorldSizePreset, string> = {
+  tiny: 'Tiny (256×192)',
+  small: 'Small (512×384)',
+  medium: 'Medium (768×576)',
+  large: 'Large (1024×768)',
+  full: 'Full (Viewport)',
+}
 
 export function RightPanel() {
   const [isCollapsed, setIsCollapsed] = useState(false)
-  const { gravity, ambientTemperature, setGravity, setAmbientTemperature } = useSimulationStore()
+  const { 
+    gravity, 
+    ambientTemperature, 
+    worldSizePreset,
+    setGravity, 
+    setAmbientTemperature,
+    setWorldSizePreset,
+  } = useSimulationStore()
 
   if (isCollapsed) {
     return (
@@ -34,6 +49,30 @@ export function RightPanel() {
 
       {/* Settings */}
       <div className="flex-1 overflow-y-auto p-4 space-y-5">
+        {/* World Size */}
+        <div className="space-y-2">
+          <label className="text-sm text-[#A0A0A0] font-medium">World Size</label>
+          <select
+            value={worldSizePreset}
+            onChange={(e) => setWorldSizePreset(e.target.value as WorldSizePreset)}
+            className="w-full px-3 py-2 bg-[#252525] border border-[#333] rounded-lg
+                       text-sm text-white focus:outline-none focus:border-[#3B82F6]
+                       cursor-pointer"
+          >
+            {(Object.keys(WORLD_SIZE_PRESETS) as WorldSizePreset[]).map((preset) => (
+              <option key={preset} value={preset}>
+                {WORLD_SIZE_LABELS[preset]}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-[#666]">
+            Smaller world = more FPS. Clears simulation.
+          </p>
+        </div>
+
+        {/* Divider */}
+        <div className="h-px bg-[#333]" />
+
         {/* Gravity */}
         <div className="space-y-2">
           <label className="text-sm text-[#A0A0A0] font-medium">Gravity</label>

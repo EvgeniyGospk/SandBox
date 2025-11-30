@@ -8,7 +8,8 @@
 /// Chunk size in pixels (32x32 is cache-friendly)
 pub const CHUNK_SIZE: u32 = 32;
 
-/// Number of frames before a chunk goes to sleep
+/// Number of frames before an EMPTY chunk goes to sleep
+/// Only empty chunks can sleep - chunks with particles must always be processed
 const SLEEP_THRESHOLD: u32 = 60;
 
 /// Chunk state
@@ -43,6 +44,10 @@ pub struct ChunkGrid {
     
     // Legacy compatibility (world.rs uses visual_dirty[idx])
     pub visual_dirty: Vec<bool>,
+
+    // Perf counters (reset each frame)
+    pub woke_this_frame: u32,
+    pub slept_this_frame: u32,
 }
 
 impl ChunkGrid {
@@ -70,6 +75,8 @@ impl ChunkGrid {
             just_woke_up: vec![false; chunk_count],
             // Legacy compatibility
             visual_dirty: vec![true; chunk_count],
+            woke_this_frame: 0,
+            slept_this_frame: 0,
         }
     }
     
@@ -142,16 +149,18 @@ impl ChunkGrid {
     pub fn mark_dirty_idx(&mut self, idx: usize) {
         if idx >= self.chunk_count { return; }
         
+        // Only reset idle_frames when WAKING a sleeping chunk
+        // For already-active chunks, idle_frames is managed by end_chunk_update
         if self.state[idx] == ChunkState::Sleeping {
             self.just_woke_up[idx] = true;
+            self.woke_this_frame = self.woke_this_frame.saturating_add(1);
+            self.idle_frames[idx] = 0;
+            self.state[idx] = ChunkState::Active;
         }
         
         Self::set_bit(&mut self.dirty_bits, idx);
         Self::set_bit(&mut self.visual_dirty_bits, idx);
         self.visual_dirty[idx] = true; // Legacy compatibility
-        
-        self.idle_frames[idx] = 0;
-        self.state[idx] = ChunkState::Active;
     }
     
     /// Check if chunk needs processing (BitSet)
@@ -169,10 +178,12 @@ impl ChunkGrid {
     }
     
     /// Should we process this chunk? (BitSet version)
+    /// Only process chunks that are explicitly marked dirty
+    /// Active state just means "not sleeping", it doesn't force processing
     #[inline]
     pub fn should_process(&self, cx: u32, cy: u32) -> bool {
         let idx = self.chunk_idx_from_coords(cx, cy);
-        Self::check_bit(&self.dirty_bits, idx) || self.particle_count[idx] > 0
+        Self::check_bit(&self.dirty_bits, idx)
     }
     
     // === Wake neighbors ===
@@ -294,10 +305,9 @@ impl ChunkGrid {
             }
             self.particle_count[to_idx] += 1;
             self.mark_dirty_idx(to_idx);
+            // Only wake neighbors when actually crossing boundary
+            self.wake_neighbors(to_x, to_y);
         }
-        
-        // Wake neighbors at destination
-        self.wake_neighbors(to_x, to_y);
     }
     
     // === Frame update ===
@@ -306,11 +316,17 @@ impl ChunkGrid {
     pub fn begin_frame(&mut self) {
         // Dirty flags are preserved from previous frame
         // They get cleared as chunks are processed
+        self.woke_this_frame = 0;
+        self.slept_this_frame = 0;
     }
     
     /// Called after processing a chunk (BitSet version)
+    /// 
+    /// CRITICAL: Chunks with particles NEVER sleep!
+    /// Only truly empty chunks (particle_count == 0) can go to sleep.
     pub fn end_chunk_update(&mut self, cx: u32, cy: u32, had_movement: bool) {
         let idx = self.chunk_idx_from_coords(cx, cy);
+        let has_particles = self.particle_count[idx] > 0;
         
         if had_movement {
             self.idle_frames[idx] = 0;
@@ -318,19 +334,29 @@ impl ChunkGrid {
             Self::set_bit(&mut self.visual_dirty_bits, idx);
             self.visual_dirty[idx] = true; // Legacy
             
-            // Wake chunk below (particles fall)
+            // Wake chunk below ONLY if it has particles (to catch falling particles)
+            // Don't wake empty chunks - this prevents cascade wakeups
             if cy + 1 < self.chunks_y {
                 let below_idx = self.chunk_idx_from_coords(cx, cy + 1);
-                Self::set_bit(&mut self.dirty_bits, below_idx);
-                Self::set_bit(&mut self.visual_dirty_bits, below_idx);
-                self.visual_dirty[below_idx] = true;
-                self.state[below_idx] = ChunkState::Active;
-                self.idle_frames[below_idx] = 0;
+                if self.particle_count[below_idx] > 0 || self.state[below_idx] == ChunkState::Sleeping {
+                    // Only set dirty bit, don't force Active state
+                    Self::set_bit(&mut self.dirty_bits, below_idx);
+                }
             }
         } else {
-            self.idle_frames[idx] += 1;
-            if self.idle_frames[idx] >= SLEEP_THRESHOLD && self.particle_count[idx] == 0 {
-                self.state[idx] = ChunkState::Sleeping;
+            // CRITICAL: Only EMPTY chunks can sleep!
+            // Chunks with particles must always be processed for temperature, reactions, etc.
+            if has_particles {
+                // Has particles - stay active, don't increment idle counter
+                self.idle_frames[idx] = 0;
+                self.state[idx] = ChunkState::Active;
+            } else {
+                // Empty chunk - can potentially sleep after threshold
+                self.idle_frames[idx] += 1;
+                if self.idle_frames[idx] >= SLEEP_THRESHOLD {
+                    self.state[idx] = ChunkState::Sleeping;
+                    self.slept_this_frame = self.slept_this_frame.saturating_add(1);
+                }
             }
         }
         
@@ -410,6 +436,11 @@ impl ChunkGrid {
     pub fn total_chunks(&self) -> usize {
         self.chunk_count
     }
+
+    /// Expose particle counts for diagnostics
+    pub fn particle_counts(&self) -> &[u32] {
+        &self.particle_count
+    }
     
     /// Get chunks dimensions
     pub fn dimensions(&self) -> (u32, u32) {
@@ -419,10 +450,16 @@ impl ChunkGrid {
 
 impl ChunkGrid {
     /// Get iterator over chunks that should be processed (BitSet version)
+    /// 
+    /// CRITICAL: Chunks with particles are ALWAYS processed!
+    /// - dirty_bits set → process (something changed)
+    /// - particle_count > 0 → process (for temperature, reactions, gravity)
+    /// - Only truly empty, non-dirty chunks can be skipped
     pub fn active_chunks(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         let chunks_x = self.chunks_x;
         (0..self.chunk_count).filter_map(move |idx| {
-            if Self::check_bit(&self.dirty_bits, idx) || (self.particle_count[idx] > 0 && self.state[idx] == ChunkState::Active) {
+            // Process if dirty OR has particles (regardless of sleep state!)
+            if Self::check_bit(&self.dirty_bits, idx) || self.particle_count[idx] > 0 {
                 let cx = (idx as u32) % chunks_x;
                 let cy = (idx as u32) / chunks_x;
                 Some((cx, cy))

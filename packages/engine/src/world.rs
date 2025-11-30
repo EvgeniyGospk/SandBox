@@ -12,18 +12,258 @@
 //! Chunk optimization in chunks.rs
 
 use wasm_bindgen::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use js_sys;
 use crate::grid::Grid;
 use crate::chunks::{ChunkGrid, CHUNK_SIZE, MergedDirtyRects};
 use crate::elements::{
     ELEMENT_DATA, ElementId, EL_EMPTY, ELEMENT_COUNT,
-    get_color_with_variation, get_props
+    get_color_with_variation, get_props, CAT_SOLID, CAT_POWDER, CAT_LIQUID, CAT_GAS, CAT_ENERGY, CAT_UTILITY, CAT_BIO
 };
 use crate::behaviors::{BehaviorRegistry, UpdateContext};
 use crate::reactions::{Reaction, ReactionSystem};
 use crate::temperature::process_temperature_grid_chunked;
-use crate::physics::update_particle_physics;
+use crate::physics::{update_particle_physics, reset_physics_perf_counters, take_physics_perf_counters};
 use crate::rigid_body::RigidBody;
 use crate::rigid_body_system::RigidBodySystem;
+use crate::behaviors::{reset_liquid_scan_counter, take_liquid_scan_counter};
+use crate::temperature::{reset_phase_change_counter, take_phase_change_counter};
+
+// Lightweight timer that works both in wasm and native
+#[derive(Clone, Copy)]
+struct PerfTimer {
+    #[cfg(target_arch = "wasm32")]
+    start_ms: f64,
+    #[cfg(not(target_arch = "wasm32"))]
+    start: std::time::Instant,
+}
+
+impl PerfTimer {
+    fn start() -> Self {
+        #[cfg(target_arch = "wasm32")]
+        {
+            PerfTimer { start_ms: js_sys::Date::now() }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            PerfTimer { start: std::time::Instant::now() }
+        }
+    }
+
+    fn elapsed_ms(&self) -> f64 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            js_sys::Date::now() - self.start_ms
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.start.elapsed().as_secs_f64() * 1000.0
+        }
+    }
+}
+
+/// Per-step performance snapshot (filled only when perf metrics are enabled)
+#[wasm_bindgen]
+#[derive(Clone)]
+pub struct PerfStats {
+    step_ms: f64,
+    hydrate_ms: f64,
+    rigid_ms: f64,
+    physics_ms: f64,
+    chunks_ms: f64,
+    apply_moves_ms: f64,
+    temperature_ms: f64,
+    powder_ms: f64,
+    liquid_ms: f64,
+    gas_ms: f64,
+    energy_ms: f64,
+    utility_ms: f64,
+    bio_ms: f64,
+    particles_processed: u32,
+    particles_moved: u32,
+    reactions_checked: u32,
+    reactions_applied: u32,
+    temp_cells: u32,
+    simd_air_cells: u32,
+    phase_changes: u32,
+    liquid_scans: u32,
+    physics_calls: u32,
+    raycast_steps_total: u32,
+    raycast_collisions: u32,
+    raycast_speed_max: f32,
+    non_empty_cells: u32,
+    chunk_particle_sum: u32,
+    chunk_particle_max: u32,
+    behavior_calls: u32,
+    behavior_powder: u32,
+    behavior_liquid: u32,
+    behavior_gas: u32,
+    behavior_energy: u32,
+    behavior_utility: u32,
+    behavior_bio: u32,
+    move_buffer_overflows: u32,
+    move_buffer_usage: f32,
+    chunks_woken: u32,
+    chunks_slept: u32,
+    memory_bytes: u32,
+    grid_size: u32,
+    active_chunks: u32,
+    dirty_chunks: u32,
+    pending_moves: u32,
+    particle_count: u32,
+}
+
+impl PerfStats {
+    fn reset(&mut self) {
+        *self = PerfStats::default();
+    }
+}
+
+impl Default for PerfStats {
+    fn default() -> Self {
+        PerfStats {
+            step_ms: 0.0,
+            hydrate_ms: 0.0,
+            rigid_ms: 0.0,
+            physics_ms: 0.0,
+            chunks_ms: 0.0,
+            apply_moves_ms: 0.0,
+            temperature_ms: 0.0,
+            powder_ms: 0.0,
+            liquid_ms: 0.0,
+            gas_ms: 0.0,
+            energy_ms: 0.0,
+            utility_ms: 0.0,
+            bio_ms: 0.0,
+            particles_processed: 0,
+            particles_moved: 0,
+            reactions_checked: 0,
+            reactions_applied: 0,
+            temp_cells: 0,
+            simd_air_cells: 0,
+            phase_changes: 0,
+            liquid_scans: 0,
+            physics_calls: 0,
+            raycast_steps_total: 0,
+            raycast_collisions: 0,
+            raycast_speed_max: 0.0,
+            non_empty_cells: 0,
+            chunk_particle_sum: 0,
+            chunk_particle_max: 0,
+            behavior_calls: 0,
+            behavior_powder: 0,
+            behavior_liquid: 0,
+            behavior_gas: 0,
+            behavior_energy: 0,
+            behavior_utility: 0,
+            behavior_bio: 0,
+            move_buffer_overflows: 0,
+            move_buffer_usage: 0.0,
+            chunks_woken: 0,
+            chunks_slept: 0,
+            memory_bytes: 0,
+            grid_size: 0,
+            active_chunks: 0,
+            dirty_chunks: 0,
+            pending_moves: 0,
+            particle_count: 0,
+        }
+    }
+}
+
+#[wasm_bindgen]
+impl PerfStats {
+    #[wasm_bindgen(getter)]
+    pub fn step_ms(&self) -> f64 { self.step_ms }
+    #[wasm_bindgen(getter)]
+    pub fn hydrate_ms(&self) -> f64 { self.hydrate_ms }
+    #[wasm_bindgen(getter)]
+    pub fn rigid_ms(&self) -> f64 { self.rigid_ms }
+    #[wasm_bindgen(getter)]
+    pub fn physics_ms(&self) -> f64 { self.physics_ms }
+    #[wasm_bindgen(getter)]
+    pub fn chunks_ms(&self) -> f64 { self.chunks_ms }
+    #[wasm_bindgen(getter)]
+    pub fn apply_moves_ms(&self) -> f64 { self.apply_moves_ms }
+    #[wasm_bindgen(getter)]
+    pub fn temperature_ms(&self) -> f64 { self.temperature_ms }
+    #[wasm_bindgen(getter)]
+    pub fn powder_ms(&self) -> f64 { self.powder_ms }
+    #[wasm_bindgen(getter)]
+    pub fn liquid_ms(&self) -> f64 { self.liquid_ms }
+    #[wasm_bindgen(getter)]
+    pub fn gas_ms(&self) -> f64 { self.gas_ms }
+    #[wasm_bindgen(getter)]
+    pub fn energy_ms(&self) -> f64 { self.energy_ms }
+    #[wasm_bindgen(getter)]
+    pub fn utility_ms(&self) -> f64 { self.utility_ms }
+    #[wasm_bindgen(getter)]
+    pub fn bio_ms(&self) -> f64 { self.bio_ms }
+    #[wasm_bindgen(getter)]
+    pub fn particles_processed(&self) -> u32 { self.particles_processed }
+    #[wasm_bindgen(getter)]
+    pub fn particles_moved(&self) -> u32 { self.particles_moved }
+    #[wasm_bindgen(getter)]
+    pub fn reactions_checked(&self) -> u32 { self.reactions_checked }
+    #[wasm_bindgen(getter)]
+    pub fn reactions_applied(&self) -> u32 { self.reactions_applied }
+    #[wasm_bindgen(getter)]
+    pub fn temp_cells(&self) -> u32 { self.temp_cells }
+    #[wasm_bindgen(getter)]
+    pub fn simd_air_cells(&self) -> u32 { self.simd_air_cells }
+    #[wasm_bindgen(getter)]
+    pub fn phase_changes(&self) -> u32 { self.phase_changes }
+    #[wasm_bindgen(getter)]
+    pub fn liquid_scans(&self) -> u32 { self.liquid_scans }
+    #[wasm_bindgen(getter)]
+    pub fn physics_calls(&self) -> u32 { self.physics_calls }
+    #[wasm_bindgen(getter)]
+    pub fn raycast_steps_total(&self) -> u32 { self.raycast_steps_total }
+    #[wasm_bindgen(getter)]
+    pub fn raycast_collisions(&self) -> u32 { self.raycast_collisions }
+    #[wasm_bindgen(getter)]
+    pub fn raycast_speed_max(&self) -> f32 { self.raycast_speed_max }
+    #[wasm_bindgen(getter)]
+    pub fn non_empty_cells(&self) -> u32 { self.non_empty_cells }
+    #[wasm_bindgen(getter)]
+    pub fn chunk_particle_sum(&self) -> u32 { self.chunk_particle_sum }
+    #[wasm_bindgen(getter)]
+    pub fn chunk_particle_max(&self) -> u32 { self.chunk_particle_max }
+    #[wasm_bindgen(getter)]
+    pub fn behavior_calls(&self) -> u32 { self.behavior_calls }
+    #[wasm_bindgen(getter)]
+    pub fn behavior_powder(&self) -> u32 { self.behavior_powder }
+    #[wasm_bindgen(getter)]
+    pub fn behavior_liquid(&self) -> u32 { self.behavior_liquid }
+    #[wasm_bindgen(getter)]
+    pub fn behavior_gas(&self) -> u32 { self.behavior_gas }
+    #[wasm_bindgen(getter)]
+    pub fn behavior_energy(&self) -> u32 { self.behavior_energy }
+    #[wasm_bindgen(getter)]
+    pub fn behavior_utility(&self) -> u32 { self.behavior_utility }
+    #[wasm_bindgen(getter)]
+    pub fn behavior_bio(&self) -> u32 { self.behavior_bio }
+    #[wasm_bindgen(getter)]
+    pub fn move_buffer_overflows(&self) -> u32 { self.move_buffer_overflows }
+    #[wasm_bindgen(getter)]
+    pub fn move_buffer_usage(&self) -> f32 { self.move_buffer_usage }
+    #[wasm_bindgen(getter)]
+    pub fn chunks_woken(&self) -> u32 { self.chunks_woken }
+    #[wasm_bindgen(getter)]
+    pub fn chunks_slept(&self) -> u32 { self.chunks_slept }
+    #[wasm_bindgen(getter)]
+    pub fn memory_bytes(&self) -> u32 { self.memory_bytes }
+    #[wasm_bindgen(getter)]
+    pub fn grid_size(&self) -> u32 { self.grid_size }
+    #[wasm_bindgen(getter)]
+    pub fn active_chunks(&self) -> u32 { self.active_chunks }
+    #[wasm_bindgen(getter)]
+    pub fn dirty_chunks(&self) -> u32 { self.dirty_chunks }
+    #[wasm_bindgen(getter)]
+    pub fn pending_moves(&self) -> u32 { self.pending_moves }
+    #[wasm_bindgen(getter)]
+    pub fn particle_count(&self) -> u32 { self.particle_count }
+}
 
 /// Random number generator (xorshift32)
 #[inline]
@@ -62,6 +302,11 @@ pub struct World {
     // Phase 2: Merged dirty rectangles for GPU batching
     merged_rects: MergedDirtyRects,
     rect_transfer_buffer: Vec<u32>, // Larger buffer for merged rect extraction
+
+    // Perf metrics
+    perf_enabled: bool,
+    perf_stats: PerfStats,
+    perf_stats_last_speed_max: f32,
 }
 
 #[wasm_bindgen]
@@ -88,6 +333,10 @@ impl World {
             // Phase 2: GPU Batching
             merged_rects: MergedDirtyRects::new(500), // Max 500 rectangles
             rect_transfer_buffer: vec![0u32; (CHUNK_SIZE * CHUNK_SIZE * 16) as usize], // Max 4x4 chunks = 128x128 pixels
+
+            perf_enabled: false,
+            perf_stats: PerfStats::default(),
+            perf_stats_last_speed_max: 0.0,
         }
     }
 
@@ -102,6 +351,16 @@ impl World {
 
     #[wasm_bindgen(getter)]
     pub fn frame(&self) -> u64 { self.frame }
+
+    /// Enable or disable per-step perf metrics (adds timing overhead when enabled)
+    pub fn enable_perf_metrics(&mut self, enabled: bool) {
+        self.perf_enabled = enabled;
+    }
+
+    /// Get last step perf snapshot (zeros when perf disabled)
+    pub fn get_perf_stats(&self) -> PerfStats {
+        self.perf_stats.clone()
+    }
 
     pub fn set_gravity(&mut self, x: f32, y: f32) {
         // Phase 2: Use actual gravity values for velocity-based physics
@@ -243,53 +502,171 @@ impl World {
     /// Phase 4: Only process active chunks!
     /// Phase 2: Newtonian physics with velocity
     pub fn step(&mut self) {
+        let perf_on = self.perf_enabled;
+        if perf_on {
+            self.perf_stats.reset();
+            self.perf_stats_last_speed_max = 0.0;
+            // Snapshot pre-step counts
+            self.perf_stats.active_chunks = self.chunks.active_chunk_count() as u32;
+            self.perf_stats.dirty_chunks = self.chunks.dirty_chunk_count() as u32;
+            self.perf_stats.pending_moves = self.grid.pending_moves.count as u32;
+            self.perf_stats.particle_count = self.particle_count;
+            self.perf_stats.grid_size = self.grid.size() as u32;
+            // rough memory estimate of SoA arrays (bytes)
+            self.perf_stats.memory_bytes = (self.grid.size() as u32)
+                .saturating_mul(20); // types(1)+colors(4)+life(2)+updated(1)+temp(4)+vx(4)+vy(4)
+            reset_physics_perf_counters();
+            reset_liquid_scan_counter();
+            reset_phase_change_counter();
+        }
+        let step_start = if perf_on { Some(PerfTimer::start()) } else { None };
+
         // === LAZY HYDRATION: Process waking chunks ===
         // When a chunk transitions Sleep -> Active, we need to fill its air cells
         // with the current virtual_temp (which has been smoothly animating)
-        self.hydrate_waking_chunks();
+        if perf_on {
+            let t0 = PerfTimer::start();
+            self.hydrate_waking_chunks();
+            self.perf_stats.hydrate_ms = t0.elapsed_ms();
+        } else {
+            self.hydrate_waking_chunks();
+        }
         
         // Reset updated flags and clear move tracking
         self.grid.reset_updated();
         self.grid.clear_moves();
+        // Refresh sparse markers for rows/chunks (keeps skips accurate)
+        self.grid.refresh_chunk_bits();
         
         // Phase 4: Begin frame for chunk tracking
         self.chunks.begin_frame();
         
         // === RIGID BODY PHYSICS ===
         // Update rigid bodies BEFORE particle physics so particles can react to new body positions
-        self.rigid_bodies.update(&mut self.grid, &mut self.chunks, self.gravity_y);
+        if perf_on {
+            let t0 = PerfTimer::start();
+            self.rigid_bodies.update(&mut self.grid, &mut self.chunks, self.gravity_y);
+            self.perf_stats.rigid_ms = t0.elapsed_ms();
+        } else {
+            self.rigid_bodies.update(&mut self.grid, &mut self.chunks, self.gravity_y);
+        }
         
         // === PHASE 2: PHYSICS PASS ===
         // Apply gravity and velocity-based movement BEFORE behavior pass
-        self.process_physics();
+        if perf_on {
+            let t0 = PerfTimer::start();
+            self.process_physics();
+            self.perf_stats.physics_ms = t0.elapsed_ms();
+        } else {
+            self.process_physics();
+        }
         
         let go_right = (self.frame & 1) == 0;
         let (chunks_x, chunks_y) = self.chunks.dimensions();
         
-        // Process chunks from bottom to top (for gravity)
-        if self.gravity_y >= 0.0 {
-            for cy in (0..chunks_y).rev() {
-                self.process_chunk_row(cy, chunks_x, go_right);
+        if perf_on {
+            let t0 = PerfTimer::start();
+            // Process chunks from bottom to top (for gravity)
+            if self.gravity_y >= 0.0 {
+                for cy in (0..chunks_y).rev() {
+                    self.process_chunk_row(cy, chunks_x, go_right);
+                }
+            } else {
+                for cy in 0..chunks_y {
+                    self.process_chunk_row(cy, chunks_x, go_right);
+                }
             }
+            self.perf_stats.chunks_ms = t0.elapsed_ms();
         } else {
-            for cy in 0..chunks_y {
-                self.process_chunk_row(cy, chunks_x, go_right);
+            // Process chunks from bottom to top (for gravity)
+            if self.gravity_y >= 0.0 {
+                for cy in (0..chunks_y).rev() {
+                    self.process_chunk_row(cy, chunks_x, go_right);
+                }
+            } else {
+                for cy in 0..chunks_y {
+                    self.process_chunk_row(cy, chunks_x, go_right);
+                }
             }
         }
         
         // Phase 4.1: Apply recorded moves to chunk system
-        self.apply_pending_moves();
+        if perf_on {
+            let t0 = PerfTimer::start();
+            self.apply_pending_moves();
+            self.perf_stats.apply_moves_ms = t0.elapsed_ms();
+        } else {
+            self.apply_pending_moves();
+        }
         
-        // Temperature pass - run every other frame for performance
+        // Temperature pass - run every 4th frame for performance
         // Lazy Hydration: now updates virtual_temp for sleeping chunks!
-        if self.frame % 2 == 0 {
-            process_temperature_grid_chunked(
-                &mut self.grid,
-                &mut self.chunks,  // Now mutable for virtual_temp updates
-                self.ambient_temperature,
-                self.frame,
-                &mut self.rng_state
-            );
+        // PERF: Use bitwise AND instead of modulo (4x less temperature updates)
+        if self.frame & 3 == 0 {
+            if perf_on {
+                let t0 = PerfTimer::start();
+                let (temp_processed, air_processed) = process_temperature_grid_chunked(
+                    &mut self.grid,
+                    &mut self.chunks,  // Now mutable for virtual_temp updates
+                    self.ambient_temperature,
+                    self.frame,
+                    &mut self.rng_state
+                );
+                self.perf_stats.temperature_ms = t0.elapsed_ms();
+                self.perf_stats.temp_cells = temp_processed;
+                self.perf_stats.simd_air_cells = air_processed;
+            } else {
+                process_temperature_grid_chunked(
+                    &mut self.grid,
+                    &mut self.chunks,  // Now mutable for virtual_temp updates
+                    self.ambient_temperature,
+                    self.frame,
+                    &mut self.rng_state
+                );
+            }
+        }
+
+        if perf_on {
+            // Post-step snapshot
+            self.perf_stats.active_chunks = self.chunks.active_chunk_count() as u32;
+            self.perf_stats.dirty_chunks = self.chunks.dirty_chunk_count() as u32;
+            self.perf_stats.pending_moves = self.grid.pending_moves.count as u32;
+            self.perf_stats.particle_count = self.particle_count;
+            self.perf_stats.move_buffer_overflows = self.grid.pending_moves.overflow_count() as u32;
+            self.perf_stats.move_buffer_usage = if self.grid.pending_moves.capacity() > 0 {
+                (self.grid.pending_moves.count as f32) / (self.grid.pending_moves.capacity() as f32)
+            } else { 0.0 };
+            let (ray_steps, ray_collisions) = take_physics_perf_counters();
+            self.perf_stats.raycast_steps_total = ray_steps as u32;
+            self.perf_stats.raycast_collisions = ray_collisions as u32;
+            self.perf_stats.raycast_speed_max = self.perf_stats_last_speed_max;
+            self.perf_stats.chunks_woken = self.chunks.woke_this_frame;
+            self.perf_stats.chunks_slept = self.chunks.slept_this_frame;
+            self.perf_stats.phase_changes = take_phase_change_counter() as u32;
+            self.perf_stats.liquid_scans = 0;
+            let liquid_scans = take_liquid_scan_counter();
+            self.perf_stats.liquid_scans = liquid_scans as u32;
+            self.perf_stats.raycast_speed_max = self.perf_stats.raycast_speed_max.max(self.perf_stats_last_speed_max);
+            // Full grid scan for non-empty cells (only when perf_enabled)
+            let mut non_empty = 0u32;
+            for t in self.grid.types.iter() {
+                if *t != EL_EMPTY {
+                    non_empty = non_empty.saturating_add(1);
+                }
+            }
+            self.perf_stats.non_empty_cells = non_empty;
+            // Chunk particle stats
+            let mut sum = 0u32;
+            let mut maxp = 0u32;
+            for &c in self.chunks.particle_counts().iter() {
+                sum = sum.saturating_add(c);
+                if c > maxp { maxp = c; }
+            }
+            self.perf_stats.chunk_particle_sum = sum;
+            self.perf_stats.chunk_particle_max = maxp;
+            if let Some(start) = step_start {
+                self.perf_stats.step_ms = start.elapsed_ms();
+            }
         }
         
         self.frame += 1;
@@ -370,24 +747,60 @@ impl World {
         let start_y = cy * CHUNK_SIZE;
         let end_x = (start_x + CHUNK_SIZE).min(self.grid.width());
         let end_y = (start_y + CHUNK_SIZE).min(self.grid.height());
+
+        // Sparse skip: if chunk has no non-empty rows, return early
+        let mut chunk_has_rows = false;
+        for ry in start_y..end_y {
+            if self.grid.row_has_data[ry as usize] {
+                chunk_has_rows = true;
+                break;
+            }
+        }
+        if !chunk_has_rows {
+            return;
+        }
         
         if top_to_bottom {
             // For negative gravity: process top-to-bottom
             for y in start_y..end_y {
+                // PERF: Use row_has_data instead of scanning row (O(1) vs O(32))
+                if !self.grid.row_has_data[y as usize] {
+                    continue;
+                }
                 for x in start_x..end_x {
                     let element = self.grid.get_type(x as i32, y as i32);
                     if element != EL_EMPTY {
-                        update_particle_physics(&mut self.grid, &mut self.chunks, x, y, gravity_y);
+                        let res = update_particle_physics(&mut self.grid, &mut self.chunks, x, y, gravity_y);
+                        if self.perf_enabled {
+                            self.perf_stats.physics_calls = self.perf_stats.physics_calls.saturating_add(1);
+                            self.perf_stats.raycast_steps_total = self.perf_stats.raycast_steps_total.saturating_add(res.steps);
+                            if res.collided { self.perf_stats.raycast_collisions = self.perf_stats.raycast_collisions.saturating_add(1); }
+                            if res.speed > self.perf_stats_last_speed_max {
+                                self.perf_stats_last_speed_max = res.speed;
+                            }
+                        }
                     }
                 }
             }
         } else {
             // For positive gravity: process bottom-to-top
             for y in (start_y..end_y).rev() {
+                // PERF: Use row_has_data instead of scanning row (O(1) vs O(32))
+                if !self.grid.row_has_data[y as usize] {
+                    continue;
+                }
                 for x in start_x..end_x {
                     let element = self.grid.get_type(x as i32, y as i32);
                     if element != EL_EMPTY {
-                        update_particle_physics(&mut self.grid, &mut self.chunks, x, y, gravity_y);
+                        let res = update_particle_physics(&mut self.grid, &mut self.chunks, x, y, gravity_y);
+                        if self.perf_enabled {
+                            self.perf_stats.physics_calls = self.perf_stats.physics_calls.saturating_add(1);
+                            self.perf_stats.raycast_steps_total = self.perf_stats.raycast_steps_total.saturating_add(res.steps);
+                            if res.collided { self.perf_stats.raycast_collisions = self.perf_stats.raycast_collisions.saturating_add(1); }
+                            if res.speed > self.perf_stats_last_speed_max {
+                                self.perf_stats_last_speed_max = res.speed;
+                            }
+                        }
                     }
                 }
             }
@@ -647,19 +1060,38 @@ impl World {
         let end_y = (start_y + CHUNK_SIZE).min(self.grid.height());
         
         let mut had_movement = false;
+        let width = self.grid.width() as usize;
         
         // Process rows within chunk (bottom to top for gravity)
         if self.gravity_y >= 0.0 {
             for y in (start_y..end_y).rev() {
+                // Sparse skip: check row_has_data
+                if !self.grid.row_has_data[y as usize] {
+                    continue;
+                }
                 if go_right {
                     for x in start_x..end_x {
-                        if self.update_particle_chunked(x, y) {
+                        let moved = self.update_particle_chunked(x, y);
+                        if self.perf_enabled {
+                            self.perf_stats.particles_processed += 1;
+                            if moved {
+                                self.perf_stats.particles_moved += 1;
+                            }
+                        }
+                        if moved {
                             had_movement = true;
                         }
                     }
                 } else {
                     for x in (start_x..end_x).rev() {
-                        if self.update_particle_chunked(x, y) {
+                        let moved = self.update_particle_chunked(x, y);
+                        if self.perf_enabled {
+                            self.perf_stats.particles_processed += 1;
+                            if moved {
+                                self.perf_stats.particles_moved += 1;
+                            }
+                        }
+                        if moved {
                             had_movement = true;
                         }
                     }
@@ -667,15 +1099,33 @@ impl World {
             }
         } else {
             for y in start_y..end_y {
+                // Sparse skip: check row_has_data
+                if !self.grid.row_has_data[y as usize] {
+                    continue;
+                }
                 if go_right {
                     for x in start_x..end_x {
-                        if self.update_particle_chunked(x, y) {
+                        let moved = self.update_particle_chunked(x, y);
+                        if self.perf_enabled {
+                            self.perf_stats.particles_processed += 1;
+                            if moved {
+                                self.perf_stats.particles_moved += 1;
+                            }
+                        }
+                        if moved {
                             had_movement = true;
                         }
                     }
                 } else {
                     for x in (start_x..end_x).rev() {
-                        if self.update_particle_chunked(x, y) {
+                        let moved = self.update_particle_chunked(x, y);
+                        if self.perf_enabled {
+                            self.perf_stats.particles_processed += 1;
+                            if moved {
+                                self.perf_stats.particles_moved += 1;
+                            }
+                        }
+                        if moved {
                             had_movement = true;
                         }
                     }
@@ -727,6 +1177,11 @@ impl World {
             // Get category and dispatch to behavior
             let category = ELEMENT_DATA[element as usize].category;
             
+            // PERF: Skip solid and utility - they have no behavior
+            if category == CAT_SOLID || category == CAT_UTILITY {
+                return false;
+            }
+            
             // Remember position before update
             let old_type = element;
             
@@ -743,8 +1198,42 @@ impl World {
                 rng: &mut self.rng_state,
             };
             
-            // Delegate to behavior registry
-            self.behaviors.update(category, &mut ctx);
+            // Delegate to behavior registry with perf timing
+            if self.perf_enabled {
+                let t_beh = PerfTimer::start();
+                self.behaviors.update(category, &mut ctx);
+                let dur = t_beh.elapsed_ms();
+                self.perf_stats.behavior_calls = self.perf_stats.behavior_calls.saturating_add(1);
+                match category {
+                    CAT_POWDER => {
+                        self.perf_stats.behavior_powder = self.perf_stats.behavior_powder.saturating_add(1);
+                        self.perf_stats.powder_ms += dur;
+                    }
+                    CAT_LIQUID => {
+                        self.perf_stats.behavior_liquid = self.perf_stats.behavior_liquid.saturating_add(1);
+                        self.perf_stats.liquid_ms += dur;
+                    }
+                    CAT_GAS => {
+                        self.perf_stats.behavior_gas = self.perf_stats.behavior_gas.saturating_add(1);
+                        self.perf_stats.gas_ms += dur;
+                    }
+                    CAT_ENERGY => {
+                        self.perf_stats.behavior_energy = self.perf_stats.behavior_energy.saturating_add(1);
+                        self.perf_stats.energy_ms += dur;
+                    }
+                    CAT_UTILITY => {
+                        self.perf_stats.behavior_utility = self.perf_stats.behavior_utility.saturating_add(1);
+                        self.perf_stats.utility_ms += dur;
+                    }
+                    CAT_BIO => {
+                        self.perf_stats.behavior_bio = self.perf_stats.behavior_bio.saturating_add(1);
+                        self.perf_stats.bio_ms += dur;
+                    }
+                    _ => {}
+                }
+            } else {
+                self.behaviors.update(category, &mut ctx);
+            }
             
             // Drop ctx to release borrows
             drop(ctx);
@@ -827,8 +1316,41 @@ impl World {
             rng: &mut self.rng_state,
         };
         
-        // Delegate to behavior registry
-        self.behaviors.update(category, &mut ctx);
+        if self.perf_enabled {
+            let t_beh = PerfTimer::start();
+            self.behaviors.update(category, &mut ctx);
+            let dur = t_beh.elapsed_ms();
+            self.perf_stats.behavior_calls = self.perf_stats.behavior_calls.saturating_add(1);
+            match category {
+                CAT_POWDER => {
+                    self.perf_stats.behavior_powder = self.perf_stats.behavior_powder.saturating_add(1);
+                    self.perf_stats.powder_ms += dur;
+                }
+                CAT_LIQUID => {
+                    self.perf_stats.behavior_liquid = self.perf_stats.behavior_liquid.saturating_add(1);
+                    self.perf_stats.liquid_ms += dur;
+                }
+                CAT_GAS => {
+                    self.perf_stats.behavior_gas = self.perf_stats.behavior_gas.saturating_add(1);
+                    self.perf_stats.gas_ms += dur;
+                }
+                CAT_ENERGY => {
+                    self.perf_stats.behavior_energy = self.perf_stats.behavior_energy.saturating_add(1);
+                    self.perf_stats.energy_ms += dur;
+                }
+                CAT_UTILITY => {
+                    self.perf_stats.behavior_utility = self.perf_stats.behavior_utility.saturating_add(1);
+                    self.perf_stats.utility_ms += dur;
+                }
+                CAT_BIO => {
+                    self.perf_stats.behavior_bio = self.perf_stats.behavior_bio.saturating_add(1);
+                    self.perf_stats.bio_ms += dur;
+                }
+                _ => {}
+            }
+        } else {
+            self.behaviors.update(category, &mut ctx);
+        }
         
         // Process chemical reactions AFTER movement (EXACT TypeScript)
         let current_type = self.grid.get_type(x as i32, y as i32);
@@ -839,6 +1361,9 @@ impl World {
     
     /// Process chemical reactions (mirrors TypeScript processReactionsTyped)
     fn process_reactions(&mut self, x: u32, y: u32, element: ElementId) {
+        if self.perf_enabled {
+            self.perf_stats.reactions_checked = self.perf_stats.reactions_checked.saturating_add(1);
+        }
         // Pick a random neighbor
         // PHASE 1 OPT: & 3 instead of % 4 (saves ~40 CPU cycles)
         let dir = xorshift32(&mut self.rng_state) & 3;
@@ -871,6 +1396,9 @@ impl World {
     
     /// Apply a bilateral reaction (mirrors TypeScript applyReaction)
     fn apply_reaction(&mut self, src_x: u32, src_y: u32, target_x: u32, target_y: u32, reaction: &Reaction) {
+        if self.perf_enabled {
+            self.perf_stats.reactions_applied = self.perf_stats.reactions_applied.saturating_add(1);
+        }
         // A. Transform the TARGET (victim)
         if reaction.target_becomes == EL_EMPTY {
             self.remove_particle(target_x, target_y);

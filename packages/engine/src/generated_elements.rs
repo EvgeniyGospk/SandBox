@@ -210,7 +210,7 @@ pub static ELEMENT_DATA: [ElementProps; ELEMENT_COUNT] = [
         density: 1000.0,
         category: CAT_LIQUID,
         flags: 6, // 0x0006
-        dispersion: 8,
+        dispersion: 4,
         lifetime: 0,
         default_temp: 20.0,
         heat_conductivity: 40,

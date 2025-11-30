@@ -1,27 +1,36 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useCallback } from 'react'
 import { Canvas } from '@/components/Canvas'
+import { MainMenu } from '@/components/MainMenu'
 import { LeftPanel } from '@/components/panels/LeftPanel'
 import { TopToolbar } from '@/components/panels/TopToolbar'
 import { BottomBar } from '@/components/panels/BottomBar'
 import { RightPanel } from '@/components/panels/RightPanel'
+import { useSimulationStore } from '@/stores/simulationStore'
 
 function App() {
-  const [isEngineReady, setIsEngineReady] = useState(false)
+  const { gameState, startGame, returnToMenu } = useSimulationStore()
 
+  // Handle ESC to return to menu
   useEffect(() => {
-    // TODO: Initialize WASM engine here
-    // For now, just mark as ready
-    setIsEngineReady(true)
-  }, [])
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && gameState === 'playing') {
+        returnToMenu()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [gameState, returnToMenu])
 
-  if (!isEngineReady) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-[#0D0D0D]">
-        <div className="text-white text-xl">Loading Particula...</div>
-      </div>
-    )
+  const handleStartGame = useCallback(() => {
+    startGame()
+  }, [startGame])
+
+  // Show Main Menu
+  if (gameState === 'menu') {
+    return <MainMenu onStartGame={handleStartGame} />
   }
 
+  // Show Game
   return (
     <div className="flex flex-col h-screen bg-[#0D0D0D] text-white overflow-hidden">
       {/* Top Toolbar */}
@@ -34,7 +43,7 @@ function App() {
 
         {/* Canvas - Center */}
         <main className="flex-1 relative">
-          <Canvas />
+          <Canvas key={gameState} />
         </main>
 
         {/* Right Panel - Settings */}

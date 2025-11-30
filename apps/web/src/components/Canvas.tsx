@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
-import { useSimulationStore } from '@/stores/simulationStore'
+import { useSimulationStore, getWorldSize } from '@/stores/simulationStore'
 import { useToolStore } from '@/stores/toolStore'
 import { WorkerBridge, isWorkerSupported } from '@/lib/engine/WorkerBridge'
 import { WasmParticleEngine } from '@/lib/engine'
@@ -50,12 +50,14 @@ export function Canvas() {
   // Loading state
   const [isLoading, setIsLoading] = useState(true)
   const [useWorker, setUseWorker] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const canvasTransferred = useRef(false)
   
   // Camera state (stored on main thread for coordinate conversion)
   const cameraRef = useRef({ x: 0, y: 0, zoom: 1 })
   
   // FIX 2: Достаем renderMode из стора
-  const { isPlaying, speed, gravity, ambientTemperature, renderMode, setFps, setParticleCount } = useSimulationStore()
+  const { isPlaying, speed, gravity, ambientTemperature, renderMode, worldSizePreset, setFps, setParticleCount } = useSimulationStore()
   const { 
     selectedElement, 
     brushSize, 
@@ -126,11 +128,17 @@ export function Canvas() {
     const container = containerRef.current
     if (!canvas || !container) return
 
-    const { width, height } = container.getBoundingClientRect()
-    if (width <= 0 || height <= 0) return
+    const viewport = container.getBoundingClientRect()
+    if (viewport.width <= 0 || viewport.height <= 0) return
     
-    canvas.width = width
-    canvas.height = height
+    // Get world size based on preset (may be smaller than viewport for FPS boost)
+    const worldSize = getWorldSize(worldSizePreset, { width: viewport.width, height: viewport.height })
+    
+    // Canvas = viewport size (for display)
+    canvas.width = viewport.width
+    canvas.height = viewport.height
+    
+    console.log(`🌍 World Size: ${worldSize.width}x${worldSize.height} (preset: ${worldSizePreset})`)
     
     const workerSupported = isWorkerSupported()
     setUseWorker(workerSupported)
@@ -158,27 +166,34 @@ export function Canvas() {
       
       bridge.onError = (msg) => {
         console.error('Worker error:', msg)
-        // Fall back to main thread mode
-        setUseWorker(false)
-        initFallbackEngine(canvas, width, height)
+        // Cannot fallback - canvas already transferred to worker
+        // Show error to user instead
+        if (canvasTransferred.current) {
+          setError(`Simulation error: ${msg}. Please refresh the page.`)
+          setIsLoading(false)
+        }
       }
       
       bridge.onCrash = (msg) => {
         console.error('Worker crash:', msg)
-        setUseWorker(false)
-        initFallbackEngine(canvas, width, height)
+        // Cannot fallback - canvas already transferred
+        setError(`Simulation crashed: ${msg}. Please refresh the page.`)
+        setIsLoading(false)
       }
       
-      // Initialize worker with canvas
-      bridge.init(canvas, width, height).catch((err) => {
-        console.warn('Worker init failed, falling back:', err)
-        setUseWorker(false)
-        initFallbackEngine(canvas, width, height)
+      // Mark canvas as transferred before init
+      canvasTransferred.current = true
+      
+      // Initialize worker with WORLD size (not viewport!)
+      bridge.init(canvas, worldSize.width, worldSize.height).catch((err) => {
+        console.warn('Worker init failed:', err)
+        setError(`Failed to initialize: ${err.message}. Please refresh.`)
+        setIsLoading(false)
       })
       
     } else {
       // === FALLBACK: MAIN THREAD MODE ===
-      initFallbackEngine(canvas, width, height)
+      initFallbackEngine(canvas, worldSize.width, worldSize.height)
     }
 
     return () => {
@@ -193,6 +208,7 @@ export function Canvas() {
         globalEngine = null
       }
     }
+  // worldSizePreset is read on mount (changes only happen in menu before game starts)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -257,28 +273,34 @@ export function Canvas() {
     requestAnimationFrame(render)
   }
 
-  // Handle resize
+  // Handle resize - only resize world if preset is 'full'
   useEffect(() => {
     const handleResize = () => {
       const container = containerRef.current
-      if (!container) return
+      const canvas = canvasRef.current
+      if (!container || !canvas) return
 
-      const { width, height } = container.getBoundingClientRect()
+      const viewport = container.getBoundingClientRect()
       
-      if (bridgeRef.current) {
-        bridgeRef.current.resize(width, height)
-      } else if (engineRef.current) {
-        const canvas = canvasRef.current
-        if (canvas) {
-          canvas.width = width
-          canvas.height = height
+      // Always update canvas to match viewport
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+      
+      // Only resize world if preset is 'full' (viewport-dependent)
+      if (worldSizePreset === 'full') {
+        if (bridgeRef.current) {
+          bridgeRef.current.resize(viewport.width, viewport.height)
+        } else if (engineRef.current) {
+          engineRef.current.resize(viewport.width, viewport.height)
         }
-        engineRef.current.resize(width, height)
       }
+      // For fixed presets, world size stays the same - just viewport changes
     }
 
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
+  // worldSizePreset read on mount only
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // === INPUT HANDLERS ===
@@ -299,12 +321,20 @@ export function Canvas() {
     if (!canvas) return { x: 0, y: 0 }
     const cam = cameraRef.current
     const viewport = { width: canvas.width, height: canvas.height }
+    
+    // Get world size from bridge or engine
+    const worldSize = bridgeRef.current 
+      ? { width: bridgeRef.current.width, height: bridgeRef.current.height }
+      : engineRef.current
+        ? { width: engineRef.current.width, height: engineRef.current.height }
+        : viewport
 
     const world = invertTransform(
       sx,
       sy,
       { zoom: cam.zoom, panX: cam.x, panY: cam.y },
-      viewport
+      viewport,
+      worldSize
     )
 
     return {
@@ -514,8 +544,24 @@ export function Canvas() {
       ref={containerRef} 
       className="w-full h-full bg-[#0a0a0a] overflow-hidden relative"
     >
+      {/* Error overlay */}
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#0a0a0a]/90 z-20">
+          <div className="bg-red-900/50 border border-red-500 rounded-lg p-6 max-w-md text-center">
+            <div className="text-red-400 text-lg mb-4">⚠️ Simulation Error</div>
+            <div className="text-white mb-4">{error}</div>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg transition-colors"
+            >
+              Refresh Page
+            </button>
+          </div>
+        </div>
+      )}
+      
       {/* Loading overlay */}
-      {isLoading && (
+      {isLoading && !error && (
         <div className="absolute inset-0 flex items-center justify-center bg-[#0a0a0a] z-10">
           <div className="text-white text-lg">
             {useWorker ? '🚀 Starting WebWorker...' : '🦀 Loading WASM engine...'}

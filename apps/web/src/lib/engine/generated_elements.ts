@@ -243,7 +243,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     flags: 6,
     color: 0xFF4169E1,
     density: 1000,
-    dispersion: 8,
+    dispersion: 4,
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 40,

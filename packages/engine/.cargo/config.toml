@@ -1,5 +1,5 @@
-# Phase 5: Enable WASM SIMD for maximum performance
-# SIMD128 provides 128-bit SIMD operations (4x f32, 16x u8, etc.)
+# Phase 5: WASM SIMD for performance
+# Atomics/bulk-memory only enabled via build-parallel.sh (requires nightly)
 
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128"]

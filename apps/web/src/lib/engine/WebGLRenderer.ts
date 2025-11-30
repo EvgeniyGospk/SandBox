@@ -16,7 +16,8 @@
 const CHUNK_SIZE = 32;
 
 // Phase 2: Use merged rectangles for batching
-const USE_MERGED_RECTS = true;
+// TEMPORARILY DISABLED: Causes "memory access out of bounds" crash
+const USE_MERGED_RECTS = false;
 
 // Phase 2: PBO for async texture upload (WebGL 2.0)
 const USE_PBO = true;
@@ -335,32 +336,37 @@ export class WebGLRenderer {
     }
     
     // Upload each merged rectangle
-    for (let i = 0; i < rectCount; i++) {
-      const x = engine.get_merged_rect_x(i);
-      const y = engine.get_merged_rect_y(i);
-      const w = engine.get_merged_rect_w(i);
-      const h = engine.get_merged_rect_h(i);
-      
-      // Skip invalid rects
-      if (w === 0 || h === 0) continue;
-      
-      // Clamp to world bounds
-      const actualW = Math.min(w, this.worldWidth - x);
-      const actualH = Math.min(h, this.worldHeight - y);
-      
-      if (actualW <= 0 || actualH <= 0) continue;
-      
-      // Extract pixels for this rectangle
-      const pixelsPtr = engine.extract_rect_pixels(i);
-      
-      // Upload to texture
-      // Note: texSubImage2D expects row-major data with stride = width
-      gl.texSubImage2D(
-        gl.TEXTURE_2D, 0,
-        x, y, actualW, actualH,
-        gl.RGBA, gl.UNSIGNED_BYTE,
-        this.memoryView!, pixelsPtr
-      );
+    try {
+      for (let i = 0; i < rectCount; i++) {
+        const x = engine.get_merged_rect_x(i);
+        const y = engine.get_merged_rect_y(i);
+        const w = engine.get_merged_rect_w(i);
+        const h = engine.get_merged_rect_h(i);
+        
+        // Skip invalid rects
+        if (w === 0 || h === 0) continue;
+        
+        // Clamp to world bounds
+        const actualW = Math.min(w, this.worldWidth - x);
+        const actualH = Math.min(h, this.worldHeight - y);
+        
+        if (actualW <= 0 || actualH <= 0) continue;
+        
+        // Extract pixels for this rectangle
+        const pixelsPtr = engine.extract_rect_pixels(i);
+        
+        // Upload to texture
+        // Note: texSubImage2D expects row-major data with stride = width
+        gl.texSubImage2D(
+          gl.TEXTURE_2D, 0,
+          x, y, actualW, actualH,
+          gl.RGBA, gl.UNSIGNED_BYTE,
+          this.memoryView!, pixelsPtr
+        );
+      }
+    } catch (e) {
+      console.error('uploadWithMergedRects failed, falling back to full upload:', e);
+      this.uploadFull(engine);
     }
   }
   

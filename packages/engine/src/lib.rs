@@ -1,6 +1,7 @@
 //! Particula Engine - High-performance particle simulation in WASM
 //! 
 //! Phase 4: Spatial Optimization with Chunks
+//! Phase 5: Parallel Processing with Rayon
 //! 
 //! Architecture (SOLID):
 //! - elements.rs    - Element definitions and properties
@@ -28,6 +29,10 @@ mod rigid_body_system;  // Rigid body manager
 mod world;
 
 use wasm_bindgen::prelude::*;
+
+// Phase 5: Re-export wasm-bindgen-rayon for thread pool initialization
+#[cfg(feature = "parallel")]
+pub use wasm_bindgen_rayon::init_thread_pool;
 
 // Better error messages in debug mode
 #[cfg(feature = "console_error_panic_hook")]

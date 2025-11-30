@@ -8,6 +8,23 @@
 //! - Phase changes (melting, freezing, boiling, condensing)
 
 use crate::grid::Grid;
+use std::cell::RefCell;
+
+thread_local! {
+    pub static PERF_PHASE_CHANGES: RefCell<u64> = RefCell::new(0);
+}
+
+pub fn reset_phase_change_counter() {
+    PERF_PHASE_CHANGES.with(|c| *c.borrow_mut() = 0);
+}
+
+pub fn take_phase_change_counter() -> u64 {
+    PERF_PHASE_CHANGES.with(|c| {
+        let val = *c.borrow();
+        *c.borrow_mut() = 0;
+        val
+    })
+}
 use crate::elements::{
     ELEMENT_DATA, ElementId, EL_EMPTY, EL_STONE, EL_SAND, EL_METAL, EL_ICE, EL_WATER, EL_STEAM, EL_LAVA,
     ELEMENT_COUNT, get_color_with_variation
@@ -166,6 +183,10 @@ fn transform_particle_with_chunks(
     temp: f32,
     frame: u64
 ) {
+    PERF_PHASE_CHANGES.with(|c| {
+        let mut v = c.borrow_mut();
+        *v = v.saturating_add(1);
+    });
     if new_element == EL_EMPTY {
         grid.clear_cell(x, y);
         chunks.remove_particle(x, y);
@@ -216,8 +237,10 @@ pub fn process_temperature_grid_chunked(
     ambient_temp: f32,
     frame: u64,
     rng: &mut u32
-) {
+) -> (u32, u32) {
     let (cx_count, cy_count) = chunks.dimensions();
+    let mut processed_non_empty = 0u32;
+    let mut simd_air_cells = 0u32;
     
     // Air conductivity speed (same as in update_temperature: 0.02)
     const AIR_LERP_SPEED: f32 = 0.02;
@@ -237,7 +260,7 @@ pub fn process_temperature_grid_chunked(
                 // This does the same thing as update_temperature for empty cells
                 // but processes 4 cells at once with SIMD
                 unsafe {
-                    grid.batch_lerp_air_temps(cx, cy, ambient_temp, AIR_LERP_SPEED);
+                    simd_air_cells += grid.batch_lerp_air_temps(cx, cy, ambient_temp, AIR_LERP_SPEED);
                 }
                 
                 // PASS 2: Scalar processing for non-empty cells only
@@ -253,6 +276,7 @@ pub fn process_temperature_grid_chunked(
                         let element = grid.get_type(x as i32, y as i32);
                         if element != EL_EMPTY {
                             update_particle_temperature(grid, chunks, x, y, ambient_temp, frame, rng);
+                            processed_non_empty += 1;
                         }
                     }
                 }
@@ -268,6 +292,8 @@ pub fn process_temperature_grid_chunked(
             }
         }
     }
+
+    (processed_non_empty, simd_air_cells)
 }
 
 /// Update temperature for a single NON-EMPTY cell (particle)

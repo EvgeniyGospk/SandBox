@@ -2,8 +2,28 @@ import { create } from 'zustand'
 import type { RenderMode } from '@/lib/engine'
 import * as SimulationController from '@/lib/engine/SimulationController'
 
+// World size presets (width x height)
+export type WorldSizePreset = 'tiny' | 'small' | 'medium' | 'large' | 'full'
+
+export const WORLD_SIZE_PRESETS: Record<WorldSizePreset, { width: number; height: number } | 'viewport'> = {
+  tiny: { width: 256, height: 192 },
+  small: { width: 512, height: 384 },
+  medium: { width: 768, height: 576 },
+  large: { width: 1024, height: 768 },
+  full: 'viewport',
+}
+
+export function getWorldSize(preset: WorldSizePreset, viewport: { width: number; height: number }): { width: number; height: number } {
+  const size = WORLD_SIZE_PRESETS[preset]
+  if (size === 'viewport') return viewport
+  return size
+}
+
+export type GameState = 'menu' | 'playing'
+
 interface SimulationState {
   // State
+  gameState: GameState
   isPlaying: boolean
   speed: 0.5 | 1 | 2 | 4
   fps: number
@@ -13,8 +33,11 @@ interface SimulationState {
   // World settings
   gravity: { x: number; y: number }
   ambientTemperature: number
+  worldSizePreset: WorldSizePreset
   
   // Actions
+  startGame: () => void
+  returnToMenu: () => void
   play: () => void
   pause: () => void
   step: () => void
@@ -25,10 +48,12 @@ interface SimulationState {
   setFps: (fps: number) => void
   setParticleCount: (count: number) => void
   toggleRenderMode: () => void
+  setWorldSizePreset: (preset: WorldSizePreset) => void
 }
 
 export const useSimulationStore = create<SimulationState>((set, get) => ({
   // Initial state
+  gameState: 'menu',
   isPlaying: false,
   speed: 1,
   fps: 60,
@@ -36,8 +61,14 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   renderMode: 'normal' as RenderMode,
   gravity: { x: 0, y: 9.8 },
   ambientTemperature: 20,
+  worldSizePreset: 'medium',
   
   // Actions
+  startGame: () => set({ gameState: 'playing', isPlaying: true }),
+  returnToMenu: () => {
+    SimulationController.pause()
+    set({ gameState: 'menu', isPlaying: false })
+  },
   play: () => {
     SimulationController.play()
     set({ isPlaying: true })
@@ -73,4 +104,5 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
     SimulationController.setRenderMode(newMode)
     set({ renderMode: newMode })
   },
+  setWorldSizePreset: (worldSizePreset) => set({ worldSizePreset }),
 }))

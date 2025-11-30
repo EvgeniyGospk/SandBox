@@ -12,6 +12,7 @@ mod energy;
 mod utility;
 mod plant;
 
+pub use liquid::{reset_liquid_scan_counter, take_liquid_scan_counter};
 pub use powder::PowderBehavior;
 pub use liquid::LiquidBehavior;
 pub use gas::GasBehavior;

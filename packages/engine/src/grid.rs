@@ -1,12 +1,16 @@
 //! Grid - Structure of Arrays (SoA) for cache-friendly particle storage
 //! 
 //! Phase 5: ABGR color format for direct Canvas copy
+//! Phase 5.1: Parallel processing with Rayon
 //! 
 //! Instead of: Vec<Option<Particle>>  // Bad: many allocations, poor cache
 //! We have:    types[], colors[], temps[]  // Good: linear memory, SIMD-friendly
 
 use crate::elements::{ElementId, EL_EMPTY};
 use crate::chunks::CHUNK_SIZE;
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 // Background color in ABGR format (little-endian: 0xAABBGGRR -> bytes [RR,GG,BB,AA])
 // RGB(10,10,10) with alpha=255 -> 0xFF0A0A0A in ABGR
@@ -23,6 +27,7 @@ pub struct MoveBuffer {
     data: Vec<ParticleMove>,
     pub count: usize,
     capacity: usize,
+    overflow_count: usize,
 }
 
 impl MoveBuffer {
@@ -31,6 +36,7 @@ impl MoveBuffer {
             data: vec![(0, 0, 0, 0); capacity], // Single allocation at startup
             count: 0,
             capacity,
+            overflow_count: 0,
         }
     }
     
@@ -43,6 +49,8 @@ impl MoveBuffer {
                 *self.data.get_unchecked_mut(self.count) = m;
             }
             self.count += 1;
+        } else {
+            self.overflow_count += 1;
         }
         // If full, silently drop. Better than GC stutter!
     }
@@ -51,12 +59,23 @@ impl MoveBuffer {
     #[inline(always)]
     pub fn clear(&mut self) {
         self.count = 0;
+        self.overflow_count = 0;
     }
     
     /// Get raw pointer to data for unsafe iteration
     #[inline(always)]
     pub fn as_ptr(&self) -> *const ParticleMove {
         self.data.as_ptr()
+    }
+
+    #[inline(always)]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    #[inline(always)]
+    pub fn overflow_count(&self) -> usize {
+        self.overflow_count
     }
 }
 
@@ -79,12 +98,19 @@ pub struct Grid {
     
     // Phase 4: Zero-allocation move buffer
     pub pending_moves: MoveBuffer,
+
+    // Sparse bookkeeping: bitset of non-empty cells per chunk (stride = chunks_x * chunks_y, each bit = cell)
+    pub non_empty_chunks: Vec<u64>, // one bit per chunk, to skip fully empty chunks fast
+    pub row_has_data: Vec<bool>,    // per-row fast skip inside chunk (32 rows per chunk)
 }
 
 impl Grid {
     pub fn new(width: u32, height: u32) -> Self {
         let size = (width * height) as usize;
         
+        let chunks_x = (width + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let chunks_y = (height + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let chunk_bits = ((chunks_x * chunks_y) as usize + 63) / 64;
         Self {
             width,
             height,
@@ -97,9 +123,13 @@ impl Grid {
             // Phase 2: Velocity arrays (start at 0)
             vx: vec![0.0; size],
             vy: vec![0.0; size],
-            // Phase 4: Fixed buffer for ~100k moves (~1.6MB RAM)
-            // Enough for nuclear explosions, never reallocates!
-            pending_moves: MoveBuffer::new(100_000),
+            // Phase 4: Fixed buffer for 1M moves (~16MB RAM)
+            // Enough for heavy scenes with 1M+ particles
+            pending_moves: MoveBuffer::new(1_000_000),
+
+            // Sparse bookkeeping
+            non_empty_chunks: vec![0u64; chunk_bits],
+            row_has_data: vec![false; (chunks_y * CHUNK_SIZE) as usize],
         }
     }
     
@@ -202,9 +232,18 @@ impl Grid {
         self.updated[idx] = if u { 1 } else { 0 };
     }
     
+    /// Reset updated flags for all cells
+    /// PHASE 5.1: Parallel fill with Rayon when feature enabled
     #[inline]
     pub fn reset_updated(&mut self) {
-        self.updated.fill(0);
+        #[cfg(feature = "parallel")]
+        {
+            self.updated.par_iter_mut().for_each(|v| *v = 0);
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            self.updated.fill(0);
+        }
     }
     
     // === Temperature access ===
@@ -263,6 +302,7 @@ impl Grid {
         }
         
         self.swap_idx(idx1, idx2);
+        // NOTE: sparse bookkeeping is refreshed once per frame in step(), not per swap!
     }
     
     #[inline]
@@ -276,6 +316,34 @@ impl Grid {
         self.vx.swap(idx1, idx2);
         self.vy.swap(idx1, idx2);
     }
+
+    // === Sparse helpers ===
+    fn mark_cell_non_empty(&mut self, x: u32, y: u32) {
+        let chunks_x = (self.width + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let cx = x / CHUNK_SIZE;
+        let cy = y / CHUNK_SIZE;
+        let chunk_idx = (cy * chunks_x + cx) as usize;
+        let word = chunk_idx / 64;
+        let bit = chunk_idx % 64;
+        if word < self.non_empty_chunks.len() {
+            self.non_empty_chunks[word] |= 1u64 << bit;
+        }
+        self.row_has_data[y as usize] = true;
+    }
+
+    fn mark_cell_empty(&mut self, _x: u32, _y: u32) {
+        // NOTE: sparse bookkeeping is refreshed once per frame in step(), not per cell change!
+        // This avoids O(N) operations on every particle removal
+    }
+
+    fn refresh_sparse_row(&mut self, y: u32) {
+        let width = self.width as usize;
+        let start = (y as usize) * width;
+        let end = start + width;
+        let row_slice = &self.types[start..end];
+        self.row_has_data[y as usize] = row_slice.iter().any(|&t| t != EL_EMPTY);
+    }
+
     
     // === Phase 4: Move tracking for chunks (Zero-Allocation) ===
     
@@ -283,6 +351,65 @@ impl Grid {
     /// Memory stays allocated - just resets counter
     pub fn clear_moves(&mut self) {
         self.pending_moves.clear();
+    }
+
+    /// Refresh chunk occupancy bits based on current row_has_data flags
+    /// PHASE 5.1: Parallel row scanning with Rayon when feature enabled
+    pub fn refresh_chunk_bits(&mut self) {
+        let width = self.width as usize;
+        let height = self.height as usize;
+        
+        // First: scan all rows to update row_has_data
+        // Note: parallel version uses chunks to avoid borrow issues
+        #[cfg(feature = "parallel")]
+        {
+            // Process rows in parallel chunks
+            let types = &self.types;
+            let results: Vec<bool> = (0..height).into_par_iter().map(|y| {
+                let start = y * width;
+                let end = start + width;
+                types[start..end].iter().any(|&t| t != EL_EMPTY)
+            }).collect();
+            
+            for (y, has_data) in results.into_iter().enumerate() {
+                self.row_has_data[y] = has_data;
+            }
+        }
+        
+        #[cfg(not(feature = "parallel"))]
+        {
+            for y in 0..height {
+                let start = y * width;
+                let end = start + width;
+                self.row_has_data[y] = self.types[start..end].iter().any(|&t| t != EL_EMPTY);
+            }
+        }
+        
+        // Then: update chunk bits based on row_has_data
+        let chunks_x = (self.width + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let chunks_y = (self.height + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let mut bits = vec![0u64; self.non_empty_chunks.len()];
+        
+        for cy in 0..chunks_y {
+            let start_y = cy * CHUNK_SIZE;
+            let end_y = (start_y + CHUNK_SIZE).min(self.height);
+            let mut has_data_row = false;
+            for ry in start_y..end_y {
+                if self.row_has_data[ry as usize] {
+                    has_data_row = true;
+                    break;
+                }
+            }
+            if has_data_row {
+                for cx in 0..chunks_x {
+                    let chunk_idx = (cy * chunks_x + cx) as usize;
+                    let word = chunk_idx / 64;
+                    let bit = chunk_idx % 64;
+                    bits[word] |= 1u64 << bit;
+                }
+            }
+        }
+        self.non_empty_chunks = bits;
     }
     
     // === Set particle with all data ===
@@ -297,6 +424,9 @@ impl Grid {
         // Phase 2: New particles start with zero velocity
         self.vx[idx] = 0.0;
         self.vy[idx] = 0.0;
+
+        // Sparse bookkeeping
+        self.mark_cell_non_empty(x, y);
     }
     
     // === Clear single cell ===
@@ -309,6 +439,8 @@ impl Grid {
         // Phase 2: Clear velocity
         self.vx[idx] = 0.0;
         self.vy[idx] = 0.0;
+
+        self.mark_cell_empty(x, y);
     }
     
     // === Clear entire grid ===
@@ -321,6 +453,10 @@ impl Grid {
         // Phase 2: Clear velocity
         self.vx.fill(0.0);
         self.vy.fill(0.0);
+
+        // Reset sparse bookkeeping
+        self.non_empty_chunks.fill(0);
+        self.row_has_data.fill(false);
     }
     
     // === Get raw pointers for JS interop ===

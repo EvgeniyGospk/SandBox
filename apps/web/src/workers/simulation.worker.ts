@@ -39,8 +39,10 @@ import { MemoryManager } from '../lib/engine/MemoryManager'
 interface InitMessage {
   type: 'INIT'
   canvas: OffscreenCanvas
-  width: number
-  height: number
+  width: number           // World width
+  height: number          // World height
+  viewportWidth?: number  // Viewport width (may differ from world)
+  viewportHeight?: number // Viewport height
   inputBuffer?: SharedArrayBuffer // Phase 5: Optional shared input buffer
 }
 
@@ -124,11 +126,16 @@ let memoryManager: MemoryManager | null = null
 let isPlaying = false
 let speed = 1
 let renderMode: RenderMode = 'normal'
+let isCrashed = false // Prevent cascade of errors after crash
 
 // Camera state
 let zoom = 1
 let panX = 0
 let panY = 0
+
+// Viewport dimensions (may differ from world size!)
+let viewportWidth = 0
+let viewportHeight = 0
 
 // Animation
 // Note: animationFrameId stored but only used for potential future cancellation
@@ -148,20 +155,11 @@ const STATS_INTERVAL = 200 // ms
 const BG_COLOR_32 = 0xFF0A0A0A
 const EL_EMPTY = 0
 
-// === DEBUG: Dirty chunk logging ===
-const DEBUG_DIRTY =
-  (
-    typeof process !== 'undefined' &&
-    process.env?.NODE_ENV === 'development' &&
-    process.env?.VITE_DEBUG_DIRTY !== 'false'
-  ) ||
-  (
-    typeof import.meta !== 'undefined' &&
-    (import.meta as any).env?.MODE === 'development' &&
-    (import.meta as any).env?.VITE_DEBUG_DIRTY !== 'false'
-  )
+// === DEBUG: Dirty chunk logging (DISABLED for performance) ===
+// Enable via VITE_DEBUG_DIRTY=true if needed
+const DEBUG_DIRTY = false
 let debugLogInterval = 0
-const DEBUG_LOG_EVERY = 60  // Log every N frames
+const DEBUG_LOG_EVERY = 60
 
 // Element mapping from generated definitions
 const ELEMENT_MAP: Record<ElementType, number> = ELEMENT_NAME_TO_ID
@@ -170,13 +168,25 @@ const ELEMENT_MAP: Record<ElementType, number> = ELEMENT_NAME_TO_ID
 // INITIALIZATION
 // ============================================================================
 
-async function initEngine(initCanvas: OffscreenCanvas, width: number, height: number, inputBuffer?: SharedArrayBuffer) {
+async function initEngine(
+  initCanvas: OffscreenCanvas, 
+  width: number, 
+  height: number, 
+  vpWidth?: number, 
+  vpHeight?: number,
+  inputBuffer?: SharedArrayBuffer
+) {
   try {
     canvas = initCanvas
     
-    // CRITICAL: Set canvas size! OffscreenCanvas doesn't inherit from HTMLCanvasElement
-    canvas.width = width
-    canvas.height = height
+    // Store viewport dimensions (may differ from world size!)
+    viewportWidth = vpWidth ?? width
+    viewportHeight = vpHeight ?? height
+    
+    // CRITICAL: Set canvas size to VIEWPORT size (for display)
+    // World size may be smaller for performance!
+    canvas.width = viewportWidth
+    canvas.height = viewportHeight
     
     // Phase 5: Setup shared input buffer if provided
     if (inputBuffer) {
@@ -199,6 +209,17 @@ async function initEngine(initCanvas: OffscreenCanvas, width: number, height: nu
     }
     
     console.log(`🚀 Worker: WASM memory size: ${wasmMemory.buffer.byteLength} bytes`)
+    
+    // Phase 5: Initialize Rayon thread pool for parallel processing
+    if (wasm.initThreadPool) {
+      try {
+        const numThreads = navigator.hardwareConcurrency || 4
+        await wasm.initThreadPool(numThreads)
+        console.log(`🧵 Worker: Rayon thread pool initialized with ${numThreads} threads!`)
+      } catch (e) {
+        console.warn('Thread pool init failed (parallel disabled):', e)
+      }
+    }
     
     // Create world
     engine = new wasm.World(width, height)
@@ -299,10 +320,11 @@ function renderLoop(time: number) {
       // Phase 5: WASM crashed - notify UI and stop simulation
       console.error('💥 WASM simulation crashed:', e)
       isPlaying = false
+      isCrashed = true // Prevent further operations
       self.postMessage({
         type: 'CRASH',
         message: String(e),
-        canRecover: true
+        canRecover: false // Can't recover after memory corruption
       })
     }
   }
@@ -320,7 +342,8 @@ function renderLoop(time: number) {
 }
 
 function renderFrame() {
-  if (!engine || !canvas) return
+  // Guard against rendering after crash
+  if (isCrashed || !engine || !canvas) return
   
   const transform = { zoom, panX, panY }
   
@@ -511,12 +534,15 @@ function handleInput(
   if (!engine) return
   
   // Apply camera transform to convert screen coords to world coords
-  const viewport = canvas ? { width: canvas.width, height: canvas.height } : { width: 0, height: 0 }
+  // CRITICAL: Use viewport for screen position, world size for final coords
+  const viewport = { width: viewportWidth, height: viewportHeight }
+  const worldSize = { width: engine.width, height: engine.height }
   const world = invertTransform(
     x,
     y,
     { zoom, panX, panY },
-    viewport
+    viewport,
+    worldSize  // Pass world size for proper scaling when world != viewport
   )
   const worldX = Math.floor(world.x)
   const worldY = Math.floor(world.y)
@@ -655,10 +681,22 @@ function resetInputTracking() {
 }
 
 function captureSnapshot(): ArrayBuffer | null {
-  if (!memoryManager || !engine) return null
-  const types = memoryManager.types
-  // Copy into new ArrayBuffer to transfer
-  return new Uint8Array(types).buffer
+  // Guard against calls after crash
+  if (isCrashed || !memoryManager || !engine) return null
+  
+  try {
+    // Check if memory is valid before accessing
+    if (!memoryManager.isValid) {
+      console.warn('⚠️ captureSnapshot: Memory not valid, skipping')
+      return null
+    }
+    const types = memoryManager.types
+    // Copy into new ArrayBuffer to transfer
+    return new Uint8Array(types).buffer
+  } catch (e) {
+    console.error('captureSnapshot failed:', e)
+    return null
+  }
 }
 
 function loadSnapshotBuffer(buffer: ArrayBuffer) {
@@ -777,7 +815,7 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
   
   switch (msg.type) {
     case 'INIT':
-      initEngine(msg.canvas, msg.width, msg.height, msg.inputBuffer)
+      initEngine(msg.canvas, msg.width, msg.height, msg.viewportWidth, msg.viewportHeight, msg.inputBuffer)
       break
       
     case 'PLAY':
@@ -814,12 +852,14 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
     }
     
     case 'PIPETTE': {
-      const viewport = canvas ? { width: canvas.width, height: canvas.height } : { width: 0, height: 0 }
+      const viewport = { width: viewportWidth, height: viewportHeight }
+      const worldSize = engine ? { width: engine.width, height: engine.height } : { width: 0, height: 0 }
       const world = invertTransform(
         msg.x,
         msg.y,
         { zoom, panX, panY },
-        viewport
+        viewport,
+        worldSize
       )
       const worldX = Math.floor(world.x)
       const worldY = Math.floor(world.y)

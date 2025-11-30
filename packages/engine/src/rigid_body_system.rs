@@ -485,7 +485,7 @@ impl RigidBodySystem {
                     
                     // Vector from body center to contact center ("arm")
                     let arm_x = contact_x - body.pos.x;
-                    let arm_y = contact_y - body.pos.y;
+                    let _arm_y = contact_y - body.pos.y;
                     
                     // Reaction force (opposite to gravity when resting on ground)
                     // Simplified: use velocity magnitude as proxy for impact force

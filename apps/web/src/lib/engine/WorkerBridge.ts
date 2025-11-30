@@ -43,8 +43,10 @@ export type CrashCallback = (message: string, canRecover: boolean) => void
  */
 export class WorkerBridge {
   private worker: Worker | null = null
-  private _width: number = 0
-  private _height: number = 0
+  private _width: number = 0       // World size
+  private _height: number = 0      // World size
+  private _viewportWidth: number = 0   // Viewport size (for coordinate conversion)
+  private _viewportHeight: number = 0  // Viewport size
   private _isReady: boolean = false
   
   // Phase 5: Shared input buffer for zero-latency input
@@ -71,14 +73,28 @@ export class WorkerBridge {
   
   /**
    * Initialize the simulation worker with an OffscreenCanvas
+   * @param canvas - The canvas element (will be transferred to worker)
+   * @param worldWidth - World simulation width
+   * @param worldHeight - World simulation height  
+   * @param viewportWidth - Optional viewport width (defaults to canvas.width)
+   * @param viewportHeight - Optional viewport height (defaults to canvas.height)
    */
-  async init(canvas: HTMLCanvasElement, width: number, height: number): Promise<void> {
+  async init(
+    canvas: HTMLCanvasElement, 
+    worldWidth: number, 
+    worldHeight: number,
+    viewportWidth?: number,
+    viewportHeight?: number
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
         // Create worker
         this.worker = new SimulationWorker()
-        this._width = width
-        this._height = height
+        this._width = worldWidth
+        this._height = worldHeight
+        // Store viewport size for coordinate conversion (before canvas is transferred!)
+        this._viewportWidth = viewportWidth ?? canvas.width
+        this._viewportHeight = viewportHeight ?? canvas.height
         
         // Setup message handler
         this.worker.onmessage = (e) => {
@@ -157,8 +173,10 @@ export class WorkerBridge {
           {
             type: 'INIT',
             canvas: offscreen,
-            width,
-            height,
+            width: worldWidth,
+            height: worldHeight,
+            viewportWidth: this._viewportWidth,
+            viewportHeight: this._viewportHeight,
             inputBuffer: inputBufferData // May be null
           },
           [offscreen] // Transfer list (SAB is not transferred, just shared)
@@ -208,12 +226,15 @@ export class WorkerBridge {
     tool: ToolType,
     brushShape: 'circle' | 'square' | 'line' = 'circle'
   ): void {
-    const viewport = { width: this._width, height: this._height }
+    // CRITICAL: Use viewport for screen coords, world for final coords
+    const viewport = { width: this._viewportWidth, height: this._viewportHeight }
+    const worldSize = { width: this._width, height: this._height }
     const world = invertTransform(
       screenX,
       screenY,
       { zoom: this.zoom, panX: this.panX, panY: this.panY },
-      viewport
+      viewport,
+      worldSize  // Pass world size for proper scaling
     )
     const worldX = Math.floor(world.x)
     const worldY = Math.floor(world.y)
@@ -261,12 +282,14 @@ export class WorkerBridge {
    * Flood fill tool (worker only)
    */
   fill(screenX: number, screenY: number, element: ElementType): void {
-    const viewport = { width: this._width, height: this._height }
+    const viewport = { width: this._viewportWidth, height: this._viewportHeight }
+    const worldSize = { width: this._width, height: this._height }
     const world = invertTransform(
       screenX,
       screenY,
       { zoom: this.zoom, panX: this.panX, panY: this.panY },
-      viewport
+      viewport,
+      worldSize
     )
     this.worker?.postMessage({
       type: 'FILL',
@@ -368,12 +391,14 @@ export class WorkerBridge {
    * Convert screen coordinates to world coordinates
    */
   screenToWorld(screenX: number, screenY: number): { x: number; y: number } {
-    const viewport = { width: this._width, height: this._height }
+    const viewport = { width: this._viewportWidth, height: this._viewportHeight }
+    const worldSize = { width: this._width, height: this._height }
     const world = invertTransform(
       screenX,
       screenY,
       { zoom: this.zoom, panX: this.panX, panY: this.panY },
-      viewport
+      viewport,
+      worldSize
     )
     return {
       x: Math.floor(world.x),

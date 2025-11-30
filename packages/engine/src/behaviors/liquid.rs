@@ -12,6 +12,23 @@
 
 use super::{Behavior, UpdateContext, xorshift32};
 use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_LIQUID, CAT_GAS};
+use std::cell::RefCell;
+
+thread_local! {
+    pub static PERF_LIQUID_SCANS: RefCell<u64> = RefCell::new(0);
+}
+
+pub fn reset_liquid_scan_counter() {
+    PERF_LIQUID_SCANS.with(|c| *c.borrow_mut() = 0);
+}
+
+pub fn take_liquid_scan_counter() -> u64 {
+    PERF_LIQUID_SCANS.with(|c| {
+        let val = *c.borrow();
+        *c.borrow_mut() = 0;
+        val
+    })
+}
 
 /// Result of scanning a horizontal line
 struct ScanResult {
@@ -65,6 +82,11 @@ impl LiquidBehavior {
         let mut best_x = start_x;
         let mut found = false;
         let mut has_cliff = false;
+
+        PERF_LIQUID_SCANS.with(|c| {
+            let mut v = c.borrow_mut();
+            *v = v.saturating_add(1);
+        });
 
         let gy = if ctx.gravity_y > 0.0 { 1 } else if ctx.gravity_y < 0.0 { -1 } else { 0 };
         let gravity_y = if gy == 0 { 1 } else { gy }; // default downward when zero
