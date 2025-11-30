@@ -221,16 +221,51 @@ fn xorshift32(state: &mut u32) -> u32 {
 
 use crate::chunks::{ChunkGrid, CHUNK_SIZE};
 
+/// LEGACY MODE: Per-pixel air temperature update with neighbor diffusion
+/// This is more accurate than SIMD batch because each air cell samples a random neighbor
+/// and can diffuse heat between air cells (not just lerp to ambient)
+#[inline]
+fn update_air_temperature_legacy(grid: &mut Grid, x: u32, y: u32, ambient_temp: f32, rng: &mut u32) {
+    let xi = x as i32;
+    let yi = y as i32;
+    
+    let my_temp = grid.get_temp(xi, yi);
+    
+    // Air tends towards ambient temperature
+    let diff_ambient = ambient_temp - my_temp;
+    if diff_ambient.abs() > 0.5 {
+        grid.set_temp(x, y, my_temp + diff_ambient * 0.02);
+    }
+    
+    // Also sample ONE random neighbor for diffusion (like particles do)
+    // This creates more realistic heat flow through air
+    let dir = xorshift32(rng) & 3;
+    let (nx, ny) = match dir {
+        0 => (xi, yi - 1),     // Up
+        1 => (xi, yi + 1),     // Down
+        2 => (xi - 1, yi),     // Left
+        _ => (xi + 1, yi),     // Right
+    };
+    
+    if grid.in_bounds(nx, ny) {
+        let neighbor_temp = grid.get_temp(nx, ny);
+        let diff = neighbor_temp - my_temp;
+        
+        // Air has conductivity ~5 → transfer_rate = 0.025
+        if diff.abs() > 0.5 {
+            let transfer_rate = 0.025;
+            let updated_temp = grid.get_temp(xi, yi); // Re-read after ambient lerp
+            grid.set_temp(x, y, updated_temp + diff * transfer_rate);
+            grid.set_temp(nx as u32, ny as u32, neighbor_temp - diff * transfer_rate);
+        }
+    }
+}
+
 /// Lazy Hydration: Process temperature with chunk-aware optimization
 /// 
 /// - Sleeping chunks: Only update virtual_temp (O(1) per chunk)
-/// - Active chunks: SIMD air lerp + scalar particle processing
-/// 
-/// PHASE 1 OPT: Two-pass approach for active chunks:
-/// 1. SIMD batch lerp for air cells (fast!)
-/// 2. Scalar processing for non-empty cells (heat transfer + phase changes)
-/// 
-/// This reduces O(W*H) to O(active_pixels + all_chunks)
+/// - Active chunks: Per-pixel processing for smoother thermodynamics
+///   (each air cell samples a random neighbor for realistic heat diffusion)
 pub fn process_temperature_grid_chunked(
     grid: &mut Grid,
     chunks: &mut ChunkGrid,  // Now mutable for virtual_temp updates!
@@ -254,17 +289,9 @@ pub fn process_temperature_grid_chunked(
                 chunks.update_virtual_temp(cx, cy, ambient_temp, AIR_LERP_SPEED);
             } else {
                 // === PATH 2: CHUNK IS ACTIVE ===
-                // PHASE 1 OPT: Two-pass processing
+                // LEGACY MODE: Per-pixel processing for smoother thermodynamics
+                // Each air cell is processed individually with random neighbor sampling
                 
-                // PASS 1: SIMD batch lerp for all air cells (fast!)
-                // This does the same thing as update_temperature for empty cells
-                // but processes 4 cells at once with SIMD
-                unsafe {
-                    simd_air_cells += grid.batch_lerp_air_temps(cx, cy, ambient_temp, AIR_LERP_SPEED);
-                }
-                
-                // PASS 2: Scalar processing for non-empty cells only
-                // These need neighbor-based heat transfer and phase changes
                 let start_x = cx * CHUNK_SIZE;
                 let start_y = cy * CHUNK_SIZE;
                 let end_x = (start_x + CHUNK_SIZE).min(grid.width());
@@ -272,9 +299,13 @@ pub fn process_temperature_grid_chunked(
                 
                 for y in start_y..end_y {
                     for x in start_x..end_x {
-                        // Only process non-empty cells (air was handled by SIMD pass)
                         let element = grid.get_type(x as i32, y as i32);
-                        if element != EL_EMPTY {
+                        if element == EL_EMPTY {
+                            // Air cell: lerp towards ambient + random neighbor diffusion
+                            update_air_temperature_legacy(grid, x, y, ambient_temp, rng);
+                            simd_air_cells += 1;
+                        } else {
+                            // Particle: full heat transfer logic
                             update_particle_temperature(grid, chunks, x, y, ambient_temp, frame, rng);
                             processed_non_empty += 1;
                         }
@@ -282,9 +313,6 @@ pub fn process_temperature_grid_chunked(
                 }
                 
                 // Sync virtual_temp with actual air temperature in chunk
-                // (so when chunk goes to sleep, it continues from correct value)
-                // Do this every 4th frame to save CPU
-                // PHASE 1 OPT: & 3 instead of % 4
                 if frame & 3 == 0 {
                     let avg = grid.get_average_air_temp(cx, cy);
                     chunks.set_virtual_temp(cx, cy, avg);
