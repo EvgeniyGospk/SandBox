@@ -460,15 +460,23 @@ export class WebGLRenderer {
   }
 
   /**
-   * Resize both viewport and world
+   * Update viewport size (canvas size).
+   * World/texture dimensions remain unchanged.
    */
-  resize(width: number, height: number): void {
+  setViewportSize(width: number, height: number): void {
+    this.viewportWidth = Math.floor(width);
+    this.viewportHeight = Math.floor(height);
+  }
+
+  /**
+   * Resize world/texture resources (simulation dimensions).
+   * Viewport size is managed independently via `setViewportSize`.
+   */
+  resizeWorld(width: number, height: number): void {
     this.worldWidth = Math.floor(width);
     this.worldHeight = Math.floor(height);
-    this.viewportWidth = this.worldWidth;
-    this.viewportHeight = this.worldHeight;
     this.forceFullUpload = true;
-    
+
     // Resize texture
     this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
     this.gl.texImage2D(
@@ -476,11 +484,31 @@ export class WebGLRenderer {
       this.worldWidth, this.worldHeight, 0,
       this.gl.RGBA, this.gl.UNSIGNED_BYTE, null
     );
-    
+
+    // Resize PBO buffers (if enabled)
+    if (this.usePBO && this.pbo[0] && this.pbo[1]) {
+      const gl = this.gl;
+      this.pboSize = this.worldWidth * this.worldHeight * 4;
+      for (let i = 0; i < 2; i++) {
+        gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, this.pbo[i]);
+        gl.bufferData(gl.PIXEL_UNPACK_BUFFER, this.pboSize, gl.STREAM_DRAW);
+      }
+      gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+      this.pboIndex = 0;
+    }
+
     // Update border geometry
     this.updateBorderBuffer();
-    
-    console.log(`🎮 WebGLRenderer resized: ${this.worldWidth}x${this.worldHeight}`);
+
+    console.log(`🎮 WebGLRenderer world resized: ${this.worldWidth}x${this.worldHeight}`);
+  }
+
+  /**
+   * Backward-compatible resize (world + viewport).
+   */
+  resize(width: number, height: number): void {
+    this.resizeWorld(width, height);
+    this.setViewportSize(width, height);
   }
 
   /**
@@ -493,6 +521,7 @@ export class WebGLRenderer {
     }
     
     const gl = this.gl;
+    gl.viewport(0, 0, this.viewportWidth, this.viewportHeight);
     
     // Clear with dark background
     gl.clearColor(0.04, 0.04, 0.04, 1.0);

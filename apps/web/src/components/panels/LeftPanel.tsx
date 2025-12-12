@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { useToolStore } from '@/stores/toolStore'
 import { ELEMENTS, ELEMENT_CATEGORIES } from '@/lib/elements'
+import type { ElementType } from '@/lib/engine'
 import { ChevronLeft, ChevronRight, Square, Circle } from 'lucide-react'
+
+const RIGID_BODIES_ENABLED = false
 
 // Rigid body shape definitions
 const RIGID_BODY_SHAPES = [
@@ -15,7 +18,7 @@ const RIGID_BODY_MATERIALS = [
   { id: 'metal', name: 'Metal', color: '#A9A9A9' },
   { id: 'wood', name: 'Wood', color: '#8B4513' },
   { id: 'ice', name: 'Ice', color: '#A5F2F3' },
-] as const
+] as const satisfies ReadonlyArray<{ id: ElementType; name: string; color: string }>
 
 type PanelMode = 'elements' | 'bodies'
 
@@ -37,6 +40,7 @@ export function LeftPanel() {
 
   const categories = Object.entries(ELEMENT_CATEGORIES)
   const elementsInCategory = ELEMENTS.filter(el => el.category === activeCategory)
+  const effectivePanelMode: PanelMode = RIGID_BODIES_ENABLED ? panelMode : 'elements'
 
   if (isCollapsed) {
     return (
@@ -60,7 +64,7 @@ export function LeftPanel() {
           <button
             onClick={() => setPanelMode('elements')}
             className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all ${
-              panelMode === 'elements'
+              effectivePanelMode === 'elements'
                 ? 'bg-[#3B82F6] text-white'
                 : 'bg-[#252525] text-[#808080] hover:text-white'
             }`}
@@ -68,12 +72,14 @@ export function LeftPanel() {
             Elements
           </button>
           <button
-            onClick={() => setPanelMode('bodies')}
+            disabled={!RIGID_BODIES_ENABLED}
+            onClick={() => { if (RIGID_BODIES_ENABLED) setPanelMode('bodies') }}
             className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all ${
-              panelMode === 'bodies'
+              effectivePanelMode === 'bodies'
                 ? 'bg-[#8B5CF6] text-white'
                 : 'bg-[#252525] text-[#808080] hover:text-white'
-            }`}
+            } ${!RIGID_BODIES_ENABLED ? 'opacity-50 cursor-not-allowed' : ''}`}
+            title={!RIGID_BODIES_ENABLED ? 'Rigid bodies are temporarily disabled' : undefined}
           >
             Bodies
           </button>
@@ -87,7 +93,7 @@ export function LeftPanel() {
         </button>
       </div>
 
-      {panelMode === 'elements' ? (
+      {effectivePanelMode === 'elements' ? (
         <>
           {/* Category Tabs */}
           <div className="px-4 py-3 border-b border-[#333]">
@@ -185,7 +191,7 @@ export function LeftPanel() {
                 {RIGID_BODY_MATERIALS.map((material) => (
                   <button
                     key={material.id}
-                    onClick={() => setRigidBodyElement(material.id as any)}
+                    onClick={() => setRigidBodyElement(material.id)}
                     className={`
                       flex items-center gap-2 p-2 rounded-lg transition-all
                       ${rigidBodyElement === material.id
@@ -207,7 +213,7 @@ export function LeftPanel() {
             {/* Instructions */}
             <div className="mt-4 p-3 bg-[#252525] rounded-lg">
               <p className="text-xs text-[#808080]">
-                💡 Click on canvas to place a rigid body. It will fall and collide with other objects!
+                Rigid bodies are temporarily disabled (engine stub).
               </p>
             </div>
           </div>

@@ -135,19 +135,31 @@ export class CanvasRenderer {
     this.ctx.fillStyle = `rgb(${this.BG_R}, ${this.BG_G}, ${this.BG_B})`
     this.ctx.fillRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
     
+    const viewportW = this.ctx.canvas.width
+    const viewportH = this.ctx.canvas.height
+    const worldW = this.width
+    const worldH = this.height
+    const worldAspect = worldW / worldH
+    const viewportAspect = viewportW / viewportH
+    const scaleToFit = worldAspect > viewportAspect ? viewportW / worldW : viewportH / worldH
+    const drawW = worldW * scaleToFit
+    const drawH = worldH * scaleToFit
+    const offsetX = (viewportW - drawW) / 2
+    const offsetY = (viewportH - drawH) / 2
+
     this.ctx.save()
     // Match WebGL transform: scale around viewport center, then apply screen-space pan
-    const centerX = this.ctx.canvas.width / 2
-    const centerY = this.ctx.canvas.height / 2
+    const centerX = viewportW / 2
+    const centerY = viewportH / 2
     this.ctx.translate(centerX + this.panX, centerY + this.panY)
     this.ctx.scale(this.zoom, this.zoom)
     this.ctx.translate(-centerX, -centerY)
     
     // Draw buffer image
-    this.ctx.drawImage(this.bufferCanvas, 0, 0)
+    this.ctx.drawImage(this.bufferCanvas, 0, 0, worldW, worldH, offsetX, offsetY, drawW, drawH)
     
     // 3. Draw world border (neon glow effect)
-    this.drawWorldBorder()
+    this.drawWorldBorder(offsetX, offsetY, drawW, drawH)
     
     this.ctx.restore()
   }
@@ -156,45 +168,44 @@ export class CanvasRenderer {
    * Draw a stylish border around the simulation world
    * Creates a neon glow effect with gradient
    */
-  private drawWorldBorder(): void {
+  private drawWorldBorder(x: number, y: number, width: number, height: number): void {
     const ctx = this.ctx
-    const w = this.width
-    const h = this.height
+    const z = this.zoom || 1
     
     // Outer glow (wider, more transparent)
     ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)' // Blue glow
-    ctx.lineWidth = 6 / this.zoom // Compensate for zoom
-    ctx.strokeRect(-3 / this.zoom, -3 / this.zoom, w + 6 / this.zoom, h + 6 / this.zoom)
+    ctx.lineWidth = 6 / z // Compensate for zoom
+    ctx.strokeRect(x - 3 / z, y - 3 / z, width + 6 / z, height + 6 / z)
     
     // Middle glow
     ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)'
-    ctx.lineWidth = 3 / this.zoom
-    ctx.strokeRect(-1.5 / this.zoom, -1.5 / this.zoom, w + 3 / this.zoom, h + 3 / this.zoom)
+    ctx.lineWidth = 3 / z
+    ctx.strokeRect(x - 1.5 / z, y - 1.5 / z, width + 3 / z, height + 3 / z)
     
     // Inner sharp border
     ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'
-    ctx.lineWidth = 1 / this.zoom
-    ctx.strokeRect(0, 0, w, h)
+    ctx.lineWidth = 1 / z
+    ctx.strokeRect(x, y, width, height)
     
     // Corner accents (bright dots)
-    const cornerSize = 8 / this.zoom
+    const cornerSize = 8 / z
     ctx.fillStyle = '#3B82F6'
     
     // Top-left
-    ctx.fillRect(-cornerSize / 2, -cornerSize / 2, cornerSize, 2 / this.zoom)
-    ctx.fillRect(-cornerSize / 2, -cornerSize / 2, 2 / this.zoom, cornerSize)
+    ctx.fillRect(x - cornerSize / 2, y - cornerSize / 2, cornerSize, 2 / z)
+    ctx.fillRect(x - cornerSize / 2, y - cornerSize / 2, 2 / z, cornerSize)
     
     // Top-right
-    ctx.fillRect(w - cornerSize / 2, -cornerSize / 2, cornerSize, 2 / this.zoom)
-    ctx.fillRect(w - 2 / this.zoom + cornerSize / 2, -cornerSize / 2, 2 / this.zoom, cornerSize)
+    ctx.fillRect(x + width - cornerSize / 2, y - cornerSize / 2, cornerSize, 2 / z)
+    ctx.fillRect(x + width - 2 / z + cornerSize / 2, y - cornerSize / 2, 2 / z, cornerSize)
     
     // Bottom-left
-    ctx.fillRect(-cornerSize / 2, h - 2 / this.zoom + cornerSize / 2, cornerSize, 2 / this.zoom)
-    ctx.fillRect(-cornerSize / 2, h - cornerSize / 2, 2 / this.zoom, cornerSize)
+    ctx.fillRect(x - cornerSize / 2, y + height - 2 / z + cornerSize / 2, cornerSize, 2 / z)
+    ctx.fillRect(x - cornerSize / 2, y + height - cornerSize / 2, 2 / z, cornerSize)
     
     // Bottom-right
-    ctx.fillRect(w - cornerSize / 2, h - 2 / this.zoom + cornerSize / 2, cornerSize, 2 / this.zoom)
-    ctx.fillRect(w - 2 / this.zoom + cornerSize / 2, h - cornerSize / 2, 2 / this.zoom, cornerSize)
+    ctx.fillRect(x + width - cornerSize / 2, y + height - 2 / z + cornerSize / 2, cornerSize, 2 / z)
+    ctx.fillRect(x + width - 2 / z + cornerSize / 2, y + height - cornerSize / 2, 2 / z, cornerSize)
   }
 
   /**
@@ -356,16 +367,30 @@ export class CanvasRenderer {
     this.ctx.fillStyle = `rgb(${this.BG_R}, ${this.BG_G}, ${this.BG_B})`
     this.ctx.fillRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
     
+    const viewportW = this.ctx.canvas.width
+    const viewportH = this.ctx.canvas.height
+    const worldW = this.width
+    const worldH = this.height
+    const worldAspect = worldW / worldH
+    const viewportAspect = viewportW / viewportH
+    const scaleToFit = worldAspect > viewportAspect ? viewportW / worldW : viewportH / worldH
+    const drawW = worldW * scaleToFit
+    const drawH = worldH * scaleToFit
+    const offsetX = (viewportW - drawW) / 2
+    const offsetY = (viewportH - drawH) / 2
+
     this.ctx.save()
-    // Apply Pan then Zoom
-    this.ctx.translate(this.panX, this.panY)
+    const centerX = viewportW / 2
+    const centerY = viewportH / 2
+    this.ctx.translate(centerX + this.panX, centerY + this.panY)
     this.ctx.scale(this.zoom, this.zoom)
+    this.ctx.translate(-centerX, -centerY)
     
     // Draw buffer image
-    this.ctx.drawImage(this.bufferCanvas, 0, 0)
+    this.ctx.drawImage(this.bufferCanvas, 0, 0, worldW, worldH, offsetX, offsetY, drawW, drawH)
     
     // Draw world border
-    this.drawWorldBorder()
+    this.drawWorldBorder(offsetX, offsetY, drawW, drawH)
     
     this.ctx.restore()
   }

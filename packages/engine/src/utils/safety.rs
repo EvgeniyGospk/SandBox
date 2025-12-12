@@ -7,11 +7,19 @@
 //! 
 //! Usage:
 //! ```rust
-//! // Read: fast!(slice, [index])
-//! let val = *fast!(self.types, [idx]);
+//! use particula_engine::fast;
 //! 
+//! let idx = 2;
+//! 
+//! let arr = vec![1, 2, 3, 4, 5];
+//! // Read: fast!(slice, [index])
+//! let val = *fast!(arr, [idx]);
+//! assert_eq!(val, 3);
+//! 
+//! let mut life = vec![0u8; 5];
 //! // Write: fast!(slice, [index] = value)
-//! fast!(self.life, [idx] = 100);
+//! fast!(life, [idx] = 100);
+//! assert_eq!(life[idx], 100);
 //! ```
 
 /// Zero-cost bounds checking macro

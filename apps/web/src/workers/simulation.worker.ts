@@ -9,20 +9,7 @@
  * - Worker → Main: READY, STATS, ERROR
  */
 
-// Worker-side types (can't import from main - workers are isolated)
-// MUST match types.ts ElementType exactly!
-type ElementType = 
-  | 'empty'
-  | 'stone' | 'sand' | 'wood' | 'metal' | 'ice'
-  | 'water' | 'oil' | 'lava' | 'acid'
-  | 'steam' | 'smoke'
-  | 'fire' | 'spark' | 'electricity'
-  | 'gunpowder'
-  | 'clone' | 'void'
-  | 'dirt' | 'seed' | 'plant'
-
-type RenderMode = 'normal' | 'thermal'
-type ToolType = 'brush' | 'eraser' | 'pipette' | 'move'
+import type { ElementType, RenderMode, ToolType } from '../lib/engine/types'
 
 // Phase 5: Import SharedInputBuffer for zero-latency input
 import { SharedInputBuffer, INPUT_TYPE_ERASE, INPUT_TYPE_END_STROKE, INPUT_TYPE_BRUSH_OFFSET } from '../lib/InputBuffer'
@@ -81,6 +68,12 @@ interface ResizeMessage {
   height: number
 }
 
+interface SetViewportMessage {
+  type: 'SET_VIEWPORT'
+  width: number
+  height: number
+}
+
 type WorkerMessage = 
   | InitMessage
   | InputMessage
@@ -88,6 +81,7 @@ type WorkerMessage =
   | SettingsMessage
   | RenderModeMessage
   | ResizeMessage
+  | SetViewportMessage
   | { type: 'PLAY' }
   | { type: 'PAUSE' }
   | { type: 'STEP' }   // Single-step when paused
@@ -115,12 +109,22 @@ let sharedInputBuffer: SharedInputBuffer | null = null
 // Canvas2D for thermal mode (and fallback)
 let thermalCanvas: OffscreenCanvas | null = null
 let ctx: OffscreenCanvasRenderingContext2D | null = null
+let screenCtx: OffscreenCanvasRenderingContext2D | null = null
 let imageData: ImageData | null = null
 let pixels: Uint8ClampedArray | null = null
 let pixels32: Uint32Array | null = null
 
 // Phase 3 (Fort Knox): Safe memory manager
 let memoryManager: MemoryManager | null = null
+let memoryManagerEngine: any = null
+
+// Cached settings (must survive world recreation)
+let currentGravity: { x: number; y: number } | null = null
+let currentAmbientTemperature: number | null = null
+
+// Flood fill visited stamp buffer (avoids per-call allocations)
+let fillVisited: Int32Array | null = null
+let fillStamp = 1
 
 // Simulation state
 let isPlaying = false
@@ -180,13 +184,13 @@ async function initEngine(
     canvas = initCanvas
     
     // Store viewport dimensions (may differ from world size!)
-    viewportWidth = vpWidth ?? width
-    viewportHeight = vpHeight ?? height
+	    viewportWidth = Math.max(1, Math.floor(vpWidth ?? width))
+	    viewportHeight = Math.max(1, Math.floor(vpHeight ?? height))
     
     // CRITICAL: Set canvas size to VIEWPORT size (for display)
     // World size may be smaller for performance!
-    canvas.width = viewportWidth
-    canvas.height = viewportHeight
+	    canvas.width = viewportWidth
+	    canvas.height = viewportHeight
     
     // Phase 5: Setup shared input buffer if provided
     if (inputBuffer) {
@@ -194,9 +198,10 @@ async function initEngine(
       console.log('🚀 Worker: Using SharedArrayBuffer for input (zero-latency)')
     }
     
-    // Import WASM module dynamically
-    // @ts-ignore - Dynamic import in worker
-    const wasm = await import('@particula/engine-wasm')
+	    // Import WASM module dynamically
+	    // Import the generated entry directly because packages/engine-wasm has no package.json in dev
+	    // @ts-expect-error -- Dynamic import in worker via Vite alias
+	    const wasm = await import('@particula/engine-wasm/particula_engine')
     const wasmExports = await wasm.default()
     
     wasmModule = wasm
@@ -221,18 +226,29 @@ async function initEngine(
       }
     }
     
-    // Create world
-    engine = new wasm.World(width, height)
-    
-    // Phase 3: Try WebGL first (GPU-accelerated)
-    try {
-      renderer = new WebGLRenderer(canvas, width, height)
-      useWebGL = true
-      console.log('🎮 Worker: WebGL 2.0 Renderer active!')
-    } catch (e) {
-      console.warn('WebGL not available, falling back to Canvas2D:', e)
-      useWebGL = false
-    }
+	    // Create world
+	    engine = new wasm.World(width, height)
+	    applyCurrentSettingsToEngine()
+	    
+	    // Phase 3: Try WebGL first (GPU-accelerated)
+	    try {
+	      renderer = new WebGLRenderer(canvas, width, height)
+	      useWebGL = true
+	      screenCtx = null
+	      console.log('🎮 Worker: WebGL 2.0 Renderer active!')
+	    } catch (e) {
+	      console.warn('WebGL not available, falling back to Canvas2D:', e)
+	      useWebGL = false
+	      renderer = null
+	      screenCtx = canvas.getContext('2d', {
+	        alpha: false,
+	        desynchronized: true
+	      }) as OffscreenCanvasRenderingContext2D | null
+	      if (!screenCtx) {
+	        throw new Error('Canvas2D not available')
+	      }
+	      screenCtx.imageSmoothingEnabled = false
+	    }
     
     // ALWAYS create Canvas2D resources for thermal mode fallback
     // Create a separate OffscreenCanvas for thermal rendering
@@ -273,11 +289,23 @@ function updateMemoryViews() {
   // Phase 3 (Fort Knox): Use MemoryManager for safe view access
   if (!engine || !wasmMemory) return
   
-  if (!memoryManager) {
+  if (!memoryManager || memoryManagerEngine !== engine) {
     memoryManager = new MemoryManager(wasmMemory, engine)
+    memoryManagerEngine = engine
   } else {
     // Refresh views if memory grew
     memoryManager.refresh()
+  }
+}
+
+function applyCurrentSettingsToEngine() {
+  if (!engine) return
+
+  if (currentGravity) {
+    engine.set_gravity(currentGravity.x, currentGravity.y)
+  }
+  if (currentAmbientTemperature !== null) {
+    engine.set_ambient_temperature(currentAmbientTemperature)
   }
 }
 
@@ -285,10 +313,10 @@ function updateMemoryViews() {
 // RENDER LOOP
 // ============================================================================
 
-function renderLoop(time: number) {
-  // Check if we have everything needed for rendering
-  const hasWebGL = useWebGL && renderer && engine && canvas && wasmMemory
-  const hasCanvas2D = !useWebGL && ctx && engine && canvas
+	function renderLoop(time: number) {
+	  // Check if we have everything needed for rendering
+	  const hasWebGL = useWebGL && renderer && engine && canvas && wasmMemory
+	  const hasCanvas2D = !useWebGL && ctx && screenCtx && engine && canvas
   
   if (!hasWebGL && !hasCanvas2D) {
     requestAnimationFrame(renderLoop)
@@ -358,8 +386,11 @@ function renderFrame() {
     // Use WebGL to display with transform (if available)
     if (useWebGL && renderer) {
       renderer.renderThermal(imageData, transform)
+      return
     }
-    // If no WebGL, thermalCanvas already has the image (but no transform)
+
+    // Canvas2D fallback: blit buffer to screen with transform
+    renderCanvas2DToScreen(transform)
     return
   }
   
@@ -420,22 +451,14 @@ function renderFrame() {
   // Fallback: Canvas2D Path (when WebGL not available)
   if (!ctx || !pixels32 || !imageData || !memoryManager) return
   
-  const width = canvas.width
-  const height = canvas.height
-  
   // 1. Render to ImageData
   renderNormal()
   
   // 2. Put pixels to context
   ctx.putImageData(imageData, 0, 0)
-  
-  // 3. Draw to screen with camera transform (if we had a separate screen canvas)
-  // For OffscreenCanvas in worker, this IS the screen
-  // We need to handle zoom/pan differently - draw to a buffer first
-  
-  // Clear and apply transform for world border
-  // (The main render is already done via putImageData)
-  drawWorldBorder(width, height)
+
+  // 3. Canvas2D fallback: blit buffer to screen with transform
+  renderCanvas2DToScreen(transform)
 }
 
 function renderNormal() {
@@ -500,23 +523,96 @@ function getThermalColor(t: number): [number, number, number] {
   return [255, Math.floor(255 * ratio), Math.floor(255 * ratio)]
 }
 
-function drawWorldBorder(width: number, height: number) {
-  if (!ctx) return
-  
+function renderCanvas2DToScreen(transform: { zoom: number; panX: number; panY: number }) {
+  if (!canvas || !thermalCanvas || !screenCtx) return
+
+  const viewportW = canvas.width
+  const viewportH = canvas.height
+  const worldW = thermalCanvas.width
+  const worldH = thermalCanvas.height
+
+  if (viewportW <= 0 || viewportH <= 0 || worldW <= 0 || worldH <= 0) return
+
+  const worldAspect = worldW / worldH
+  const viewportAspect = viewportW / viewportH
+  const scaleToFit = worldAspect > viewportAspect ? viewportW / worldW : viewportH / worldH
+  const drawW = worldW * scaleToFit
+  const drawH = worldH * scaleToFit
+  const offsetX = (viewportW - drawW) / 2
+  const offsetY = (viewportH - drawH) / 2
+
+  screenCtx.setTransform(1, 0, 0, 1, 0, 0)
+  screenCtx.fillStyle = '#0a0a0a'
+  screenCtx.fillRect(0, 0, viewportW, viewportH)
+
+  screenCtx.save()
+
+  const centerX = viewportW / 2
+  const centerY = viewportH / 2
+  screenCtx.translate(centerX + transform.panX, centerY + transform.panY)
+  screenCtx.scale(transform.zoom, transform.zoom)
+  screenCtx.translate(-centerX, -centerY)
+
+  screenCtx.drawImage(
+    thermalCanvas,
+    0,
+    0,
+    worldW,
+    worldH,
+    offsetX,
+    offsetY,
+    drawW,
+    drawH
+  )
+
+  drawWorldBorder2D(screenCtx, offsetX, offsetY, drawW, drawH, transform.zoom)
+  screenCtx.restore()
+}
+
+function drawWorldBorder2D(
+  target: OffscreenCanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  zoom: number
+) {
+  const z = zoom || 1
+
   // Outer glow
-  ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)'
-  ctx.lineWidth = 6
-  ctx.strokeRect(-3, -3, width + 6, height + 6)
-  
+  target.strokeStyle = 'rgba(59, 130, 246, 0.3)'
+  target.lineWidth = 6 / z
+  target.strokeRect(x - 3 / z, y - 3 / z, width + 6 / z, height + 6 / z)
+
   // Middle glow
-  ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)'
-  ctx.lineWidth = 3
-  ctx.strokeRect(-1.5, -1.5, width + 3, height + 3)
-  
+  target.strokeStyle = 'rgba(59, 130, 246, 0.5)'
+  target.lineWidth = 3 / z
+  target.strokeRect(x - 1.5 / z, y - 1.5 / z, width + 3 / z, height + 3 / z)
+
   // Inner sharp border
-  ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'
-  ctx.lineWidth = 1
-  ctx.strokeRect(0, 0, width, height)
+  target.strokeStyle = 'rgba(59, 130, 246, 0.8)'
+  target.lineWidth = 1 / z
+  target.strokeRect(x, y, width, height)
+
+  // Corner accents (bright dots)
+  const cornerSize = 8 / z
+  target.fillStyle = '#3B82F6'
+
+  // Top-left
+  target.fillRect(x - cornerSize / 2, y - cornerSize / 2, cornerSize, 2 / z)
+  target.fillRect(x - cornerSize / 2, y - cornerSize / 2, 2 / z, cornerSize)
+
+  // Top-right
+  target.fillRect(x + width - cornerSize / 2, y - cornerSize / 2, cornerSize, 2 / z)
+  target.fillRect(x + width - 2 / z + cornerSize / 2, y - cornerSize / 2, 2 / z, cornerSize)
+
+  // Bottom-left
+  target.fillRect(x - cornerSize / 2, y + height - 2 / z + cornerSize / 2, cornerSize, 2 / z)
+  target.fillRect(x - cornerSize / 2, y + height - cornerSize / 2, 2 / z, cornerSize)
+
+  // Bottom-right
+  target.fillRect(x + width - cornerSize / 2, y + height - 2 / z + cornerSize / 2, cornerSize, 2 / z)
+  target.fillRect(x + width - 2 / z + cornerSize / 2, y + height - cornerSize / 2, 2 / z, cornerSize)
 }
 
 // ============================================================================
@@ -711,6 +807,9 @@ function loadSnapshotBuffer(buffer: ArrayBuffer) {
   }
   // Reset world
   engine = new wasmModule.World(width, height)
+  applyCurrentSettingsToEngine()
+  lastInputX = null
+  lastInputY = null
   updateMemoryViews()
   // Re-apply particles
   for (let i = 0; i < types.length; i++) {
@@ -754,7 +853,19 @@ function floodFill(startX: number, startY: number, targetElementId: number) {
   // nothing to do
   if (sourceId === targetElementId) return
 
-  const visited = new Uint8Array(width * height)
+  const len = width * height
+  if (!fillVisited || fillVisited.length !== len) {
+    fillVisited = new Int32Array(len)
+    fillStamp = 1
+  } else {
+    fillStamp++
+    if (fillStamp >= 0x7fffffff) {
+      fillVisited.fill(0)
+      fillStamp = 1
+    }
+  }
+
+  const stamp = fillStamp
   const stack: Array<{ x: number; y: number }> = [{ x: startX, y: startY }]
   let processed = 0
 
@@ -762,10 +873,10 @@ function floodFill(startX: number, startY: number, targetElementId: number) {
     const { x, y } = stack.pop() as { x: number; y: number }
     if (x < 0 || y < 0 || x >= width || y >= height) continue
     const idx = y * width + x
-    if (visited[idx]) continue
+    if (fillVisited[idx] === stamp) continue
     if (types[idx] !== sourceId) continue
 
-    visited[idx] = 1
+    fillVisited[idx] = stamp
     processed++
     if (processed > FILL_LIMIT) break
 
@@ -898,17 +1009,18 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
       panY = msg.panY
       break
       
-    case 'SETTINGS':
-      if (msg.gravity && engine) {
-        engine.set_gravity(msg.gravity.x, msg.gravity.y)
-      }
-      if (msg.ambientTemperature !== undefined && engine) {
-        engine.set_ambient_temperature(msg.ambientTemperature)
-      }
-      if (msg.speed !== undefined) {
-        speed = msg.speed
-      }
-      break
+	    case 'SETTINGS':
+	      if (msg.gravity) {
+	        currentGravity = msg.gravity
+	      }
+	      if (msg.ambientTemperature !== undefined) {
+	        currentAmbientTemperature = msg.ambientTemperature
+	      }
+	      if (msg.speed !== undefined) {
+	        speed = msg.speed
+	      }
+	      applyCurrentSettingsToEngine()
+	      break
       
     case 'SET_RENDER_MODE':
       renderMode = msg.mode
@@ -924,35 +1036,72 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
       }
       break
       
-    case 'RESIZE':
-      if (engine && canvas) {
-        // CRITICAL: Force integer sizes to prevent "falling through" bug
-        const w = Math.floor(msg.width)
-        const h = Math.floor(msg.height)
-        
-        // Check if size actually changed
-        if (w === canvas.width && h === canvas.height) break
-        
-        // Recreate world with new size
-        engine = new wasmModule.World(w, h)
-        canvas.width = w
-        canvas.height = h
-        
-        // Phase 3: Resize WebGL renderer
-        if (useWebGL && renderer) {
-          renderer.resize(w, h)
-        } else if (ctx) {
-          // Canvas2D fallback
-          imageData = new ImageData(w, h)
-          pixels = imageData.data
-          pixels32 = new Uint32Array(pixels.buffer)
-        }
-        
-        updateMemoryViews()
-        console.log(`⚡ Resized World to: ${w}x${h}`)
-      }
-      break
-  }
+	    case 'RESIZE': {
+	      if (!engine || !wasmModule) break
+
+	      // CRITICAL: Force integer sizes to prevent "falling through" bug
+	      const w = Math.max(1, Math.floor(msg.width))
+	      const h = Math.max(1, Math.floor(msg.height))
+
+	      const currentW = engine.width as number
+	      const currentH = engine.height as number
+	      if (w === currentW && h === currentH) break
+
+	      // Recreate world with new size (viewport stays unchanged!)
+	      engine = new wasmModule.World(w, h)
+	      applyCurrentSettingsToEngine()
+	      lastInputX = null
+	      lastInputY = null
+
+	      // Resize thermal buffer (used by thermal mode + Canvas2D fallback)
+	      thermalCanvas = new OffscreenCanvas(w, h)
+	      ctx = thermalCanvas.getContext('2d', {
+	        alpha: false,
+	        desynchronized: true
+	      }) as OffscreenCanvasRenderingContext2D | null
+	      if (ctx) {
+	        ctx.imageSmoothingEnabled = false
+	        imageData = new ImageData(w, h)
+	        pixels = imageData.data
+	        pixels32 = new Uint32Array(pixels.buffer)
+	      }
+
+	      // Resize WebGL renderer world resources (if active)
+	      if (useWebGL && renderer) {
+	        renderer.resizeWorld(w, h)
+	      }
+
+	      // Reset fill cache (size changed)
+	      fillVisited = null
+
+	      updateMemoryViews()
+	      console.log(`⚡ Resized World to: ${w}x${h}`)
+	      break
+	    }
+
+	    case 'SET_VIEWPORT': {
+	      if (!canvas) break
+
+	      const w = Math.max(1, Math.floor(msg.width))
+	      const h = Math.max(1, Math.floor(msg.height))
+	      if (w === viewportWidth && h === viewportHeight) break
+
+	      viewportWidth = w
+	      viewportHeight = h
+
+	      canvas.width = w
+	      canvas.height = h
+
+	      if (useWebGL && renderer) {
+	        renderer.setViewportSize(w, h)
+	      } else if (screenCtx) {
+	        // Resizing resets context state
+	        screenCtx.imageSmoothingEnabled = false
+	      }
+
+	      break
+	    }
+	  }
 }
 
 // Export empty to make it a module

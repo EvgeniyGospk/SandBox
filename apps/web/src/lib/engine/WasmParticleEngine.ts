@@ -85,10 +85,10 @@ let wasmMemory: WebAssembly.Memory | null = null
 export async function loadWasmEngine(): Promise<WasmModule> {
   if (wasmModule) return wasmModule
   
-  try {
-    // Dynamic import of WASM package
-    // @ts-ignore - WASM module loaded dynamically
-    const wasm = await import('@particula/engine-wasm/particula_engine')
+	  try {
+	    // Dynamic import of WASM package
+	    // @ts-expect-error -- WASM module loaded dynamically via Vite alias
+	    const wasm = await import('@particula/engine-wasm/particula_engine')
     
     // Initialize WASM and get exports (including memory!)
     const wasmExports = await wasm.default()

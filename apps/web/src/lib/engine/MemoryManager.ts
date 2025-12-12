@@ -60,7 +60,7 @@ export class MemoryManager {
       }
       
       return false
-    } catch (e) {
+    } catch {
       // If we can't access buffer, it's definitely stale
       return true
     }

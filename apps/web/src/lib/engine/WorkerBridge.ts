@@ -48,6 +48,7 @@ export class WorkerBridge {
   private _viewportWidth: number = 0   // Viewport size (for coordinate conversion)
   private _viewportHeight: number = 0  // Viewport size
   private _isReady: boolean = false
+  private _hasTransferred: boolean = false
   
   // Phase 5: Shared input buffer for zero-latency input
   private inputBuffer: SharedInputBuffer | null = null
@@ -86,106 +87,137 @@ export class WorkerBridge {
     viewportWidth?: number,
     viewportHeight?: number
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      try {
-        // Create worker
-        this.worker = new SimulationWorker()
-        this._width = worldWidth
-        this._height = worldHeight
-        // Store viewport size for coordinate conversion (before canvas is transferred!)
-        this._viewportWidth = viewportWidth ?? canvas.width
-        this._viewportHeight = viewportHeight ?? canvas.height
-        
-        // Setup message handler
-        this.worker.onmessage = (e) => {
-          const msg = e.data
-          
-          switch (msg.type) {
-            case 'READY':
-              this._isReady = true
-              this._width = msg.width
-              this._height = msg.height
-              this.onReady?.(msg.width, msg.height)
-              resolve()
-              break
-              
-            case 'STATS':
-              this.onStats?.({
-                fps: msg.fps,
-                particleCount: msg.particleCount
-              })
-              break
-              
-            case 'ERROR':
-              this.onError?.(msg.message)
-              reject(new Error(msg.message))
-              break
-              
-            // Phase 5: WASM crash recovery
-            case 'CRASH':
-              console.error('💥 WASM Crash:', msg.message)
-              this.onCrash?.(msg.message, msg.canRecover ?? true)
-              break
-            
-            case 'PIPETTE_RESULT': {
-              const resolver = this.pipetteResolvers.get(msg.id)
-              if (resolver) {
-                resolver(msg.element ?? null)
-                this.pipetteResolvers.delete(msg.id)
-              }
-              break
-            }
+    // Clean previous state (if any)
+    this.destroy()
+    this._isReady = false
+    this._hasTransferred = false
+    this.useSharedInput = false
+    this.inputBuffer = null
 
-            case 'SNAPSHOT_RESULT': {
-              const resolver = this.snapshotResolvers.get(msg.id)
-              if (resolver) {
-                resolver(msg.buffer ?? null)
-                this.snapshotResolvers.delete(msg.id)
-              }
-              break
-            }
-          }
-        }
-        
-        this.worker.onerror = (e) => {
-          this.onError?.(e.message)
-          reject(e)
-        }
-        
-        // Transfer canvas control to worker
-        const offscreen = canvas.transferControlToOffscreen()
-        
-        // Phase 5: Create shared input buffer if available
-        let inputBufferData: SharedArrayBuffer | null = null
-        if (isSharedArrayBufferAvailable()) {
-          try {
-            inputBufferData = new SharedArrayBuffer(getInputBufferSize())
-            this.inputBuffer = new SharedInputBuffer(inputBufferData)
-            this.useSharedInput = true
-            console.log('🚀 WorkerBridge: Using SharedArrayBuffer for input (zero-latency)')
-          } catch (e) {
-            console.warn('SharedArrayBuffer not available, falling back to postMessage')
-          }
-        }
-        
-        // Send init message with canvas and optional input buffer
-        this.worker.postMessage(
-          {
-            type: 'INIT',
-            canvas: offscreen,
-            width: worldWidth,
-            height: worldHeight,
-            viewportWidth: this._viewportWidth,
-            viewportHeight: this._viewportHeight,
-            inputBuffer: inputBufferData // May be null
-          },
-          [offscreen] // Transfer list (SAB is not transferred, just shared)
-        )
-        
-      } catch (error) {
-        reject(error)
-      }
+    // Create worker
+    const worker = new SimulationWorker()
+    this.worker = worker
+    this._width = Math.floor(worldWidth)
+    this._height = Math.floor(worldHeight)
+    // Store viewport size for coordinate conversion (before canvas is transferred!)
+    this._viewportWidth = Math.floor(viewportWidth ?? canvas.width)
+    this._viewportHeight = Math.floor(viewportHeight ?? canvas.height)
+
+    let resolveInit: (() => void) | null = null
+    let rejectInit: ((err: Error) => void) | null = null
+    const readyPromise = new Promise<void>((resolve, reject) => {
+      resolveInit = resolve
+      rejectInit = reject
     })
+
+    worker.onmessage = (e) => {
+      const msg = e.data
+
+      switch (msg.type) {
+        case 'READY':
+          this._isReady = true
+          this._width = msg.width
+          this._height = msg.height
+          this.onReady?.(msg.width, msg.height)
+          resolveInit?.()
+          resolveInit = null
+          rejectInit = null
+          break
+
+        case 'STATS':
+          this.onStats?.({
+            fps: msg.fps,
+            particleCount: msg.particleCount
+          })
+          break
+
+        case 'ERROR': {
+          this.onError?.(msg.message)
+          if (rejectInit) {
+            rejectInit(new Error(msg.message))
+            resolveInit = null
+            rejectInit = null
+          }
+          break
+        }
+
+        // Phase 5: WASM crash recovery
+        case 'CRASH':
+          console.error('💥 WASM Crash:', msg.message)
+          this.onCrash?.(msg.message, msg.canRecover ?? true)
+          break
+
+        case 'PIPETTE_RESULT': {
+          const resolver = this.pipetteResolvers.get(msg.id)
+          if (resolver) {
+            resolver(msg.element ?? null)
+            this.pipetteResolvers.delete(msg.id)
+          }
+          break
+        }
+
+        case 'SNAPSHOT_RESULT': {
+          const resolver = this.snapshotResolvers.get(msg.id)
+          if (resolver) {
+            resolver(msg.buffer ?? null)
+            this.snapshotResolvers.delete(msg.id)
+          }
+          break
+        }
+      }
+    }
+
+    worker.onerror = (e) => {
+      // ErrorEvent in browsers; keep a safe fallback.
+      const message = (e as ErrorEvent)?.message ?? 'Worker error'
+      this.onError?.(message)
+      if (rejectInit) {
+        rejectInit(e instanceof Error ? e : new Error(message))
+        resolveInit = null
+        rejectInit = null
+      }
+    }
+
+    // Transfer canvas control to worker (may throw)
+    let offscreen: OffscreenCanvas
+    try {
+      offscreen = canvas.transferControlToOffscreen()
+      this._hasTransferred = true
+    } catch (err) {
+      worker.terminate()
+      if (this.worker === worker) this.worker = null
+      this._hasTransferred = false
+      throw err
+    }
+
+    // Phase 5: Create shared input buffer if available
+    let inputBufferData: SharedArrayBuffer | null = null
+    if (isSharedArrayBufferAvailable()) {
+      try {
+        inputBufferData = new SharedArrayBuffer(getInputBufferSize())
+        this.inputBuffer = new SharedInputBuffer(inputBufferData)
+        this.useSharedInput = true
+        console.log('🚀 WorkerBridge: Using SharedArrayBuffer for input (zero-latency)')
+      } catch {
+        console.warn('SharedArrayBuffer not available, falling back to postMessage')
+      }
+    }
+
+    // Send init message with canvas and optional input buffer
+    worker.postMessage(
+      {
+        type: 'INIT',
+        canvas: offscreen,
+        width: this._width,
+        height: this._height,
+        viewportWidth: this._viewportWidth,
+        viewportHeight: this._viewportHeight,
+        inputBuffer: inputBufferData // May be null
+      },
+      [offscreen] // Transfer list (SAB is not transferred, just shared)
+    )
+
+    await readyPromise
   }
   
   // === Getters ===
@@ -193,6 +225,7 @@ export class WorkerBridge {
   get width(): number { return this._width }
   get height(): number { return this._height }
   get isReady(): boolean { return this._isReady }
+  get hasTransferred(): boolean { return this._hasTransferred }
   
   // === Playback Control ===
   
@@ -427,15 +460,21 @@ export class WorkerBridge {
   }
   
   // === Lifecycle ===
-  
+
+  setViewportSize(width: number, height: number): void {
+    this._viewportWidth = Math.floor(width)
+    this._viewportHeight = Math.floor(height)
+    this.worker?.postMessage({ type: 'SET_VIEWPORT', width: this._viewportWidth, height: this._viewportHeight })
+  }
+
   resize(width: number, height: number): void {
-    this._width = width
-    this._height = height
+    this._width = Math.floor(width)
+    this._height = Math.floor(height)
     
     this.worker?.postMessage({
       type: 'RESIZE',
-      width,
-      height
+      width: this._width,
+      height: this._height
     })
   }
   
@@ -443,6 +482,9 @@ export class WorkerBridge {
     this.worker?.terminate()
     this.worker = null
     this._isReady = false
+    this._hasTransferred = false
+    this.useSharedInput = false
+    this.inputBuffer = null
   }
 }
 

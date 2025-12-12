@@ -7,7 +7,7 @@
  *
  * UI/store should call these helpers instead of touching engine/worker directly.
  */
-import { getBridge, getEngine } from '@/components/Canvas'
+import { getBridge, getEngine } from './runtime'
 import type { RenderMode } from './types'
 
 function getTarget() {

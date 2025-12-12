@@ -1,6 +1,6 @@
 import { useToolStore } from '@/stores/toolStore'
 import { useSimulationStore } from '@/stores/simulationStore'
-import { resetCamera } from '@/components/Canvas'
+import { resetCamera } from '@/lib/canvasControls'
 import * as SimulationController from '@/lib/engine/SimulationController'
 import { 
   Circle, 

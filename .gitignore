@@ -6,6 +6,7 @@ node_modules/
 # Build outputs
 dist/
 build/
+*.tsbuildinfo
 *.wasm
 packages/engine-wasm/
 
@@ -36,13 +37,13 @@ Thumbs.db
 
 # Rust
 packages/engine/target/
-packages/engine/Cargo.lock
 
 # Testing
 coverage/
 
 # Misc
 *.log
+all_code_output.txt
 
 # Legacy fallback engines (not needed - WASM is primary)
 apps/web/src/lib/engine/_LEGACY/

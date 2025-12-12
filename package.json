@@ -17,10 +17,10 @@
     "clean": "turbo run clean && rm -rf node_modules"
   },
   "devDependencies": {
-    "turbo": "latest",
-    "typescript": "latest"
+    "turbo": "^2.6.1",
+    "typescript": "^5.9.3"
   },
-  "packageManager": "npm@10.8.0",
+  "packageManager": "npm@9.2.0",
   "engines": {
     "node": ">=20.0.0"
   }
