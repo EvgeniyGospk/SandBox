@@ -4,7 +4,7 @@
  * 
  * Reads definitions/elements.json and definitions/reactions.json
  * Generates:
- * - packages/engine/src/generated_elements.rs (Elements + Flags + Reactions LUT)
+ * - packages/engine/src/domain/generated_elements.rs (Elements + Flags + Reactions LUT)
  * - apps/web/src/lib/engine/generated_elements.ts (TypeScript)
  * 
  * Usage:
@@ -19,7 +19,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const ELEMENTS_PATH = path.join(ROOT, 'definitions', 'elements.json');
 const REACTIONS_PATH = path.join(ROOT, 'definitions', 'reactions.json');
-const RUST_OUTPUT = path.join(ROOT, 'packages', 'engine', 'src', 'generated_elements.rs');
+const RUST_OUTPUT = path.join(ROOT, 'packages', 'engine', 'src', 'domain', 'generated_elements.rs');
 const TS_OUTPUT = path.join(ROOT, 'apps', 'web', 'src', 'lib', 'engine', 'generated_elements.ts');
 
 // Load definitions

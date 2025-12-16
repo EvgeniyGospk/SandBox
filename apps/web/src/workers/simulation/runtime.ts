@@ -1,6 +1,6 @@
-import { screenToWorld as invertTransform } from '../../lib/engine/transform'
-import { debugLog } from '../../lib/log'
-import { SIMULATION_PROTOCOL_VERSION } from '../../lib/engine/protocol'
+import { screenToWorld as invertTransform } from '../../core/engine/transform'
+import { debugLog } from '../../core/logging/log'
+import { SIMULATION_PROTOCOL_VERSION } from '../../core/engine/protocol'
 
 import type { WorkerMessage } from './types'
 import { initEngine } from './init'

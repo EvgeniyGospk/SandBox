@@ -1,10 +1,10 @@
-import type { RenderMode } from '../../lib/engine/types'
+import type { RenderMode } from '../../core/engine/types'
 
-import { SharedInputBuffer } from '../../lib/InputBuffer'
-import { MemoryManager } from '../../lib/engine/MemoryManager'
-import { WebGLRenderer } from '../../lib/engine/WebGLRenderer'
-import { ELEMENT_NAME_TO_ID } from '../../lib/engine/generated_elements'
-import { FPS_SAMPLES } from '../../lib/engine/timing'
+import { SharedInputBuffer } from '../../core/canvas/input/InputBuffer'
+import { MemoryManager } from '../../core/engine/MemoryManager'
+import { WebGLRenderer } from '../../core/engine/WebGLRenderer'
+import { ELEMENT_NAME_TO_ID } from '../../core/engine/data/generated_elements'
+import { FPS_SAMPLES } from '../../core/engine/timing'
 
 import type { WasmModule, WasmWorld } from './types'
 

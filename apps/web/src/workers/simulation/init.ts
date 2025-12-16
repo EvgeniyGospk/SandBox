@@ -1,7 +1,7 @@
-import { SharedInputBuffer } from '../../lib/InputBuffer'
-import { WebGLRenderer } from '../../lib/engine/WebGLRenderer'
-import { debugLog, debugWarn, logError } from '../../lib/log'
-import { SIMULATION_PROTOCOL_VERSION } from '../../lib/engine/protocol'
+import { SharedInputBuffer } from '../../core/canvas/input/InputBuffer'
+import { WebGLRenderer } from '../../core/engine/WebGLRenderer'
+import { debugLog, debugWarn, logError } from '../../core/logging/log'
+import { SIMULATION_PROTOCOL_VERSION } from '../../core/engine/protocol'
 
 import type { WasmInitOutput } from './types'
 import { state } from './state'

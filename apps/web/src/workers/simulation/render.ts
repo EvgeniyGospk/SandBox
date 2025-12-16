@@ -1,4 +1,4 @@
-import { debugLog } from '../../lib/log'
+import { debugLog } from '../../core/logging/log'
 
 import { state, BG_COLOR_32, EL_EMPTY } from './state'
 

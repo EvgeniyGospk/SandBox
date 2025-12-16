@@ -4,29 +4,31 @@
 //! Phase 5: Parallel Processing with Rayon
 //! 
 //! Architecture (SOLID):
-//! - elements.rs    - Element definitions and properties
-//! - grid.rs        - SoA data storage
-//! - chunks.rs      - Spatial optimization (32x32 chunks)
-//! - behaviors/     - Particle physics (one file per category)
-//! - reactions.rs   - Chemical reactions
-//! - temperature.rs - Thermodynamics and phase changes
-//! - world.rs       - Orchestration only
+//! - core/          - Core functionality
+//! - domain/        - Domain logic
+//! - systems/       - Systems and behaviors
+//! - world/         - Orchestration only
+//! - api/           - Public API
 
 // Phase 4: Utils with safety macros (must be first for macro export!)
 #[macro_use]
-mod utils;
+pub mod core;
+pub mod domain;
+pub mod systems;
+pub mod world;
+pub mod api;
 
-mod generated_elements;
-mod elements;
-mod grid;
-mod chunks;
-mod behaviors;
-mod reactions;
-mod temperature;
-mod physics;  // Phase 2: Newtonian Physics
-mod rigid_body;  // Rigid body structure
-mod rigid_body_system;  // Rigid body manager
-mod world;
+// Compatibility re-exports (keeps existing internal/external paths working)
+pub use core::chunks;
+pub use core::grid;
+pub use domain::elements;
+pub use domain::generated_elements;
+pub use systems::behaviors;
+pub use systems::physics;
+pub use systems::reactions;
+pub use systems::rigid_body;
+pub use systems::rigid_body_system;
+pub use systems::temperature;
 
 use wasm_bindgen::prelude::*;
 
@@ -57,48 +59,48 @@ pub fn version() -> String {
 
 // Re-export main types
 pub use world::World;
-pub use elements::ElementType;
+pub use domain::elements::ElementType;
 
 // Export element constants for JS
 #[wasm_bindgen]
-pub fn el_empty() -> u8 { elements::EL_EMPTY }
+pub fn el_empty() -> u8 { domain::elements::EL_EMPTY }
 #[wasm_bindgen]
-pub fn el_stone() -> u8 { elements::EL_STONE }
+pub fn el_stone() -> u8 { domain::elements::EL_STONE }
 #[wasm_bindgen]
-pub fn el_sand() -> u8 { elements::EL_SAND }
+pub fn el_sand() -> u8 { domain::elements::EL_SAND }
 #[wasm_bindgen]
-pub fn el_wood() -> u8 { elements::EL_WOOD }
+pub fn el_wood() -> u8 { domain::elements::EL_WOOD }
 #[wasm_bindgen]
-pub fn el_metal() -> u8 { elements::EL_METAL }
+pub fn el_metal() -> u8 { domain::elements::EL_METAL }
 #[wasm_bindgen]
-pub fn el_ice() -> u8 { elements::EL_ICE }
+pub fn el_ice() -> u8 { domain::elements::EL_ICE }
 #[wasm_bindgen]
-pub fn el_water() -> u8 { elements::EL_WATER }
+pub fn el_water() -> u8 { domain::elements::EL_WATER }
 #[wasm_bindgen]
-pub fn el_oil() -> u8 { elements::EL_OIL }
+pub fn el_oil() -> u8 { domain::elements::EL_OIL }
 #[wasm_bindgen]
-pub fn el_lava() -> u8 { elements::EL_LAVA }
+pub fn el_lava() -> u8 { domain::elements::EL_LAVA }
 #[wasm_bindgen]
-pub fn el_acid() -> u8 { elements::EL_ACID }
+pub fn el_acid() -> u8 { domain::elements::EL_ACID }
 #[wasm_bindgen]
-pub fn el_steam() -> u8 { elements::EL_STEAM }
+pub fn el_steam() -> u8 { domain::elements::EL_STEAM }
 #[wasm_bindgen]
-pub fn el_smoke() -> u8 { elements::EL_SMOKE }
+pub fn el_smoke() -> u8 { domain::elements::EL_SMOKE }
 #[wasm_bindgen]
-pub fn el_fire() -> u8 { elements::EL_FIRE }
+pub fn el_fire() -> u8 { domain::elements::EL_FIRE }
 #[wasm_bindgen]
-pub fn el_spark() -> u8 { elements::EL_SPARK }
+pub fn el_spark() -> u8 { domain::elements::EL_SPARK }
 #[wasm_bindgen]
-pub fn el_electricity() -> u8 { elements::EL_ELECTRICITY }
+pub fn el_electricity() -> u8 { domain::elements::EL_ELECTRICITY }
 #[wasm_bindgen]
-pub fn el_gunpowder() -> u8 { elements::EL_GUNPOWDER }
+pub fn el_gunpowder() -> u8 { domain::elements::EL_GUNPOWDER }
 #[wasm_bindgen]
-pub fn el_clone() -> u8 { elements::EL_CLONE }
+pub fn el_clone() -> u8 { domain::elements::EL_CLONE }
 #[wasm_bindgen]
-pub fn el_void() -> u8 { elements::EL_VOID }
+pub fn el_void() -> u8 { domain::elements::EL_VOID }
 #[wasm_bindgen]
-pub fn el_dirt() -> u8 { elements::EL_DIRT }
+pub fn el_dirt() -> u8 { domain::elements::EL_DIRT }
 #[wasm_bindgen]
-pub fn el_seed() -> u8 { elements::EL_SEED }
+pub fn el_seed() -> u8 { domain::elements::EL_SEED }
 #[wasm_bindgen]
-pub fn el_plant() -> u8 { elements::EL_PLANT }
+pub fn el_plant() -> u8 { domain::elements::EL_PLANT }

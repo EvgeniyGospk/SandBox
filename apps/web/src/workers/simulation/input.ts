@@ -1,13 +1,13 @@
-import type { ElementType, ToolType } from '../../lib/engine/types'
+import type { ElementType, ToolType } from '../../core/engine/types'
 
 import {
   INPUT_TYPE_BRUSH_OFFSET,
   INPUT_TYPE_END_STROKE,
   INPUT_TYPE_ERASE,
-} from '../../lib/InputBuffer'
-import { screenToWorld as invertTransform } from '../../lib/engine/transform'
-import { debugWarn } from '../../lib/log'
-import { ELEMENT_ID_TO_NAME } from '../../lib/engine/generated_elements'
+} from '../../core/canvas/input/InputBuffer'
+import { screenToWorld as invertTransform } from '../../core/engine/transform'
+import { debugWarn } from '../../core/logging/log'
+import { ELEMENT_ID_TO_NAME } from '../../core/engine/data/generated_elements'
 
 import { state, ELEMENT_MAP } from './state'
 
@@ -120,7 +120,7 @@ export function processSharedInput(): void {
     state.lastInputY = null
   }
 
-  input.processAll((x, y, type, val) => {
+  input.processAll((x: number, y: number, type: number, val: number) => {
     if (type === INPUT_TYPE_END_STROKE) {
       state.lastInputX = null
       state.lastInputY = null

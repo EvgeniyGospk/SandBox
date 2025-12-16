@@ -1,5 +1,5 @@
-import { debugWarn, logError } from '../../lib/log'
-import { BASE_STEP_MS, MAX_DT_MS, MAX_STEPS_PER_FRAME, STATS_INTERVAL_MS as STATS_INTERVAL, FPS_SAMPLES } from '../../lib/engine/timing'
+import { debugWarn, logError } from '../../core/logging/log'
+import { BASE_STEP_MS, MAX_DT_MS, MAX_STEPS_PER_FRAME, STATS_INTERVAL_MS as STATS_INTERVAL, FPS_SAMPLES } from '../../core/engine/timing'
 
 import { state } from './state'
 import { updateMemoryViews } from './memory'

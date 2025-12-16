@@ -1,7 +1,7 @@
-import type { ElementType } from '../../lib/engine/types'
+import type { ElementType } from '../../core/engine/types'
 
-import { ELEMENT_ID_TO_NAME } from '../../lib/engine/generated_elements'
-import { debugWarn, logError } from '../../lib/log'
+import { ELEMENT_ID_TO_NAME } from '../../core/engine/data/generated_elements'
+import { debugWarn, logError } from '../../core/logging/log'
 
 import { state } from './state'
 import { updateMemoryViews, applyCurrentSettingsToEngine } from './memory'

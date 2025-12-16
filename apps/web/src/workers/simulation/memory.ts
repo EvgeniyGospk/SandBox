@@ -1,4 +1,4 @@
-import { MemoryManager } from '../../lib/engine/MemoryManager'
+import { MemoryManager } from '../../core/engine/MemoryManager'
 
 import { state } from './state'
 

@@ -1,4 +1,4 @@
-import type { ElementType, RenderMode, ToolType } from '../../lib/engine/types'
+import type { ElementType, RenderMode, ToolType } from '../../core/engine/types'
 
 export type WasmModule = typeof import('@particula/engine-wasm/particula_engine')
 export type WasmWorld = import('@particula/engine-wasm/particula_engine').World
