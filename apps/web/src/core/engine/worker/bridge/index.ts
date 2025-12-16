@@ -9,6 +9,8 @@ export {
   resolveAllPendingRequests,
 } from '../../workerBridge/requests'
 
+export type { RequestState } from '../../workerBridge/requests'
+
 export { sendFillToWorker, sendInputToWorker } from '../../workerBridge/input'
 export { transferCanvasToOffscreen } from '../../workerBridge/offscreen'
 export { setupSharedInputBuffer } from '../../workerBridge/sharedInput'

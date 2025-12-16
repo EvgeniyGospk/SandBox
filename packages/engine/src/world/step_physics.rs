@@ -2,9 +2,9 @@ use crate::chunks::CHUNK_SIZE;
 use crate::elements::EL_EMPTY;
 use crate::physics::update_particle_physics;
 
-use super::World;
+use super::WorldCore;
 
-pub(super) fn process_physics(world: &mut World) {
+pub(super) fn process_physics(world: &mut WorldCore) {
     let (chunks_x, chunks_y) = world.chunks.dimensions();
     let gravity_x = world.gravity_x;
     let gravity_y = world.gravity_y;
@@ -28,7 +28,7 @@ pub(super) fn process_physics(world: &mut World) {
 }
 
 pub(super) fn process_physics_chunk(
-    world: &mut World,
+    world: &mut WorldCore,
     cx: u32,
     cy: u32,
     gravity_x: f32,

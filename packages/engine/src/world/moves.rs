@@ -1,6 +1,6 @@
-use super::World;
+use super::WorldCore;
 
-pub(super) fn apply_pending_moves(world: &mut World) {
+pub(super) fn apply_pending_moves(world: &mut WorldCore) {
     let count = world.grid.pending_moves.count;
     let moves_ptr = world.grid.pending_moves.as_ptr();
 

@@ -12,47 +12,24 @@ import { debugWarn, logError } from '../../logging/log'
 import { parseWorkerToMainMessage, SIMULATION_PROTOCOL_VERSION } from '../protocol'
 import type { SharedInputBuffer } from '../../canvas/input/InputBuffer'
 
+import { createRequestState, resolveAllPendingRequests } from './bridge'
+import { createSimulationWorker } from './services/createSimulationWorker'
+import { initExistingWorkerBridge } from './services/initExistingWorkerBridge'
+import * as playback from './services/playback'
+import { screenToWorld } from './services/coords'
+import * as input from './services/input'
+import * as requests from './services/requests'
+import * as settings from './services/settings'
+import * as rigidBody from './services/rigidBody'
+import { setTransform as postTransform } from './services/transform'
+import { destroyBridge, resizeWorld, setViewportSize } from './services/lifecycle'
+import type { CrashCallback, ErrorCallback, ReadyCallback, StatsCallback } from './bridgeTypes'
 import {
-  createRequestState,
-  handlePipetteResult,
-  handleSnapshotResult,
-  installWorkerHandlers,
-  postClear,
-  postEndStroke,
-  postInit,
-  postLoadSnapshot,
-  postPause,
-  postPlay,
-  postResize,
-  postRenderMode,
-  postSettings,
-  postSetViewport,
-  postSpawnRigidBody,
-  postStep,
-  postTransform,
-  requestPipette,
-  requestSnapshot,
-  resolveAllPendingRequests,
-  screenToWorldFloored,
-  sendFillToWorker,
-  sendInputToWorker,
-  setupSharedInputBuffer,
-  terminateWorker,
-  transferCanvasToOffscreen,
-} from './bridge'
+  isSharedMemorySupported as isSharedMemorySupportedImpl,
+  isWorkerSupported as isWorkerSupportedImpl,
+} from './capabilities'
 
-// Create worker with Vite's ?worker import
-import SimulationWorker from '@/workers/simulation/runtime.ts?worker'
-
-export interface SimulationStats {
-  fps: number
-  particleCount: number
-}
-
-export type StatsCallback = (stats: { fps: number; particleCount: number }) => void
-export type ReadyCallback = (width: number, height: number) => void
-export type ErrorCallback = (message: string) => void
-export type CrashCallback = (message: string, canRecover: boolean) => void
+export type { StatsCallback, ReadyCallback, ErrorCallback, CrashCallback } from './bridgeTypes'
 
 /**
  * Bridge between Main Thread and Simulation Worker
@@ -94,10 +71,6 @@ export class WorkerBridge {
   constructor() {
     // Worker will be created on init
   }
-
-  private resolveAllPendingRequests(): void {
-    resolveAllPendingRequests(this.requests)
-  }
   
   /**
    * Initialize the simulation worker with an OffscreenCanvas
@@ -122,99 +95,65 @@ export class WorkerBridge {
     this.inputBuffer = null
 
     // Create worker
-    const worker = new SimulationWorker()
+    const worker = createSimulationWorker()
     this.worker = worker
     this._width = Math.floor(worldWidth)
     this._height = Math.floor(worldHeight)
     // Store viewport size for coordinate conversion (before canvas is transferred!)
     this._viewportWidth = Math.floor(viewportWidth ?? canvas.width)
     this._viewportHeight = Math.floor(viewportHeight ?? canvas.height)
-
-    let resolveInit: (() => void) | null = null
-    let rejectInit: ((err: Error) => void) | null = null
-    const readyPromise = new Promise<void>((resolve, reject) => {
-      resolveInit = resolve
-      rejectInit = reject
-    })
-
-    const rejectInitIfPending = (err: Error) => {
-      if (!rejectInit) return
-      rejectInit(err)
-      resolveInit = null
-      rejectInit = null
-    }
-
-    const resolveInitOnce = () => {
-      resolveInit?.()
-      resolveInit = null
-      rejectInit = null
-    }
-
-    installWorkerHandlers({
-      worker,
-      expectedProtocolVersion: SIMULATION_PROTOCOL_VERSION,
-      parseMessage: parseWorkerToMainMessage,
-      onUnknownMessage: (data) => {
-        debugWarn('WorkerBridge: Ignoring unknown worker message', data)
-      },
-      onReady: (width, height) => {
-        this._isReady = true
-        this._width = width
-        this._height = height
-        this.onReady?.(width, height)
-      },
-      onStats: (fps, particleCount) => {
-        this.onStats?.({ fps, particleCount })
-      },
-      onError: (message) => {
-        this.onError?.(message)
-      },
-      onCrash: (message, canRecover) => {
-        logError('💥 WASM Crash:', message)
-        this.onCrash?.(message, canRecover ?? true)
-      },
-      onPipetteResult: (id, element) => {
-        handlePipetteResult(this.requests, id, element)
-      },
-      onSnapshotResult: (id, buffer) => {
-        handleSnapshotResult(this.requests, id, buffer)
-      },
-      resolveAllPendingRequests: () => this.resolveAllPendingRequests(),
-      destroy: () => this.destroy(),
-      resolveInit: resolveInitOnce,
-      rejectInit: (err) => rejectInitIfPending(err),
-      rejectInitIfPending,
-    })
-
-    // Transfer canvas control to worker (may throw)
-    let offscreen: OffscreenCanvas
     try {
-      offscreen = transferCanvasToOffscreen(canvas)
-      this._hasTransferred = true
+      await initExistingWorkerBridge({
+        worker,
+        canvas,
+
+        width: this._width,
+        height: this._height,
+        viewportWidth: this._viewportWidth,
+        viewportHeight: this._viewportHeight,
+
+        expectedProtocolVersion: SIMULATION_PROTOCOL_VERSION,
+        parseMessage: parseWorkerToMainMessage,
+
+        requests: this.requests,
+
+        onUnknownMessage: (data) => {
+          debugWarn('WorkerBridge: Ignoring unknown worker message', data)
+        },
+        onReady: (width, height) => {
+          this._isReady = true
+          this._width = width
+          this._height = height
+          this.onReady?.(width, height)
+        },
+        onStats: (fps, particleCount) => {
+          this.onStats?.({ fps, particleCount })
+        },
+        onError: (message) => {
+          this.onError?.(message)
+        },
+        onCrash: (message, canRecover) => {
+          logError('💥 WASM Crash:', message)
+          this.onCrash?.(message, canRecover ?? true)
+        },
+
+        resolveAllPendingRequests: () => resolveAllPendingRequests(this.requests),
+        destroy: () => this.destroy(),
+
+        setHasTransferred: (v) => {
+          this._hasTransferred = v
+        },
+        setInputBuffer: (buf) => {
+          this.inputBuffer = buf
+        },
+        setUseSharedInput: (v) => {
+          this.useSharedInput = v
+        },
+      })
     } catch (err) {
-      terminateWorker(worker)
       if (this.worker === worker) this.worker = null
-      this._hasTransferred = false
       throw err
     }
-
-    // Phase 5: Create shared input buffer if available
-    const { inputBufferData, inputBuffer, useSharedInput } = setupSharedInputBuffer()
-    this.inputBuffer = inputBuffer
-    this.useSharedInput = useSharedInput
-
-    // Send init message with canvas and optional input buffer
-    postInit(worker, {
-      protocolVersion: SIMULATION_PROTOCOL_VERSION,
-      canvas: offscreen,
-      width: this._width,
-      height: this._height,
-      viewportWidth: this._viewportWidth,
-      viewportHeight: this._viewportHeight,
-      inputBuffer: inputBufferData,
-    })
-
-    await readyPromise
   }
   
   // === Getters ===
@@ -227,19 +166,19 @@ export class WorkerBridge {
   // === Playback Control ===
   
   play(): void {
-    postPlay(this.worker)
+    playback.play(this.worker)
   }
 
   pause(): void {
-    postPause(this.worker)
+    playback.pause(this.worker)
   }
 
   step(): void {
-    postStep(this.worker)
+    playback.step(this.worker)
   }
   
   clear(): void {
-    postClear(this.worker)
+    playback.clear(this.worker)
   }
   
   // === Input ===
@@ -256,19 +195,19 @@ export class WorkerBridge {
     tool: ToolType,
     brushShape: 'circle' | 'square' | 'line' = 'circle'
   ): void {
-    const { x: worldX, y: worldY } = screenToWorldFloored(
+    const { worldX, worldY } = screenToWorld({
       screenX,
       screenY,
-      this.zoom,
-      this.panX,
-      this.panY,
-      this._viewportWidth,
-      this._viewportHeight,
-      this._width,
-      this._height
-    )
-    
-    sendInputToWorker({
+      zoom: this.zoom,
+      panX: this.panX,
+      panY: this.panY,
+      viewportWidth: this._viewportWidth,
+      viewportHeight: this._viewportHeight,
+      worldWidth: this._width,
+      worldHeight: this._height,
+    })
+
+    input.sendBrushInput({
       worker: this.worker,
       useSharedInput: this.useSharedInput,
       inputBuffer: this.inputBuffer,
@@ -301,18 +240,19 @@ export class WorkerBridge {
    * Flood fill tool (worker only)
    */
   fill(screenX: number, screenY: number, element: ElementType): void {
-    const { x: worldX, y: worldY } = screenToWorldFloored(
+    const { worldX, worldY } = screenToWorld({
       screenX,
       screenY,
-      this.zoom,
-      this.panX,
-      this.panY,
-      this._viewportWidth,
-      this._viewportHeight,
-      this._width,
-      this._height
-    )
-    sendFillToWorker({ worker: this.worker, worldX, worldY, element })
+      zoom: this.zoom,
+      panX: this.panX,
+      panY: this.panY,
+      viewportWidth: this._viewportWidth,
+      viewportHeight: this._viewportHeight,
+      worldWidth: this._width,
+      worldHeight: this._height,
+    })
+
+    input.sendFill({ worker: this.worker, worldX, worldY, element })
   }
   
   /**
@@ -325,7 +265,8 @@ export class WorkerBridge {
     shape: 'box' | 'circle', 
     element: ElementType
   ): void {
-    postSpawnRigidBody(this.worker, {
+    rigidBody.spawnRigidBody({
+      worker: this.worker,
       x: Math.floor(worldX),
       y: Math.floor(worldY),
       size: Math.floor(size),
@@ -338,23 +279,21 @@ export class WorkerBridge {
    * Pipette tool - returns element under cursor
    */
   pipette(screenX: number, screenY: number): Promise<ElementType | null> {
-    if (!this.worker) return Promise.resolve(null)
-    return requestPipette(this.requests, this.worker, screenX, screenY)
+    return requests.pipette({ requests: this.requests, worker: this.worker, screenX, screenY })
   }
 
   /**
    * Capture snapshot of world (types only)
    */
   saveSnapshot(): Promise<ArrayBuffer | null> {
-    if (!this.worker) return Promise.resolve(null)
-    return requestSnapshot(this.requests, this.worker)
+    return requests.snapshot({ requests: this.requests, worker: this.worker })
   }
 
   /**
    * Load snapshot buffer (must match world dimensions)
    */
   loadSnapshot(buffer: ArrayBuffer): void {
-    postLoadSnapshot(this.worker, buffer)
+    requests.loadSnapshot({ worker: this.worker, buffer })
   }
   
   /**
@@ -363,13 +302,7 @@ export class WorkerBridge {
    * Uses SAB sentinel when available to prevent race conditions!
    */
   endStroke(): void {
-    // Use SAB channel for end stroke (same channel as brush events = no race condition!)
-    if (this.useSharedInput && this.inputBuffer) {
-      this.inputBuffer.pushEndStroke()
-      return
-    }
-    // Fallback: postMessage
-    postEndStroke(this.worker)
+    input.endStroke({ worker: this.worker, useSharedInput: this.useSharedInput, inputBuffer: this.inputBuffer })
   }
   
   // === Camera ===
@@ -390,31 +323,32 @@ export class WorkerBridge {
    * Convert screen coordinates to world coordinates
    */
   screenToWorld(screenX: number, screenY: number): { x: number; y: number } {
-    return screenToWorldFloored(
+    const { worldX, worldY } = screenToWorld({
       screenX,
       screenY,
-      this.zoom,
-      this.panX,
-      this.panY,
-      this._viewportWidth,
-      this._viewportHeight,
-      this._width,
-      this._height
-    )
+      zoom: this.zoom,
+      panX: this.panX,
+      panY: this.panY,
+      viewportWidth: this._viewportWidth,
+      viewportHeight: this._viewportHeight,
+      worldWidth: this._width,
+      worldHeight: this._height,
+    })
+    return { x: worldX, y: worldY }
   }
   
   // === Settings ===
   
-  setSettings(settings: {
+  setSettings(nextSettings: {
     gravity?: { x: number; y: number }
     ambientTemperature?: number
     speed?: number
   }): void {
-    postSettings(this.worker, settings)
+    settings.setSettings(this.worker, nextSettings)
   }
   
   setRenderMode(mode: RenderMode): void {
-    postRenderMode(this.worker, mode)
+    settings.setRenderMode(this.worker, mode)
   }
   
   // === Lifecycle ===
@@ -422,19 +356,18 @@ export class WorkerBridge {
   setViewportSize(width: number, height: number): void {
     this._viewportWidth = Math.floor(width)
     this._viewportHeight = Math.floor(height)
-    postSetViewport(this.worker, this._viewportWidth, this._viewportHeight)
+    setViewportSize(this.worker, this._viewportWidth, this._viewportHeight)
   }
 
   resize(width: number, height: number): void {
     this._width = Math.floor(width)
     this._height = Math.floor(height)
 
-    postResize(this.worker, this._width, this._height)
+    resizeWorld(this.worker, this._width, this._height)
   }
   
   destroy(): void {
-    this.resolveAllPendingRequests()
-    terminateWorker(this.worker)
+    destroyBridge(this.worker, this.requests)
     this.worker = null
     this._isReady = false
     this._hasTransferred = false
@@ -447,17 +380,12 @@ export class WorkerBridge {
  * Check if WebWorkers with OffscreenCanvas are supported
  */
 export function isWorkerSupported(): boolean {
-  return (
-    typeof Worker !== 'undefined' &&
-    typeof OffscreenCanvas !== 'undefined' &&
-    // Check if we can transfer canvas control
-    typeof HTMLCanvasElement.prototype.transferControlToOffscreen === 'function'
-  )
+  return isWorkerSupportedImpl()
 }
 
 /**
  * Check if SharedArrayBuffer is available (COOP/COEP headers set)
  */
 export function isSharedMemorySupported(): boolean {
-  return typeof SharedArrayBuffer !== 'undefined'
+  return isSharedMemorySupportedImpl()
 }

@@ -5,9 +5,9 @@ use crate::temperature::{
     process_temperature_grid_chunked, reset_phase_change_counter, take_phase_change_counter,
 };
 
-use super::{PerfTimer, World};
+use super::{PerfTimer, WorldCore};
 
-pub(super) fn step(world: &mut World) {
+pub(super) fn step(world: &mut WorldCore) {
     let perf_on = world.perf_enabled;
     if perf_on {
         world.perf_stats.reset();

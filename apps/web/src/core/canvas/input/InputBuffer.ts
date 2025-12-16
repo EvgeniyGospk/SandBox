@@ -12,9 +12,13 @@
  * [1] = Read Head (Worker reads here)
  * [2] = Overflow Flag (Phase 3: set when buffer overflows)
  * [3..] = Events: [x, y, type, brushSize] * INPUT_BUFFER_SIZE
- * 
  * Total size: (3 + 4 * 100) * 4 = 1612 bytes
  */
+
+import { initializeSharedInputBuffer } from './shared/init'
+import { pushBrushEvent, pushEndStrokeEvent, pushEraseEvent, pushEvent } from './shared/push'
+import { pendingEventCount, processAllEvents, readAllEvents } from './shared/read'
+import { checkAndClearOverflowFlag, checkOverflowFlag, clearOverflowFlag } from './shared/overflow'
 
 export const INPUT_BUFFER_SIZE = 100 // Max events in queue
 export const EVENT_SIZE = 4 // Int32 per event: x, y, type, brushSize
@@ -54,9 +58,7 @@ export class SharedInputBuffer {
   constructor(sharedBuffer: SharedArrayBuffer) {
     this.buffer = new Int32Array(sharedBuffer)
     // Initialize heads and overflow flag to 0
-    Atomics.store(this.buffer, 0, 0) // Write head
-    Atomics.store(this.buffer, 1, 0) // Read head
-    Atomics.store(this.buffer, OVERFLOW_INDEX, 0) // Overflow flag (Phase 3)
+    initializeSharedInputBuffer({ buffer: this.buffer, overflowIndex: OVERFLOW_INDEX })
   }
   
   /**
@@ -78,31 +80,17 @@ export class SharedInputBuffer {
    * @returns true if pushed, false if buffer full
    */
   push(x: number, y: number, type: number, val: number): boolean {
-    const writeIndex = Atomics.load(this.buffer, 0)
-    const readIndex = Atomics.load(this.buffer, 1)
-    
-    // Calculate next write position (ring buffer wrap)
-    const nextWriteIndex = (writeIndex + 1) % INPUT_BUFFER_SIZE
-    
-    // Check if buffer is full (writer caught up to reader)
-    if (nextWriteIndex === readIndex) {
-      // Phase 3 (Fort Knox): Set overflow flag when buffer is full
-      // This tells the Worker to reset Bresenham state
-      Atomics.store(this.buffer, OVERFLOW_INDEX, 1)
-      return false
-    }
-    
-    // Write event data
-    const offset = HEAD_OFFSET + writeIndex * EVENT_SIZE
-    this.buffer[offset + 0] = Math.floor(x)
-    this.buffer[offset + 1] = Math.floor(y)
-    this.buffer[offset + 2] = type
-    this.buffer[offset + 3] = Math.floor(val)
-    
-    // Atomically update write head (makes event visible to worker)
-    Atomics.store(this.buffer, 0, nextWriteIndex)
-    
-    return true
+    return pushEvent({
+      buffer: this.buffer,
+      x,
+      y,
+      type,
+      val,
+      inputBufferSize: INPUT_BUFFER_SIZE,
+      eventSize: EVENT_SIZE,
+      headOffset: HEAD_OFFSET,
+      overflowIndex: OVERFLOW_INDEX,
+    })
   }
   
   /**
@@ -110,14 +98,35 @@ export class SharedInputBuffer {
    */
   pushBrush(x: number, y: number, brushSize: number, elementId: number): boolean {
     // Encode element ID in type field (offset to avoid colliding with erase sentinel)
-    return this.push(x, y, INPUT_TYPE_BRUSH_OFFSET + elementId, brushSize)
+    return pushBrushEvent({
+      buffer: this.buffer,
+      x,
+      y,
+      brushSize,
+      elementId,
+      inputTypeBrushOffset: INPUT_TYPE_BRUSH_OFFSET,
+      inputBufferSize: INPUT_BUFFER_SIZE,
+      eventSize: EVENT_SIZE,
+      headOffset: HEAD_OFFSET,
+      overflowIndex: OVERFLOW_INDEX,
+    })
   }
   
   /**
    * Push erase event
    */
   pushErase(x: number, y: number, brushSize: number): boolean {
-    return this.push(x, y, INPUT_TYPE_ERASE, brushSize)
+    return pushEraseEvent({
+      buffer: this.buffer,
+      x,
+      y,
+      brushSize,
+      inputTypeErase: INPUT_TYPE_ERASE,
+      inputBufferSize: INPUT_BUFFER_SIZE,
+      eventSize: EVENT_SIZE,
+      headOffset: HEAD_OFFSET,
+      overflowIndex: OVERFLOW_INDEX,
+    })
   }
   
   /**
@@ -125,7 +134,14 @@ export class SharedInputBuffer {
    * CRITICAL: Must go through same channel as brush events to prevent race conditions!
    */
   pushEndStroke(): boolean {
-    return this.push(0, 0, INPUT_TYPE_END_STROKE, 0)
+    return pushEndStrokeEvent({
+      buffer: this.buffer,
+      inputTypeEndStroke: INPUT_TYPE_END_STROKE,
+      inputBufferSize: INPUT_BUFFER_SIZE,
+      eventSize: EVENT_SIZE,
+      headOffset: HEAD_OFFSET,
+      overflowIndex: OVERFLOW_INDEX,
+    })
   }
   
   // === WORKER THREAD API ===
@@ -135,30 +151,12 @@ export class SharedInputBuffer {
    * Returns array of events to process this frame
    */
   readAll(): Array<{ x: number; y: number; type: number; val: number }> {
-    const writeIndex = Atomics.load(this.buffer, 0)
-    let readIndex = Atomics.load(this.buffer, 1)
-    
-    const events: Array<{ x: number; y: number; type: number; val: number }> = []
-    
-    // Read all events between read head and write head
-    while (readIndex !== writeIndex) {
-      const offset = HEAD_OFFSET + readIndex * EVENT_SIZE
-      
-      events.push({
-        x: this.buffer[offset + 0],
-        y: this.buffer[offset + 1],
-        type: this.buffer[offset + 2],
-        val: this.buffer[offset + 3]
-      })
-      
-      // Move to next slot (ring wrap)
-      readIndex = (readIndex + 1) % INPUT_BUFFER_SIZE
-    }
-    
-    // Atomically update read head (marks events as consumed)
-    Atomics.store(this.buffer, 1, readIndex)
-    
-    return events
+    return readAllEvents({
+      buffer: this.buffer,
+      inputBufferSize: INPUT_BUFFER_SIZE,
+      eventSize: EVENT_SIZE,
+      headOffset: HEAD_OFFSET,
+    })
   }
   
   /**
@@ -166,39 +164,20 @@ export class SharedInputBuffer {
    * Calls callback for each event
    */
   processAll(callback: (x: number, y: number, type: number, val: number) => void): number {
-    const writeIndex = Atomics.load(this.buffer, 0)
-    let readIndex = Atomics.load(this.buffer, 1)
-    let count = 0
-    
-    while (readIndex !== writeIndex) {
-      const offset = HEAD_OFFSET + readIndex * EVENT_SIZE
-      
-      callback(
-        this.buffer[offset + 0],
-        this.buffer[offset + 1],
-        this.buffer[offset + 2],
-        this.buffer[offset + 3]
-      )
-      
-      readIndex = (readIndex + 1) % INPUT_BUFFER_SIZE
-      count++
-    }
-    
-    Atomics.store(this.buffer, 1, readIndex)
-    return count
+    return processAllEvents({
+      buffer: this.buffer,
+      inputBufferSize: INPUT_BUFFER_SIZE,
+      eventSize: EVENT_SIZE,
+      headOffset: HEAD_OFFSET,
+      callback,
+    })
   }
   
   /**
    * Get number of pending events (for debugging)
    */
   pendingCount(): number {
-    const writeIndex = Atomics.load(this.buffer, 0)
-    const readIndex = Atomics.load(this.buffer, 1)
-    
-    if (writeIndex >= readIndex) {
-      return writeIndex - readIndex
-    }
-    return INPUT_BUFFER_SIZE - readIndex + writeIndex
+    return pendingEventCount({ buffer: this.buffer, inputBufferSize: INPUT_BUFFER_SIZE })
   }
   
   // === PHASE 3 (Fort Knox): Overflow Protection ===
@@ -209,14 +188,14 @@ export class SharedInputBuffer {
    * If true, Worker should reset Bresenham tracking to prevent line artifacts.
    */
   checkOverflow(): boolean {
-    return Atomics.load(this.buffer, OVERFLOW_INDEX) === 1
+    return checkOverflowFlag({ buffer: this.buffer, overflowIndex: OVERFLOW_INDEX })
   }
   
   /**
    * Clear overflow flag (called by Worker after handling overflow)
    */
   clearOverflow(): void {
-    Atomics.store(this.buffer, OVERFLOW_INDEX, 0)
+    clearOverflowFlag({ buffer: this.buffer, overflowIndex: OVERFLOW_INDEX })
   }
   
   /**
@@ -225,6 +204,6 @@ export class SharedInputBuffer {
    */
   checkAndClearOverflow(): boolean {
     // Atomics.exchange returns the old value and sets the new value
-    return Atomics.exchange(this.buffer, OVERFLOW_INDEX, 0) === 1
+    return checkAndClearOverflowFlag({ buffer: this.buffer, overflowIndex: OVERFLOW_INDEX })
   }
 }

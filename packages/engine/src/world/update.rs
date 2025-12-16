@@ -4,9 +4,9 @@ use crate::elements::{
     ELEMENT_DATA, EL_EMPTY,
 };
 
-use super::{PerfTimer, World};
+use super::{PerfTimer, WorldCore};
 
-pub(super) fn update_particle_chunked(world: &mut World, x: u32, y: u32) -> bool {
+pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> bool {
     unsafe {
         let element = world.grid.get_type_unchecked(x, y);
         if element == EL_EMPTY {

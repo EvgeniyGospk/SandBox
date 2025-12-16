@@ -23,13 +23,22 @@ import {
   EL_DIRT, EL_SEED, EL_PLANT,
   // Category IDs
   CAT_SOLID, CAT_POWDER, CAT_LIQUID, CAT_GAS, CAT_ENERGY, CAT_UTILITY, CAT_BIO
-} from './types'
+ } from './types'
 
-// Color helper - convert hex string to packed RGBA
-function rgba(hex: string, alpha = 255): number {
-  const num = parseInt(hex.replace('#', ''), 16)
-  return (alpha << 24) | num
-}
+ import { buildElementsRecord } from './elements/elementsRecord'
+ import { createColorByIdGetter } from './elements/colorById'
+ import { getCategoryIdFromData, getDensityFromData, getDispersionFromData, getElementFromData } from './elements/lookups'
+ import { rgba as rgbaImpl } from './elements/rgba'
+ import {
+   createLegacyColorWithVariationGetter,
+   createLegacyElementCategoryGetter,
+   createLegacyElementColorGetter,
+ } from './elements/legacyLookups'
+
+ // Color helper - convert hex string to packed RGBA
+ function rgba(hex: string, alpha = 255): number {
+   return rgbaImpl(hex, alpha)
+ }
 
 // ============================================
 // ELEMENT DATA - Flat array indexed by ElementId
@@ -344,105 +353,67 @@ export const ELEMENT_DATA: ElementProperties[] = [
 // ============================================
 // LEGACY COMPATIBILITY - Record<ElementType, ElementProperties>
 // ============================================
-export const ELEMENTS: Record<ElementType, ElementProperties> = {} as Record<ElementType, ElementProperties>
-
-// Build ELEMENTS from ELEMENT_DATA
-for (let i = 0; i < ELEMENT_COUNT; i++) {
-  const name = ELEMENT_ID_TO_NAME[i]
-  if (name) {
-    ELEMENTS[name] = ELEMENT_DATA[i]
-  }
-}
+export const ELEMENTS: Record<ElementType, ElementProperties> = buildElementsRecord({
+  elementData: ELEMENT_DATA,
+  elementCount: ELEMENT_COUNT,
+  idToName: ELEMENT_ID_TO_NAME,
+})
 
 // ============================================
 // FAST LOOKUP FUNCTIONS (use numeric IDs)
 // ============================================
 
-// Get element properties by numeric ID - O(1), no hash lookup!
-export function getElement(id: ElementId): ElementProperties {
-  return ELEMENT_DATA[id] || ELEMENT_DATA[EL_EMPTY]
-}
+ // Get element properties by numeric ID - O(1), no hash lookup!
+ export function getElement(id: ElementId): ElementProperties {
+   return getElementFromData({ elementData: ELEMENT_DATA, id, emptyId: EL_EMPTY })
+ }
 
-// Get category by element ID
-export function getCategoryById(id: ElementId): CategoryId {
-  return ELEMENT_DATA[id]?.category ?? CAT_SOLID
-}
+ // Get category by element ID
+ export function getCategoryById(id: ElementId): CategoryId {
+   return getCategoryIdFromData({ elementData: ELEMENT_DATA, id, defaultCategory: CAT_SOLID })
+ }
 
-// Get density by element ID
-export function getDensityById(id: ElementId): number {
-  return ELEMENT_DATA[id]?.density ?? 0
-}
+ // Get density by element ID
+ export function getDensityById(id: ElementId): number {
+   return getDensityFromData({ elementData: ELEMENT_DATA, id })
+ }
 
-// Get dispersion by element ID
-export function getDispersionById(id: ElementId): number {
-  return ELEMENT_DATA[id]?.dispersion ?? 0
-}
+ // Get dispersion by element ID
+ export function getDispersionById(id: ElementId): number {
+   return getDispersionFromData({ elementData: ELEMENT_DATA, id })
+ }
 
-// ============================================
-// COLOR VARIATIONS (pre-computed per element)
-// ============================================
-const COLOR_VARIATIONS_BY_ID: Uint32Array[] = new Array(ELEMENT_COUNT)
+ // ============================================
+ // COLOR VARIATIONS (pre-computed per element)
+ // ============================================
+ const getColorByIdInternal = createColorByIdGetter({ elementData: ELEMENT_DATA, elementCount: ELEMENT_COUNT })
 
-// Pre-compute all color variations at load time!
-for (let elId = 0; elId < ELEMENT_COUNT; elId++) {
-  const base = ELEMENT_DATA[elId].color
-  const variations = new Uint32Array(32)
-  
-  for (let i = 0; i < 32; i++) {
-    const variation = (i - 16) * 2
-    const a = (base >> 24) & 0xFF
-    const r = Math.max(0, Math.min(255, ((base >> 16) & 0xFF) + variation))
-    const g = Math.max(0, Math.min(255, ((base >> 8) & 0xFF) + variation))
-    const b = Math.max(0, Math.min(255, (base & 0xFF) + variation))
-    variations[i] = (a << 24) | (r << 16) | (g << 8) | b
-  }
-  
-  COLOR_VARIATIONS_BY_ID[elId] = variations
-}
+ // Get color variation by element ID - super fast!
+ export function getColorById(id: ElementId, seed: number): number {
+   return getColorByIdInternal(id, seed)
+ }
 
-// Get color variation by element ID - super fast!
-export function getColorById(id: ElementId, seed: number): number {
-  return COLOR_VARIATIONS_BY_ID[id][seed & 31]
-}
+ // ============================================
+ // LEGACY FUNCTIONS (use string ElementType)
+ // ============================================
+ const getColorWithVariationInternal = createLegacyColorWithVariationGetter({
+   getBaseColor: (element) => ELEMENTS[element].color,
+ })
+ const getElementCategoryInternal = createLegacyElementCategoryGetter({
+   getCategoryId: (element) => ELEMENTS[element].category,
+ })
+ const getElementColorInternal = createLegacyElementColorGetter({
+   getColor: (element) => ELEMENTS[element].color,
+ })
 
-// ============================================
-// LEGACY FUNCTIONS (use string ElementType)
-// ============================================
-const COLOR_VARIATIONS = new Map<ElementType, Uint32Array>()
+ export function getColorWithVariation(element: ElementType, seed: number): number {
+   return getColorWithVariationInternal(element, seed)
+ }
 
-export function getColorWithVariation(element: ElementType, seed: number): number {
-  let variations = COLOR_VARIATIONS.get(element)
-  
-  if (!variations) {
-    const base = ELEMENTS[element].color
-    variations = new Uint32Array(32)
-    
-    for (let i = 0; i < 32; i++) {
-      const variation = (i - 16) * 2
-      const a = (base >> 24) & 0xFF
-      const r = Math.max(0, Math.min(255, ((base >> 16) & 0xFF) + variation))
-      const g = Math.max(0, Math.min(255, ((base >> 8) & 0xFF) + variation))
-      const b = Math.max(0, Math.min(255, (base & 0xFF) + variation))
-      variations[i] = (a << 24) | (r << 16) | (g << 8) | b
-    }
-    
-    COLOR_VARIATIONS.set(element, variations)
-  }
-  
-  return variations[seed & 31]
-}
+ export function getElementCategory(element: ElementType): ElementCategory {
+   return getElementCategoryInternal(element)
+ }
 
-export function getElementCategory(element: ElementType): ElementCategory {
-  const cat = ELEMENTS[element].category
-  // Convert numeric category back to string for legacy code
-  const names: ElementCategory[] = ['solid', 'powder', 'liquid', 'gas', 'energy', 'utility', 'bio']
-  return names[cat] || 'solid'
-}
-
-export function getElementColor(element: ElementType): string {
-  const color = ELEMENTS[element].color
-  const r = (color >> 16) & 0xFF
-  const g = (color >> 8) & 0xFF
-  const b = color & 0xFF
-  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
-}
+ export function getElementColor(element: ElementType): string {
+   return getElementColorInternal(element)
+ }

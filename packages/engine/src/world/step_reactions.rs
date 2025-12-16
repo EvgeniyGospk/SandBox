@@ -1,9 +1,9 @@
 use crate::elements::{get_color_with_variation, ElementId, EL_EMPTY, ELEMENT_DATA};
 use crate::reactions::Reaction;
 
-use super::World;
+use super::WorldCore;
 
-pub(super) fn process_reactions(world: &mut World, x: u32, y: u32, element: ElementId) {
+pub(super) fn process_reactions(world: &mut WorldCore, x: u32, y: u32, element: ElementId) {
     if world.perf_enabled {
         world.perf_stats.reactions_checked = world.perf_stats.reactions_checked.saturating_add(1);
     }
@@ -45,7 +45,7 @@ pub(super) fn process_reactions(world: &mut World, x: u32, y: u32, element: Elem
 }
 
 pub(super) fn apply_reaction(
-    world: &mut World,
+    world: &mut WorldCore,
     src_x: u32,
     src_y: u32,
     target_x: u32,
@@ -88,7 +88,7 @@ pub(super) fn apply_reaction(
     }
 }
 
-pub(super) fn replace_particle(world: &mut World, x: u32, y: u32, element: ElementId) {
+pub(super) fn replace_particle(world: &mut WorldCore, x: u32, y: u32, element: ElementId) {
     let seed = ((x * 7 + y * 13 + world.frame as u32) & 31) as u8;
     let props = &ELEMENT_DATA[element as usize];
 

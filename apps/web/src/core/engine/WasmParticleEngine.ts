@@ -11,17 +11,36 @@
 
 import { CanvasRenderer } from './rendering/Renderer'
 import type { ElementType, RenderMode } from './types'
-import { ELEMENT_NAME_TO_ID } from './data/generated_elements'
 import { debugWarn } from '../logging/log'
 
 export { isWasmAvailable, loadWasmEngine } from './wasmEngine/loader'
 import { getWasmMemory, loadWasmEngine } from './wasmEngine/loader'
+import type { WasmModule, WasmWorld } from './wasmEngine/types'
 import { createWorldMemoryViews } from './wasmEngine/views'
-import { recreateWorldFromSnapshot } from './wasmEngine/snapshot'
-import { floodFillInPlace } from './wasmEngine/fill'
-
-type WasmModule = typeof import('@particula/engine-wasm/particula_engine')
-type WasmWorld = import('@particula/engine-wasm/particula_engine').World
+import { createWorld } from './wasmEngine/worldAdapter'
+import { applySettings } from './wasmEngine/api/settings'
+import {
+  addParticle as addParticleImpl,
+  addParticlesInRadius as addParticlesInRadiusImpl,
+  removeParticle as removeParticleImpl,
+  removeParticlesInRadius as removeParticlesInRadiusImpl,
+} from './wasmEngine/api/particles'
+import {
+  rigidBodyCount as rigidBodyCountImpl,
+  removeRigidBody as removeRigidBodyImpl,
+  spawnRigidBody as spawnRigidBodyImpl,
+  spawnRigidCircle as spawnRigidCircleImpl,
+} from './wasmEngine/api/rigidBodies'
+import { floodFill as floodFillImpl } from './wasmEngine/api/fill'
+import { loadSnapshot as loadSnapshotImpl, saveSnapshot as saveSnapshotImpl } from './wasmEngine/api/snapshots'
+import {
+  extractChunkPixels as extractChunkPixelsImpl,
+  getChunksX as getChunksXImpl,
+  getChunksY as getChunksYImpl,
+  getDirtyChunksCount as getDirtyChunksCountImpl,
+  getDirtyListPtr as getDirtyListPtrImpl,
+} from './wasmEngine/api/smartRendering'
+import { getElementAt as getElementAtImpl } from './wasmEngine/api/read'
 
 export class WasmParticleEngine {
   private world: WasmWorld
@@ -43,7 +62,7 @@ export class WasmParticleEngine {
     this.wasm = wasm
     this._width = width
     this._height = height
-    this.world = new wasm.World(width, height)
+    this.world = createWorld({ wasm, width, height })
     this.updateMemoryViews()
   }
   
@@ -80,36 +99,27 @@ export class WasmParticleEngine {
   }
   
   setSettings(settings: { gravity?: { x: number; y: number }; ambientTemperature?: number }): void {
-    if (settings.gravity) {
-      this.world.set_gravity(settings.gravity.x, settings.gravity.y)
-    }
-    if (settings.ambientTemperature !== undefined) {
-      this.world.set_ambient_temperature(settings.ambientTemperature)
-    }
+    applySettings(this.world, settings)
   }
   
   addParticle(x: number, y: number, element: ElementType): boolean {
     if (this._isBusy) return false
-    const wasmId = ELEMENT_NAME_TO_ID[element]
-    if (wasmId === 0) return false  // Don't add empty
-    return this.world.add_particle(Math.floor(x), Math.floor(y), wasmId)
+    return addParticleImpl({ world: this.world, x, y, element })
   }
   
   addParticlesInRadius(cx: number, cy: number, radius: number, element: ElementType): void {
     if (this._isBusy) return
-    const wasmId = ELEMENT_NAME_TO_ID[element]
-    if (wasmId === 0) return  // Don't add empty
-    this.world.add_particles_in_radius(Math.floor(cx), Math.floor(cy), Math.floor(radius), wasmId)
+    addParticlesInRadiusImpl({ world: this.world, cx, cy, radius, element })
   }
   
   removeParticle(x: number, y: number): boolean {
     if (this._isBusy) return false
-    return this.world.remove_particle(Math.floor(x), Math.floor(y))
+    return removeParticleImpl({ world: this.world, x, y })
   }
   
   removeParticlesInRadius(cx: number, cy: number, radius: number): void {
     if (this._isBusy) return
-    this.world.remove_particles_in_radius(Math.floor(cx), Math.floor(cy), Math.floor(radius))
+    removeParticlesInRadiusImpl({ world: this.world, cx, cy, radius })
   }
   
   // === Rigid Body Methods ===
@@ -117,45 +127,36 @@ export class WasmParticleEngine {
   /** Spawn a rectangular rigid body */
   spawnRigidBody(x: number, y: number, w: number, h: number, element: ElementType): number {
     if (this._isBusy) return 0
-    const wasmId = ELEMENT_NAME_TO_ID[element] || ELEMENT_NAME_TO_ID.stone
-    return this.world.spawn_rigid_body(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h), wasmId)
+    return spawnRigidBodyImpl({ world: this.world, x, y, w, h, element })
   }
   
   /** Spawn a circular rigid body */
   spawnRigidCircle(x: number, y: number, radius: number, element: ElementType): number {
     if (this._isBusy) return 0
-    const wasmId = ELEMENT_NAME_TO_ID[element] || ELEMENT_NAME_TO_ID.stone
-    return this.world.spawn_rigid_circle(Math.floor(x), Math.floor(y), Math.floor(radius), wasmId)
+    return spawnRigidCircleImpl({ world: this.world, x, y, radius, element })
   }
   
   /** Remove a rigid body by ID */
   removeRigidBody(id: number): void {
     if (this._isBusy) return
-    this.world.remove_rigid_body(id)
+    removeRigidBodyImpl(this.world, id)
   }
   
   /** Get number of rigid bodies */
   get rigidBodyCount(): number {
-    return this.world.rigid_body_count()
+    return rigidBodyCountImpl(this.world)
   }
 
   /** Flood fill contiguous area of the same element */
   floodFill(cx: number, cy: number, element: ElementType): void {
-    if (!this.typesView) return
-    const width = this._width
-    const height = this._height
-    const targetId = ELEMENT_NAME_TO_ID[element]
-    const LIMIT = 200_000
-
-    floodFillInPlace({
+    floodFillImpl({
       world: this.world,
       typesView: this.typesView,
-      width,
-      height,
-      startX: cx,
-      startY: cy,
-      targetId,
-      limit: LIMIT,
+      width: this._width,
+      height: this._height,
+      cx,
+      cy,
+      element,
     })
 
     // Memory views might change if world resized
@@ -189,24 +190,21 @@ export class WasmParticleEngine {
   
   /** Snapshot world types (Uint8Array copy) */
   saveSnapshot(): Uint8Array | null {
-    if (!this.typesView) return null
-    return new Uint8Array(this.typesView)
+    return saveSnapshotImpl(this.typesView)
   }
   
   /** Load snapshot (types only) */
   loadSnapshot(types: Uint8Array): void {
-    const expected = this._width * this._height
-    if (types.length !== expected) {
-      debugWarn('Snapshot size mismatch, skipping load')
-      return
-    }
-
-    this.world = recreateWorldFromSnapshot({
+    const nextWorld = loadSnapshotImpl({
       wasm: this.wasm,
       width: this._width,
       height: this._height,
       types,
+      warn: debugWarn,
     })
+    if (!nextWorld) return
+
+    this.world = nextWorld
 
     this.updateMemoryViews()
   }
@@ -225,27 +223,27 @@ export class WasmParticleEngine {
   
   /** Collect dirty chunks and return count */
   getDirtyChunksCount(): number {
-    return this.world.collect_dirty_chunks()
+    return getDirtyChunksCountImpl(this.world)
   }
   
   /** Get pointer to dirty chunk list */
   getDirtyListPtr(): number {
-    return this.world.get_dirty_list_ptr()
+    return getDirtyListPtrImpl(this.world)
   }
   
   /** Extract chunk pixels to transfer buffer, returns pointer */
   extractChunkPixels(chunkIdx: number): number {
-    return this.world.extract_chunk_pixels(chunkIdx)
+    return extractChunkPixelsImpl(this.world, chunkIdx)
   }
   
   /** Get chunks X count */
   getChunksX(): number {
-    return this.world.chunks_x()
+    return getChunksXImpl(this.world)
   }
   
   /** Get chunks Y count */
   getChunksY(): number {
-    return this.world.chunks_y()
+    return getChunksYImpl(this.world)
   }
   
   /** Get total chunks count */
@@ -269,7 +267,7 @@ export class WasmParticleEngine {
     // Create new world with new dimensions
     this._width = width
     this._height = height
-    this.world = new this.wasm.World(width, height)
+    this.world = createWorld({ wasm: this.wasm, width, height })
     this.updateMemoryViews()
     this.renderer?.resize(width, height)
   }
@@ -280,8 +278,6 @@ export class WasmParticleEngine {
 
   /** Read element id at world coordinate */
   getElementAt(x: number, y: number): number {
-    if (!this.typesView) return 0
-    if (x < 0 || y < 0 || x >= this._width || y >= this._height) return 0
-    return this.typesView[y * this._width + x] ?? 0
+    return getElementAtImpl({ typesView: this.typesView, width: this._width, height: this._height, x, y })
   }
 }

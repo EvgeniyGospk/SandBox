@@ -1,6 +1,6 @@
-use super::World;
+use super::WorldCore;
 
-pub(super) fn hydrate_waking_chunks(world: &mut World) {
+pub(super) fn hydrate_waking_chunks(world: &mut WorldCore) {
     let (chunks_x, _) = world.chunks.dimensions();
 
     for (idx, &woke) in world.chunks.just_woke_up.iter().enumerate() {

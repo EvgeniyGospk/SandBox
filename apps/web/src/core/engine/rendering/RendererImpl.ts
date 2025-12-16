@@ -8,8 +8,12 @@
  * - Uint32Array.fill(): 50-100x faster clear
  * - No object access = no pointer chasing = cache friendly
  */
-
-import { EL_EMPTY } from '../types'
+import { applyDirtyChunksToBuffer } from './canvas/applyDirtyChunksToBuffer'
+import { createRenderBuffer, resizeRenderBuffer } from './canvas/buffer'
+import { drawBufferToScreen } from './canvas/drawBufferToScreen'
+import { renderNormalTyped as renderNormalTypedPixels } from './canvas/renderNormalTyped'
+import { renderThermal as renderThermalPixels } from './canvas/renderThermal'
+import { getDirtyChunkIdsView, shouldFallbackToFullRender } from './canvas/smartRender'
 
 export type RenderMode = 'normal' | 'thermal'
 
@@ -52,25 +56,15 @@ export class CanvasRenderer {
     this.height = height
 
     // 1. Create offscreen buffer - prefer OffscreenCanvas for better performance
-    if (hasOffscreenCanvas) {
-      this.bufferCanvas = new OffscreenCanvas(width, height)
-      const bCtx = this.bufferCanvas.getContext('2d', { alpha: false })
-      if (!bCtx) throw new Error('Failed to create OffscreenCanvas context')
-      this.bufferCtx = bCtx
-    } else {
-      this.bufferCanvas = document.createElement('canvas')
-      this.bufferCanvas.width = width
-      this.bufferCanvas.height = height
-      const bCtx = this.bufferCanvas.getContext('2d', { alpha: false })
-      if (!bCtx) throw new Error('Failed to create buffer context')
-      this.bufferCtx = bCtx
-    }
+    const buffer = createRenderBuffer({ width, height, useOffscreenCanvas: hasOffscreenCanvas })
+    this.bufferCanvas = buffer.bufferCanvas
+    this.bufferCtx = buffer.bufferCtx
 
     // 2. Pixels are tied to buffer
-    this.imageData = this.bufferCtx.createImageData(width, height)
-    this.pixels = this.imageData.data
+    this.imageData = buffer.imageData
+    this.pixels = buffer.pixels
     // Create Uint32 view over the same buffer for fast operations
-    this.pixels32 = new Uint32Array(this.pixels.buffer)
+    this.pixels32 = buffer.pixels32
     
     // Pixel-art rendering (no smoothing on zoom)
     this.ctx.imageSmoothingEnabled = false
@@ -93,11 +87,10 @@ export class CanvasRenderer {
     this.height = height
     
     // Resize buffer (works for both HTMLCanvasElement and OffscreenCanvas)
-    this.bufferCanvas.width = width
-    this.bufferCanvas.height = height
-    this.imageData = this.bufferCtx.createImageData(width, height)
-    this.pixels = this.imageData.data
-    this.pixels32 = new Uint32Array(this.pixels.buffer)
+    const resized = resizeRenderBuffer({ bufferCanvas: this.bufferCanvas, bufferCtx: this.bufferCtx, width, height })
+    this.imageData = resized.imageData
+    this.pixels = resized.pixels
+    this.pixels32 = resized.pixels32
     
     // Re-disable smoothing after resize
     this.ctx.imageSmoothingEnabled = false
@@ -132,36 +125,24 @@ export class CanvasRenderer {
 
     // 2. Draw BUFFER to SCREEN with camera transform
     // Clear screen with background
-    this.ctx.fillStyle = `rgb(${this.BG_R}, ${this.BG_G}, ${this.BG_B})`
-    this.ctx.fillRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
-    
-    const viewportW = this.ctx.canvas.width
-    const viewportH = this.ctx.canvas.height
-    const worldW = this.width
-    const worldH = this.height
-    const worldAspect = worldW / worldH
-    const viewportAspect = viewportW / viewportH
-    const scaleToFit = worldAspect > viewportAspect ? viewportW / worldW : viewportH / worldH
-    const drawW = worldW * scaleToFit
-    const drawH = worldH * scaleToFit
-    const offsetX = (viewportW - drawW) / 2
-    const offsetY = (viewportH - drawH) / 2
-
-    this.ctx.save()
     // Match WebGL transform: scale around viewport center, then apply screen-space pan
-    const centerX = viewportW / 2
-    const centerY = viewportH / 2
-    this.ctx.translate(centerX + this.panX, centerY + this.panY)
-    this.ctx.scale(this.zoom, this.zoom)
-    this.ctx.translate(-centerX, -centerY)
-    
     // Draw buffer image
-    this.ctx.drawImage(this.bufferCanvas, 0, 0, worldW, worldH, offsetX, offsetY, drawW, drawH)
-    
-    // 3. Draw world border (neon glow effect)
-    this.drawWorldBorder(offsetX, offsetY, drawW, drawH)
-    
-    this.ctx.restore()
+    drawBufferToScreen({
+      ctx: this.ctx,
+      bufferCanvas: this.bufferCanvas,
+      viewportW: this.ctx.canvas.width,
+      viewportH: this.ctx.canvas.height,
+      worldW: this.width,
+      worldH: this.height,
+      zoom: this.zoom,
+      panX: this.panX,
+      panY: this.panY,
+      backgroundRgb: { r: this.BG_R, g: this.BG_G, b: this.BG_B },
+      drawWorldBorder: (x, y, width, height) => {
+        // 3. Draw world border (neon glow effect)
+        this.drawWorldBorder(x, y, width, height)
+      },
+    })
   }
 
   /**
@@ -215,19 +196,19 @@ export class CanvasRenderer {
    */
   private renderNormalTyped(types: Uint8Array, colors: Uint32Array): void {
     const pixels32 = this.pixels32
-    const len = Math.min(types.length, this.width * this.height)
     
     // Fast path: Direct copy all colors (WASM provides ABGR format)
     // Background is already correct format, just set everything!
-    pixels32.set(colors.subarray(0, len))
-    
     // Fix empty cells to background color (particles have correct colors)
     // This is still fast because most cells are particles in active simulations
-    for (let i = 0; i < len; i++) {
-      if (types[i] === EL_EMPTY) {
-        pixels32[i] = this.BG_COLOR_32
-      }
-    }
+    renderNormalTypedPixels({
+      pixels32,
+      types,
+      colors,
+      width: this.width,
+      height: this.height,
+      bgColor32: this.BG_COLOR_32,
+    })
   }
 
   /**
@@ -235,19 +216,14 @@ export class CanvasRenderer {
    */
   private renderThermal(temps: Float32Array): void {
     const pixels = this.pixels
-    const len = Math.min(temps.length, this.width * this.height)
 
-    for (let i = 0; i < len; i++) {
-      const temp = temps[i]
-      const base = i << 2
-      
-      const [r, g, b] = this.getThermalColor(temp)
-      
-      pixels[base] = r
-      pixels[base + 1] = g
-      pixels[base + 2] = b
-      pixels[base + 3] = 255
-    }
+    renderThermalPixels({
+      pixels,
+      temps,
+      width: this.width,
+      height: this.height,
+      getThermalColor: (t) => this.getThermalColor(t),
+    })
   }
 
   /**
@@ -310,10 +286,15 @@ export class CanvasRenderer {
     const count = engine.getDirtyChunksCount()
     
     // Heuristic: If >70% of chunks changed, full render is faster
-    const totalChunks = Math.ceil(this.width / CanvasRenderer.CHUNK_SIZE) * 
-                        Math.ceil(this.height / CanvasRenderer.CHUNK_SIZE)
+    const shouldFallback = shouldFallbackToFullRender({
+      dirtyCount: count,
+      worldWidth: this.width,
+      worldHeight: this.height,
+      chunkSize: CanvasRenderer.CHUNK_SIZE,
+      thresholdRatio: 0.7,
+    })
     
-    if (count > totalChunks * 0.7) {
+    if (shouldFallback) {
       // Fallback to full render
       engine.render()
       return
@@ -327,33 +308,26 @@ export class CanvasRenderer {
     
     // 2. Get dirty chunk list (zero-copy view into WASM memory)
     const listPtr = engine.getDirtyListPtr()
-    const dirtyIds = new Uint32Array(memory.buffer, listPtr, count)
+    const dirtyIds = getDirtyChunkIdsView({ memory, listPtr, count })
     
     const chunksX = engine.getChunksX()
     const CHUNK_SIZE = CanvasRenderer.CHUNK_SIZE
     
     // 3. Process each dirty chunk
-    for (let i = 0; i < count; i++) {
-      const chunkIdx = dirtyIds[i]
-      
-      // Ask Rust to copy chunk pixels to transfer buffer
-      const pixelsPtr = engine.extractChunkPixels(chunkIdx)
-      
-      // Create view into chunk pixels (4096 bytes = 32*32*4)
-      const chunkPixels = new Uint8ClampedArray(memory.buffer, pixelsPtr, 4096)
-      
-      // Copy to ImageData
-      this.chunkImageData.data.set(chunkPixels)
-      
-      // Calculate screen position
-      const cx = chunkIdx % chunksX
-      const cy = Math.floor(chunkIdx / chunksX)
-      const x = cx * CHUNK_SIZE
-      const y = cy * CHUNK_SIZE
-      
-      // Stamp chunk to buffer
-      this.bufferCtx.putImageData(this.chunkImageData, x, y)
-    }
+    // Ask Rust to copy chunk pixels to transfer buffer
+    // Create view into chunk pixels (4096 bytes = 32*32*4)
+    // Copy to ImageData
+    // Calculate screen position
+    // Stamp chunk to buffer
+    applyDirtyChunksToBuffer({
+      engine,
+      memory,
+      dirtyIds,
+      chunksX,
+      chunkSize: CHUNK_SIZE,
+      chunkImageData: this.chunkImageData,
+      bufferCtx: this.bufferCtx,
+    })
     
     // 4. Draw buffer to screen with camera transform
     this.drawBufferToScreen()
@@ -364,34 +338,22 @@ export class CanvasRenderer {
    */
   private drawBufferToScreen(): void {
     // Clear screen with background
-    this.ctx.fillStyle = `rgb(${this.BG_R}, ${this.BG_G}, ${this.BG_B})`
-    this.ctx.fillRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
-    
-    const viewportW = this.ctx.canvas.width
-    const viewportH = this.ctx.canvas.height
-    const worldW = this.width
-    const worldH = this.height
-    const worldAspect = worldW / worldH
-    const viewportAspect = viewportW / viewportH
-    const scaleToFit = worldAspect > viewportAspect ? viewportW / worldW : viewportH / worldH
-    const drawW = worldW * scaleToFit
-    const drawH = worldH * scaleToFit
-    const offsetX = (viewportW - drawW) / 2
-    const offsetY = (viewportH - drawH) / 2
-
-    this.ctx.save()
-    const centerX = viewportW / 2
-    const centerY = viewportH / 2
-    this.ctx.translate(centerX + this.panX, centerY + this.panY)
-    this.ctx.scale(this.zoom, this.zoom)
-    this.ctx.translate(-centerX, -centerY)
-    
     // Draw buffer image
-    this.ctx.drawImage(this.bufferCanvas, 0, 0, worldW, worldH, offsetX, offsetY, drawW, drawH)
-    
-    // Draw world border
-    this.drawWorldBorder(offsetX, offsetY, drawW, drawH)
-    
-    this.ctx.restore()
+    drawBufferToScreen({
+      ctx: this.ctx,
+      bufferCanvas: this.bufferCanvas,
+      viewportW: this.ctx.canvas.width,
+      viewportH: this.ctx.canvas.height,
+      worldW: this.width,
+      worldH: this.height,
+      zoom: this.zoom,
+      panX: this.panX,
+      panY: this.panY,
+      backgroundRgb: { r: this.BG_R, g: this.BG_G, b: this.BG_B },
+      drawWorldBorder: (x, y, width, height) => {
+        // Draw world border
+        this.drawWorldBorder(x, y, width, height)
+      },
+    })
   }
 }

@@ -1,6 +1,6 @@
-use super::{World, CHUNK_SIZE};
+use super::{WorldCore, CHUNK_SIZE};
 
-pub(super) fn collect_dirty_chunks(world: &mut World) -> usize {
+pub(super) fn collect_dirty_chunks(world: &mut WorldCore) -> usize {
     world.dirty_list.clear();
     let total = world.chunks.total_chunks();
 
@@ -14,7 +14,7 @@ pub(super) fn collect_dirty_chunks(world: &mut World) -> usize {
     world.dirty_list.len()
 }
 
-pub(super) fn extract_chunk_pixels(world: &mut World, chunk_idx: u32) -> *const u32 {
+pub(super) fn extract_chunk_pixels(world: &mut WorldCore, chunk_idx: u32) -> *const u32 {
     let (cx_count, _) = world.chunks.dimensions();
     let cx = chunk_idx % cx_count;
     let cy = chunk_idx / cx_count;
@@ -45,7 +45,7 @@ pub(super) fn extract_chunk_pixels(world: &mut World, chunk_idx: u32) -> *const 
     world.chunk_transfer_buffer.as_ptr()
 }
 
-pub(super) fn collect_merged_rects(world: &mut World) -> usize {
+pub(super) fn collect_merged_rects(world: &mut WorldCore) -> usize {
     let _count = world
         .chunks
         .collect_merged_dirty_rects(&mut world.merged_rects);
@@ -62,7 +62,7 @@ pub(super) fn collect_merged_rects(world: &mut World) -> usize {
     world.merged_rects.count()
 }
 
-pub(super) fn count_dirty_chunks(world: &World) -> usize {
+pub(super) fn count_dirty_chunks(world: &WorldCore) -> usize {
     let mut count = 0;
     for i in 0..world.chunks.total_chunks() {
         if world.chunks.visual_dirty[i] {
@@ -72,7 +72,7 @@ pub(super) fn count_dirty_chunks(world: &World) -> usize {
     count
 }
 
-pub(super) fn get_merged_rect_x(world: &World, idx: usize) -> u32 {
+pub(super) fn get_merged_rect_x(world: &WorldCore, idx: usize) -> u32 {
     world
         .merged_rects
         .get(idx)
@@ -80,7 +80,7 @@ pub(super) fn get_merged_rect_x(world: &World, idx: usize) -> u32 {
         .unwrap_or(0)
 }
 
-pub(super) fn get_merged_rect_y(world: &World, idx: usize) -> u32 {
+pub(super) fn get_merged_rect_y(world: &WorldCore, idx: usize) -> u32 {
     world
         .merged_rects
         .get(idx)
@@ -88,7 +88,7 @@ pub(super) fn get_merged_rect_y(world: &World, idx: usize) -> u32 {
         .unwrap_or(0)
 }
 
-pub(super) fn get_merged_rect_w(world: &World, idx: usize) -> u32 {
+pub(super) fn get_merged_rect_w(world: &WorldCore, idx: usize) -> u32 {
     world
         .merged_rects
         .get(idx)
@@ -96,7 +96,7 @@ pub(super) fn get_merged_rect_w(world: &World, idx: usize) -> u32 {
         .unwrap_or(0)
 }
 
-pub(super) fn get_merged_rect_h(world: &World, idx: usize) -> u32 {
+pub(super) fn get_merged_rect_h(world: &WorldCore, idx: usize) -> u32 {
     world
         .merged_rects
         .get(idx)
@@ -104,7 +104,7 @@ pub(super) fn get_merged_rect_h(world: &World, idx: usize) -> u32 {
         .unwrap_or(0)
 }
 
-pub(super) fn extract_rect_pixels(world: &mut World, idx: usize) -> *const u32 {
+pub(super) fn extract_rect_pixels(world: &mut WorldCore, idx: usize) -> *const u32 {
     let rect = match world.merged_rects.get(idx) {
         Some(r) => r.clone(),
         None => return world.rect_transfer_buffer.as_ptr(),
@@ -150,6 +150,6 @@ pub(super) fn extract_rect_pixels(world: &mut World, idx: usize) -> *const u32 {
     world.rect_transfer_buffer.as_ptr()
 }
 
-pub(super) fn rect_buffer_size(world: &World) -> usize {
+pub(super) fn rect_buffer_size(world: &WorldCore) -> usize {
     world.rect_transfer_buffer.len() * 4
 }

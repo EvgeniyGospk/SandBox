@@ -10,25 +10,14 @@
 //! 
 //! Phase 2: Vertical falling is now done by velocity-based physics
 
+mod perf;
+mod r#move;
+mod scan;
+
+pub use perf::{reset_liquid_scan_counter, take_liquid_scan_counter};
+
 use super::{Behavior, UpdateContext, xorshift32, gravity_dir, perp_dirs};
-use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_LIQUID, CAT_GAS};
-use std::cell::RefCell;
-
-thread_local! {
-    pub static PERF_LIQUID_SCANS: RefCell<u64> = RefCell::new(0);
-}
-
-pub fn reset_liquid_scan_counter() {
-    PERF_LIQUID_SCANS.with(|c| *c.borrow_mut() = 0);
-}
-
-pub fn take_liquid_scan_counter() -> u64 {
-    PERF_LIQUID_SCANS.with(|c| {
-        let val = *c.borrow();
-        *c.borrow_mut() = 0;
-        val
-    })
-}
+use crate::elements::{ELEMENT_DATA, EL_EMPTY};
 
 /// Result of scanning a horizontal line
 struct ScanResult {
@@ -49,31 +38,7 @@ impl LiquidBehavior {
     /// PHASE 1: Uses unsafe after bounds check
     #[inline]
     fn try_move(&self, ctx: &mut UpdateContext, from_x: u32, from_y: u32, to_x: i32, to_y: i32, my_density: f32) -> bool {
-        if !ctx.grid.in_bounds(to_x, to_y) { return false; }
-        
-        // SAFETY: We just checked in_bounds above
-        let target_type = unsafe { ctx.grid.get_type_unchecked(to_x as u32, to_y as u32) };
-        
-        // Empty cell - just move
-        if target_type == EL_EMPTY {
-            // SAFETY: Both coords verified (from_x/from_y from caller, to_x/to_y from in_bounds)
-            unsafe { ctx.grid.swap_unchecked(from_x, from_y, to_x as u32, to_y as u32); }
-            return true;
-        }
-        
-        // Bounds check
-        if (target_type as usize) >= ELEMENT_DATA.len() { return false; }
-        
-        // Check if we can displace (heavier sinks into lighter)
-        let t_cat = ELEMENT_DATA[target_type as usize].category;
-        if t_cat == CAT_LIQUID || t_cat == CAT_GAS {
-            if my_density > ELEMENT_DATA[target_type as usize].density {
-                unsafe { ctx.grid.swap_unchecked(from_x, from_y, to_x as u32, to_y as u32); }
-                return true;
-            }
-        }
-        
-        false
+        r#move::try_move(ctx, from_x, from_y, to_x, to_y, my_density)
     }
     
     /// Scan along a "horizontal" axis (perpendicular to gravity) for empty cells or cliffs.
@@ -91,67 +56,8 @@ impl LiquidBehavior {
         gx: i32,
         gy: i32,
     ) -> ScanResult {
-        let mut best_x = start_x;
-        let mut best_y = start_y;
-        let mut found = false;
-        let mut has_cliff = false;
-
-        PERF_LIQUID_SCANS.with(|c| {
-            let mut v = c.borrow_mut();
-            *v = v.saturating_add(1);
-        });
-        
-        for i in 1..=range {
-            let tx = start_x + (dir_x * i);
-            let ty = start_y + (dir_y * i);
-            
-            if !ctx.grid.in_bounds(tx, ty) { break; }
-            
-            // SAFETY: We just checked in_bounds above
-            let target_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
-            
-            // CASE 1: Empty cell
-            if target_type == EL_EMPTY {
-                best_x = tx;
-                best_y = ty;
-                found = true;
-                
-                // Check for cliff below (waterfall effect)
-                let below_x = tx + gx;
-                let below_y = ty + gy;
-                if ctx.grid.in_bounds(below_x, below_y) {
-                    // SAFETY: We just checked in_bounds above
-                    let below_type = unsafe { ctx.grid.get_type_unchecked(below_x as u32, below_y as u32) };
-                    if below_type == EL_EMPTY {
-                        has_cliff = true;
-                        break;
-                    }
-                }
-                continue;
-            }
-            
-            // Bounds check
-            if (target_type as usize) >= ELEMENT_DATA.len() { break; }
-            
-            // CASE 2: Occupied cell - check if we can displace
-            let t_cat = ELEMENT_DATA[target_type as usize].category;
-            
-            if t_cat == CAT_LIQUID || t_cat == CAT_GAS {
-                let t_density = ELEMENT_DATA[target_type as usize].density;
-                
-                if my_density > t_density {
-                    best_x = tx;
-                    best_y = ty;
-                    found = true;
-                    break;
-                }
-            }
-            
-            // CASE 3: Wall or same/heavier liquid - stop scanning
-            break;
-        }
-        
-        ScanResult { found, x: best_x, y: best_y, has_cliff }
+        let r = scan::scan_line(ctx, start_x, start_y, dir_x, dir_y, range, my_density, gx, gy);
+        ScanResult { found: r.found, x: r.x, y: r.y, has_cliff: r.has_cliff }
     }
 }
 

@@ -1,24 +1,11 @@
 import { create } from 'zustand'
 import type { RenderMode } from '@/core/engine/types'
 import type { ISimulationBackend } from '@/core/engine/ISimulationBackend'
-import { SnapshotHistoryStore } from '@/core/engine/SnapshotHistoryStore'
+import { createSnapshotHistoryController } from './snapshotHistoryController'
+import { WORLD_SIZE_PRESETS, getWorldSize, type WorldSizePreset } from './worldSize'
 
-// World size presets (width x height)
-export type WorldSizePreset = 'tiny' | 'small' | 'medium' | 'large' | 'full'
-
-export const WORLD_SIZE_PRESETS: Record<WorldSizePreset, { width: number; height: number } | 'viewport'> = {
-  tiny: { width: 256, height: 192 },
-  small: { width: 512, height: 384 },
-  medium: { width: 768, height: 576 },
-  large: { width: 1024, height: 768 },
-  full: 'viewport',
-}
-
-export function getWorldSize(preset: WorldSizePreset, viewport: { width: number; height: number }): { width: number; height: number } {
-  const size = WORLD_SIZE_PRESETS[preset]
-  if (size === 'viewport') return viewport
-  return size
-}
+export { WORLD_SIZE_PRESETS, getWorldSize }
+export type { WorldSizePreset }
 
 export type GameState = 'menu' | 'playing'
 
@@ -69,26 +56,15 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   //
   // Snapshot sizes can be large (worldW*worldH bytes), so enforce byte limits.
   ...(() => {
-    const history = new SnapshotHistoryStore({ maxEntries: 20, maxBytes: 64 * 1024 * 1024 })
-
-    async function getCurrentSnapshot(): Promise<ArrayBuffer | null> {
-      const backend = get().backend
-      if (!backend) return null
-      return await backend.saveSnapshot()
-    }
-
-    function pauseAndUpdateUI(backend: ISimulationBackend): void {
-      backend.pause()
-      set({ isPlaying: false })
-    }
+    const historyController = createSnapshotHistoryController({
+      setState: (partial) => set(partial),
+      getBackend: () => get().backend,
+    })
 
     return {
       // Non-UI state
       backend: null,
-      setBackend: (backend: ISimulationBackend | null) => {
-        if (!backend) history.clear()
-        set({ backend })
-      },
+      setBackend: (backend: ISimulationBackend | null) => historyController.setBackend(backend),
 
       // Initial state
       gameState: 'menu' as GameState,
@@ -105,8 +81,8 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       startGame: () => set({ gameState: 'playing', isPlaying: true }),
       returnToMenu: () => {
         const backend = get().backend
-        if (backend) pauseAndUpdateUI(backend)
-        history.clear()
+        if (backend) backend.pause()
+        historyController.clearHistory()
         set({ gameState: 'menu', isPlaying: false })
       },
       play: () => {
@@ -122,9 +98,12 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       },
       reset: () => {
         const backend = get().backend
-        if (backend) pauseAndUpdateUI(backend)
+        if (backend) {
+          backend.pause()
+          set({ isPlaying: false })
+        }
         backend?.clear()
-        history.clear()
+        historyController.clearHistory()
         set({ particleCount: 0, isPlaying: false })
       },
       setSpeed: (speed: 0.5 | 1 | 2 | 4) => {
@@ -148,45 +127,16 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
         set({ renderMode: newMode })
       },
       setWorldSizePreset: (worldSizePreset: WorldSizePreset) => {
-        history.clear()
+        historyController.clearHistory()
         set({ worldSizePreset, particleCount: 0 })
       },
 
       // Snapshots / Undo
-      saveSnapshot: async () => {
-        const buffer = await getCurrentSnapshot()
-        history.setSavedSnapshot(buffer)
-        if (buffer) history.captureUndoSnapshot(buffer)
-      },
-      loadSnapshot: () => {
-        const backend = get().backend
-        if (!backend) return
-        const buffer = history.getSavedSnapshotCopy()
-        if (!buffer) return
-        pauseAndUpdateUI(backend)
-        backend.loadSnapshot(buffer)
-      },
-      captureSnapshotForUndo: async () => {
-        const buffer = await getCurrentSnapshot()
-        if (!buffer) return
-        history.captureUndoSnapshot(buffer)
-      },
-      undo: () => {
-        const backend = get().backend
-        if (!backend) return
-        const buffer = history.undoCopy()
-        if (!buffer) return
-        pauseAndUpdateUI(backend)
-        backend.loadSnapshot(buffer)
-      },
-      redo: () => {
-        const backend = get().backend
-        if (!backend) return
-        const buffer = history.redoCopy()
-        if (!buffer) return
-        pauseAndUpdateUI(backend)
-        backend.loadSnapshot(buffer)
-      },
+      saveSnapshot: () => historyController.saveSnapshot(),
+      loadSnapshot: () => historyController.loadSnapshot(),
+      captureSnapshotForUndo: () => historyController.captureSnapshotForUndo(),
+      undo: () => historyController.undo(),
+      redo: () => historyController.redo(),
     }
   })(),
 }))

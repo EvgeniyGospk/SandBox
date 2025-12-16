@@ -1,9 +1,6 @@
 import { create } from 'zustand'
 import type { ElementType } from '@/core/engine'
-
-type ToolType = 'brush' | 'eraser' | 'pipette' | 'fill' | 'move' | 'rigid_body'
-type BrushShape = 'circle' | 'square' | 'line'
-type RigidBodyShape = 'box' | 'circle'
+import type { BrushShape, RigidBodyShape, ToolType } from './toolTypes'
 
 interface ToolState {
   // Current tool

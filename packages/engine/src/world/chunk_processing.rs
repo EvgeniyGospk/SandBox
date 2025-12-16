@@ -1,8 +1,8 @@
 use crate::chunks::CHUNK_SIZE;
 
-use super::World;
+use super::WorldCore;
 
-pub(super) fn process_chunk_row(world: &mut World, cy: u32, chunks_x: u32, go_right: bool) {
+pub(super) fn process_chunk_row(world: &mut WorldCore, cy: u32, chunks_x: u32, go_right: bool) {
     if go_right {
         for cx in 0..chunks_x {
             world.process_chunk(cx, cy, go_right);
@@ -14,7 +14,7 @@ pub(super) fn process_chunk_row(world: &mut World, cy: u32, chunks_x: u32, go_ri
     }
 }
 
-pub(super) fn process_chunk(world: &mut World, cx: u32, cy: u32, go_right: bool) {
+pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: bool) {
     // Skip sleeping chunks with no activity
     if !world.chunks.should_process(cx, cy) {
         return;

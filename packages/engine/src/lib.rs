@@ -13,14 +13,16 @@
 // Phase 4: Utils with safety macros (must be first for macro export!)
 #[macro_use]
 pub mod core;
+pub mod spatial;
 pub mod domain;
 pub mod systems;
 pub mod world;
+pub mod simulation;
 pub mod api;
 
 // Compatibility re-exports (keeps existing internal/external paths working)
-pub use core::chunks;
-pub use core::grid;
+pub use spatial::chunks;
+pub use spatial::grid;
 pub use domain::elements;
 pub use domain::generated_elements;
 pub use systems::behaviors;
@@ -58,7 +60,7 @@ pub fn version() -> String {
 }
 
 // Re-export main types
-pub use world::World;
+pub use simulation::World;
 pub use domain::elements::ElementType;
 
 // Export element constants for JS

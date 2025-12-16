@@ -17,6 +17,11 @@
 
 import { debugLog, logError } from '../logging/log'
 
+import { isStale as isStaleImpl } from './memoryManager/isStale'
+import { readWorldPointers } from './memoryManager/pointers'
+import { updateTracking } from './memoryManager/tracking'
+import { createWorldViews } from './memoryManager/views'
+
 type WasmWorld = import('@particula/engine-wasm/particula_engine').World
 
 export class MemoryManager {
@@ -46,28 +51,18 @@ export class MemoryManager {
   private isStale(): boolean {
     // Check if buffer was detached (byteLength becomes 0)
     // or if memory grew (byteLength changed)
-    try {
-      const currentLength = this.memory.buffer.byteLength
-      if (currentLength !== this.lastByteLength) {
-        return true
-      }
-      
-      // Also check if pointers changed (world was recreated)
-      const typesPtr = this.engine.types_ptr()
-      const colorsPtr = this.engine.colors_ptr()
-      const tempPtr = this.engine.temperature_ptr()
-      
-      if (typesPtr !== this.lastTypesPtr ||
-          colorsPtr !== this.lastColorsPtr ||
-          tempPtr !== this.lastTempPtr) {
-        return true
-      }
-      
-      return false
-    } catch {
-      // If we can't access buffer, it's definitely stale
-      return true
-    }
+    // Also check if pointers changed (world was recreated)
+    // If we can't access buffer, it's definitely stale
+    return isStaleImpl({
+      memory: this.memory,
+      engine: this.engine,
+      tracking: {
+        lastByteLength: this.lastByteLength,
+        lastTypesPtr: this.lastTypesPtr,
+        lastColorsPtr: this.lastColorsPtr,
+        lastTempPtr: this.lastTempPtr,
+      },
+    })
   }
   
   /**
@@ -84,22 +79,21 @@ export class MemoryManager {
    */
   rebuildViews(): void {
     try {
-      const size = this.engine.types_len()
-      const typesPtr = this.engine.types_ptr()
-      const colorsPtr = this.engine.colors_ptr()
-      const tempPtr = this.engine.temperature_ptr()
-      
-      this._types = new Uint8Array(this.memory.buffer, typesPtr, size)
-      this._colors = new Uint32Array(this.memory.buffer, colorsPtr, size)
-      this._temperature = new Float32Array(this.memory.buffer, tempPtr, size)
-      
+      const ptrs = readWorldPointers(this.engine)
+
+      const views = createWorldViews(this.memory, ptrs)
+      this._types = views.types
+      this._colors = views.colors
+      this._temperature = views.temperature
+
       // Update tracking
-      this.lastByteLength = this.memory.buffer.byteLength
-      this.lastTypesPtr = typesPtr
-      this.lastColorsPtr = colorsPtr
-      this.lastTempPtr = tempPtr
+      const tracking = updateTracking({ memory: this.memory, pointers: ptrs })
+      this.lastByteLength = tracking.lastByteLength
+      this.lastTypesPtr = tracking.lastTypesPtr
+      this.lastColorsPtr = tracking.lastColorsPtr
+      this.lastTempPtr = tracking.lastTempPtr
       
-      debugLog(`🔒 MemoryManager: Views rebuilt (${size} cells, ${this.lastByteLength} bytes)`)
+      debugLog(`🔒 MemoryManager: Views rebuilt (${ptrs.size} cells, ${this.lastByteLength} bytes)`)
     } catch (e) {
       logError('MemoryManager: Failed to rebuild views:', e)
       this._types = null

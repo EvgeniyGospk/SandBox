@@ -11,7 +11,6 @@
 //! Temperature system is in temperature.rs
 //! Chunk optimization in chunks.rs
 
-use wasm_bindgen::prelude::*;
 use crate::grid::Grid;
 use crate::chunks::{ChunkGrid, CHUNK_SIZE, MergedDirtyRects};
 use crate::elements::ElementId;
@@ -32,6 +31,11 @@ mod chunk_processing;
 mod render_extract;
 mod commands;
 mod rigid;
+mod init;
+mod settings;
+mod facade;
+
+pub use facade::World;
 
 use perf_timer::PerfTimer;
 use perf_stats::PerfStats;
@@ -43,8 +47,7 @@ fn xorshift32(state: &mut u32) -> u32 {
 }
 
 /// The simulation world
-#[wasm_bindgen]
-pub struct World {
+pub struct WorldCore {
     grid: Grid,
     chunks: ChunkGrid,
     behaviors: BehaviorRegistry,
@@ -75,74 +78,41 @@ pub struct World {
     perf_stats_last_speed_max: f32,
 }
 
-#[wasm_bindgen]
-impl World {
+impl WorldCore {
     /// Create a new world with given dimensions
-    #[wasm_bindgen(constructor)]
     pub fn new(width: u32, height: u32) -> Self {
-        Self {
-            grid: Grid::new(width, height),
-            chunks: ChunkGrid::new(width, height),
-            behaviors: BehaviorRegistry::new(),
-            reactions: ReactionSystem::new(), // Phase 1: O(1) reaction lookup
-            rigid_bodies: RigidBodySystem::new(), // Rigid body physics
-            gravity_x: 0.0,
-            gravity_y: 1.0,
-            ambient_temperature: 20.0,
-            particle_count: 0,
-            frame: 0,
-            rng_state: 12345,
-            // Phase 3: Smart Rendering
-            dirty_list: Vec::with_capacity(1000),
-            chunk_transfer_buffer: vec![0u32; (CHUNK_SIZE * CHUNK_SIZE) as usize],
-            
-            // Phase 2: GPU Batching
-            merged_rects: MergedDirtyRects::new(500), // Max 500 rectangles
-            // Start with a small buffer; `extract_rect_pixels` will resize on demand.
-            rect_transfer_buffer: vec![0u32; (CHUNK_SIZE * CHUNK_SIZE) as usize],
-
-            perf_enabled: false,
-            perf_stats: PerfStats::default(),
-            perf_stats_last_speed_max: 0.0,
-        }
+        init::create_world_core(width, height)
     }
 
-    #[wasm_bindgen(getter)]
     pub fn width(&self) -> u32 { self.grid.width() }
 
-    #[wasm_bindgen(getter)]
     pub fn height(&self) -> u32 { self.grid.height() }
 
-    #[wasm_bindgen(getter)]
     pub fn particle_count(&self) -> u32 { self.particle_count }
 
-    #[wasm_bindgen(getter)]
     pub fn frame(&self) -> u64 { self.frame }
 
     /// Enable or disable per-step perf metrics (adds timing overhead when enabled)
     pub fn enable_perf_metrics(&mut self, enabled: bool) {
-        self.perf_enabled = enabled;
+        settings::enable_perf_metrics(self, enabled);
     }
 
     /// Get last step perf snapshot (zeros when perf disabled)
     pub fn get_perf_stats(&self) -> PerfStats {
-        self.perf_stats.clone()
+        settings::get_perf_stats(self)
     }
 
     pub fn set_gravity(&mut self, x: f32, y: f32) {
-        // Phase 2: Use actual gravity values for velocity-based physics
-        // Higher values = faster acceleration
-        self.gravity_x = x;
-        self.gravity_y = y;
+        settings::set_gravity(self, x, y);
     }
 
     pub fn set_ambient_temperature(&mut self, temp: f32) {
-        self.ambient_temperature = temp;
+        settings::set_ambient_temperature(self, temp);
     }
     
     /// DEBUG: Get current ambient temperature
     pub fn get_ambient_temperature(&self) -> f32 {
-        self.ambient_temperature
+        settings::get_ambient_temperature(self)
     }
 
     /// Add a particle at position
@@ -353,162 +323,10 @@ impl World {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::chunks::DirtyRect;
-    use crate::elements::{EL_CLONE, EL_EMPTY, EL_SAND, EL_STONE, EL_VOID};
-
-    #[test]
-    fn extract_rect_pixels_clamps_and_is_tightly_packed() {
-        let mut world = World::new(100, 100);
-
-        for (i, c) in world.grid.colors.iter_mut().enumerate() {
-            *c = i as u32;
-        }
-
-        // Rect starting at x=64 with width=64 (clamps to x..100 => 36px wide)
-        world.merged_rects.clear();
-        world.merged_rects.push(DirtyRect {
-            cx: 2,
-            cy: 0,
-            cw: 2,
-            ch: 1,
-        });
-
-        world.extract_rect_pixels(0);
-
-        let actual_w = 100 - (2 * CHUNK_SIZE);
-        let actual_h = CHUNK_SIZE;
-        let expected_len = (actual_w as usize) * (actual_h as usize);
-        assert!(world.rect_transfer_buffer.len() >= expected_len);
-
-        let buf = &world.rect_transfer_buffer[..expected_len];
-
-        // First row should be grid[0, 64..99]
-        assert_eq!(buf[0], 64);
-        assert_eq!(buf[(actual_w as usize) - 1], 99);
-        // Second row should start immediately after `actual_w` (tightly packed)
-        assert_eq!(buf[actual_w as usize], 100 + 64);
-    }
-
-    #[test]
-    fn extract_rect_pixels_resizes_for_large_rects() {
-        let size = (CHUNK_SIZE * 5) as u32; // 160px
-        let mut world = World::new(size, size);
-
-        world.merged_rects.clear();
-        world.merged_rects.push(DirtyRect {
-            cx: 0,
-            cy: 0,
-            cw: 5,
-            ch: 5,
-        });
-
-        world.extract_rect_pixels(0);
-
-        let expected = (size as usize) * (size as usize);
-        assert!(world.rect_transfer_buffer.len() >= expected);
-    }
-
-    #[test]
-    fn utility_clone_spawns_and_updates_counts() {
-        let mut world = World::new(64, 64);
-
-        // Donor above clone (Up is checked first).
-        assert!(world.add_particle(10, 9, EL_STONE));
-        assert!(world.add_particle(10, 10, EL_CLONE));
-        assert_eq!(world.particle_count(), 2);
-
-        world.step();
-
-        // Frame=0 clone starts checking from Up then Down; Down should be empty and get cloned.
-        assert_eq!(world.grid.get_type(10, 11), EL_STONE);
-        assert_eq!(world.particle_count(), 3);
-    }
-
-    #[test]
-    fn utility_void_destroys_and_updates_counts() {
-        let mut world = World::new(64, 64);
-
-        assert!(world.add_particle(10, 9, EL_STONE));
-        assert!(world.add_particle(10, 10, EL_VOID));
-        assert_eq!(world.particle_count(), 2);
-
-        world.step();
-
-        assert_eq!(world.grid.get_type(10, 9), EL_EMPTY);
-        assert_eq!(world.particle_count(), 1);
-    }
-
-    #[test]
-    fn gravity_x_pushes_particles_horizontally() {
-        let mut world = World::new(64, 64);
-        world.set_gravity(10.0, 0.0);
-
-        assert!(world.add_particle(30, 30, EL_SAND));
-        world.step();
-
-        // With gravity_x=10, sand should move right on the first step.
-        assert_eq!(world.grid.get_type(30, 30), EL_EMPTY);
-        let mut found = None;
-        for yy in 0..64 {
-            for xx in 0..64 {
-                if world.grid.get_type(xx, yy) == EL_SAND {
-                    found = Some((xx, yy));
-                    break;
-                }
-            }
-            if found.is_some() {
-                break;
-            }
-        }
-        let (nx, ny) = found.expect("sand should still exist");
-        assert_eq!(ny, 30);
-        assert!(nx > 30);
-    }
-
-    #[test]
-    fn spawn_rigid_body_rasterizes_and_counts_pixels() {
-        let mut world = World::new(64, 64);
-
-        let id = world.spawn_rigid_body(20.0, 20.0, 10, 10, EL_STONE);
-        assert_ne!(id, 0);
-        assert_eq!(world.rigid_body_count(), 1);
-
-        // 10x10 input becomes (2*(10/2)+1)^2 = 11*11 pixels.
-        assert_eq!(world.particle_count(), 121);
-        assert_eq!(world.grid.get_type(20, 20), EL_STONE);
-    }
-
-    #[test]
-    fn cross_chunk_swap_of_two_particles_keeps_chunk_counts() {
-        let mut world = World::new(64, 64);
-
-        let y = 10;
-        let left_x = CHUNK_SIZE - 1;
-        let right_x = CHUNK_SIZE;
-
-        assert!(world.add_particle(left_x, y, EL_STONE));
-        assert!(world.add_particle(right_x, y, EL_SAND));
-
-        let left_chunk = world.chunks.chunk_index(left_x, y);
-        let right_chunk = world.chunks.chunk_index(right_x, y);
-        assert_ne!(left_chunk, right_chunk);
-        assert_eq!(world.chunks.particle_counts()[left_chunk], 1);
-        assert_eq!(world.chunks.particle_counts()[right_chunk], 1);
-
-        world.grid.clear_moves();
-        unsafe { world.grid.swap_unchecked(left_x, y, right_x, y) };
-        assert_eq!(world.grid.pending_moves.count, 2);
-
-        world.apply_pending_moves();
-        assert_eq!(world.chunks.particle_counts()[left_chunk], 1);
-        assert_eq!(world.chunks.particle_counts()[right_chunk], 1);
-    }
-}
+mod tests;
 
 // Private simulation methods
-impl World {
+impl WorldCore {
     /// Process a row of chunks
     fn process_chunk_row(&mut self, cy: u32, chunks_x: u32, go_right: bool) {
         chunk_processing::process_chunk_row(self, cy, chunks_x, go_right);

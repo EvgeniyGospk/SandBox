@@ -1,8 +1,8 @@
 use crate::elements::{get_color_with_variation, get_props, EL_EMPTY, ELEMENT_COUNT};
 
-use super::World;
+use super::WorldCore;
 
-pub(super) fn add_particle(world: &mut World, x: u32, y: u32, element: u8) -> bool {
+pub(super) fn add_particle(world: &mut WorldCore, x: u32, y: u32, element: u8) -> bool {
     if x >= world.grid.width() || y >= world.grid.height() {
         return false;
     }
@@ -35,7 +35,7 @@ pub(super) fn add_particle(world: &mut World, x: u32, y: u32, element: u8) -> bo
     true
 }
 
-pub(super) fn add_particles_in_radius(world: &mut World, cx: i32, cy: i32, radius: i32, element: u8) {
+pub(super) fn add_particles_in_radius(world: &mut WorldCore, cx: i32, cy: i32, radius: i32, element: u8) {
     let r2 = radius * radius;
     for dy in -radius..=radius {
         for dx in -radius..=radius {
@@ -50,7 +50,7 @@ pub(super) fn add_particles_in_radius(world: &mut World, cx: i32, cy: i32, radiu
     }
 }
 
-pub(super) fn remove_particle(world: &mut World, x: u32, y: u32) -> bool {
+pub(super) fn remove_particle(world: &mut WorldCore, x: u32, y: u32) -> bool {
     if x >= world.grid.width() || y >= world.grid.height() {
         return false;
     }
@@ -70,7 +70,7 @@ pub(super) fn remove_particle(world: &mut World, x: u32, y: u32) -> bool {
     true
 }
 
-pub(super) fn remove_particles_in_radius(world: &mut World, cx: i32, cy: i32, radius: i32) {
+pub(super) fn remove_particles_in_radius(world: &mut WorldCore, cx: i32, cy: i32, radius: i32) {
     let r2 = radius * radius;
     for dy in -radius..=radius {
         for dx in -radius..=radius {
@@ -85,7 +85,7 @@ pub(super) fn remove_particles_in_radius(world: &mut World, cx: i32, cy: i32, ra
     }
 }
 
-pub(super) fn clear(world: &mut World) {
+pub(super) fn clear(world: &mut WorldCore) {
     world.grid.clear();
     world.chunks.reset();
     world.rigid_bodies = super::RigidBodySystem::new();
