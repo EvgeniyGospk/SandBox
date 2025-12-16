@@ -9,116 +9,19 @@
  * - Rendering (reading from WASM memory)
  */
 
-import { CanvasRenderer, RenderMode } from './Renderer'
-import { ElementType } from './types'
+import { CanvasRenderer } from './rendering/Renderer'
+import type { ElementType, RenderMode } from './types'
+import { ELEMENT_NAME_TO_ID } from './data/generated_elements'
+import { debugWarn } from '../log'
 
-// Element name to WASM ID mapping
-const ELEMENT_TO_WASM_ID: Record<ElementType, number> = {
-  'empty': 0,
-  'stone': 1,
-  'sand': 2,
-  'wood': 3,
-  'metal': 4,
-  'ice': 5,
-  'water': 6,
-  'oil': 7,
-  'lava': 8,
-  'acid': 9,
-  'steam': 10,
-  'smoke': 11,
-  'fire': 12,
-  'spark': 13,
-  'electricity': 14,
-  'gunpowder': 15,
-  'clone': 16,
-  'void': 17,
-  'dirt': 18,
-  'seed': 19,
-  'plant': 20,
-}
+export { isWasmAvailable, loadWasmEngine } from './wasmEngine/loader'
+import { getWasmMemory, loadWasmEngine } from './wasmEngine/loader'
+import { createWorldMemoryViews } from './wasmEngine/views'
+import { recreateWorldFromSnapshot } from './wasmEngine/snapshot'
+import { floodFillInPlace } from './wasmEngine/fill'
 
-// WASM module type (will be loaded dynamically)
-interface WasmModule {
-  init: () => void
-  version: () => string
-  World: new (width: number, height: number) => WasmWorld
-}
-
-interface WasmWorld {
-  width: number
-  height: number
-  particle_count: number
-  frame: bigint
-  set_gravity: (x: number, y: number) => void
-  set_ambient_temperature: (temp: number) => void
-  add_particle: (x: number, y: number, element: number) => boolean
-  add_particles_in_radius: (cx: number, cy: number, radius: number, element: number) => void
-  remove_particle: (x: number, y: number) => boolean
-  remove_particles_in_radius: (cx: number, cy: number, radius: number) => void
-  clear: () => void
-  step: () => void
-  types_ptr: () => number
-  colors_ptr: () => number
-  types_len: () => number
-  colors_len: () => number
-  temperature_ptr: () => number
-  temperature_len: () => number
-  // Phase 3: Smart Rendering
-  collect_dirty_chunks: () => number
-  get_dirty_list_ptr: () => number
-  extract_chunk_pixels: (chunkIdx: number) => number
-  chunks_x: () => number
-  chunks_y: () => number
-  // Rigid Bodies
-  spawn_rigid_body: (x: number, y: number, w: number, h: number, element_id: number) => number
-  spawn_rigid_circle: (x: number, y: number, radius: number, element_id: number) => number
-  remove_rigid_body: (id: number) => void
-  rigid_body_count: () => number
-}
-
-let wasmModule: WasmModule | null = null
-let wasmMemory: WebAssembly.Memory | null = null
-
-/**
- * Load WASM module
- */
-export async function loadWasmEngine(): Promise<WasmModule> {
-  if (wasmModule) return wasmModule
-  
-	  try {
-	    // Dynamic import of WASM package
-	    // @ts-expect-error -- WASM module loaded dynamically via Vite alias
-	    const wasm = await import('@particula/engine-wasm/particula_engine')
-    
-    // Initialize WASM and get exports (including memory!)
-    const wasmExports = await wasm.default()
-    
-    // Memory is in the exports returned by init
-    wasmMemory = wasmExports.memory
-    
-    if (!wasmMemory) {
-      console.error('WASM memory not found in exports:', Object.keys(wasmExports))
-      throw new Error('WASM memory not available')
-    }
-    
-    wasmModule = wasm as unknown as WasmModule
-    wasmModule.init()
-    
-    console.log(`🦀 WASM Engine loaded, version: ${wasmModule.version()}`)
-    console.log(`🦀 WASM memory size: ${wasmMemory.buffer.byteLength} bytes`)
-    return wasmModule
-  } catch (err) {
-    console.error('Failed to load WASM engine:', err)
-    throw err
-  }
-}
-
-/**
- * Check if WASM is available
- */
-export function isWasmAvailable(): boolean {
-  return typeof WebAssembly !== 'undefined'
-}
+type WasmModule = typeof import('@particula/engine-wasm/particula_engine')
+type WasmWorld = import('@particula/engine-wasm/particula_engine').World
 
 export class WasmParticleEngine {
   private world: WasmWorld
@@ -156,16 +59,13 @@ export class WasmParticleEngine {
    * Update TypedArray views into WASM memory
    */
   private updateMemoryViews(): void {
+    const wasmMemory = getWasmMemory()
     if (!wasmMemory) return
-    
-    const typesPtr = this.world.types_ptr()
-    const colorsPtr = this.world.colors_ptr()
-    const tempPtr = this.world.temperature_ptr()
-    const size = this.world.types_len()
-    
-    this.typesView = new Uint8Array(wasmMemory.buffer, typesPtr, size)
-    this.colorsView = new Uint32Array(wasmMemory.buffer, colorsPtr, size)
-    this.temperatureView = new Float32Array(wasmMemory.buffer, tempPtr, size)
+
+    const views = createWorldMemoryViews(this.world, wasmMemory)
+    this.typesView = views.types
+    this.colorsView = views.colors
+    this.temperatureView = views.temperature
   }
   
   // === Public API ===
@@ -190,14 +90,14 @@ export class WasmParticleEngine {
   
   addParticle(x: number, y: number, element: ElementType): boolean {
     if (this._isBusy) return false
-    const wasmId = ELEMENT_TO_WASM_ID[element] ?? 0
+    const wasmId = ELEMENT_NAME_TO_ID[element]
     if (wasmId === 0) return false  // Don't add empty
     return this.world.add_particle(Math.floor(x), Math.floor(y), wasmId)
   }
   
   addParticlesInRadius(cx: number, cy: number, radius: number, element: ElementType): void {
     if (this._isBusy) return
-    const wasmId = ELEMENT_TO_WASM_ID[element] ?? 0
+    const wasmId = ELEMENT_NAME_TO_ID[element]
     if (wasmId === 0) return  // Don't add empty
     this.world.add_particles_in_radius(Math.floor(cx), Math.floor(cy), Math.floor(radius), wasmId)
   }
@@ -217,14 +117,14 @@ export class WasmParticleEngine {
   /** Spawn a rectangular rigid body */
   spawnRigidBody(x: number, y: number, w: number, h: number, element: ElementType): number {
     if (this._isBusy) return 0
-    const wasmId = ELEMENT_TO_WASM_ID[element] ?? 1 // Default to stone
+    const wasmId = ELEMENT_NAME_TO_ID[element] || ELEMENT_NAME_TO_ID.stone
     return this.world.spawn_rigid_body(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h), wasmId)
   }
   
   /** Spawn a circular rigid body */
   spawnRigidCircle(x: number, y: number, radius: number, element: ElementType): number {
     if (this._isBusy) return 0
-    const wasmId = ELEMENT_TO_WASM_ID[element] ?? 1 // Default to stone
+    const wasmId = ELEMENT_NAME_TO_ID[element] || ELEMENT_NAME_TO_ID.stone
     return this.world.spawn_rigid_circle(Math.floor(x), Math.floor(y), Math.floor(radius), wasmId)
   }
   
@@ -241,42 +141,22 @@ export class WasmParticleEngine {
 
   /** Flood fill contiguous area of the same element */
   floodFill(cx: number, cy: number, element: ElementType): void {
-    if (!this.typesView || !wasmMemory) return
+    if (!this.typesView) return
     const width = this._width
     const height = this._height
-    if (cx < 0 || cy < 0 || cx >= width || cy >= height) return
-    const targetId = ELEMENT_TO_WASM_ID[element] ?? 0
-    const types = this.typesView
-    const idx = cy * width + cx
-    const sourceId = types[idx] ?? 0
-    if (sourceId === targetId) return
-    const visited = new Uint8Array(width * height)
-    const stack: Array<{ x: number; y: number }> = [{ x: cx, y: cy }]
-    let processed = 0
+    const targetId = ELEMENT_NAME_TO_ID[element]
     const LIMIT = 200_000
 
-    while (stack.length > 0) {
-      const { x, y } = stack.pop() as { x: number; y: number }
-      if (x < 0 || y < 0 || x >= width || y >= height) continue
-      const i = y * width + x
-      if (visited[i]) continue
-      if (types[i] !== sourceId) continue
-      visited[i] = 1
-      processed++
-      if (processed > LIMIT) break
-
-      if (targetId === 0) {
-        this.world.remove_particle(x, y)
-      } else {
-        this.world.remove_particle(x, y)
-        this.world.add_particle(x, y, targetId)
-      }
-
-      stack.push({ x: x + 1, y })
-      stack.push({ x: x - 1, y })
-      stack.push({ x, y: y + 1 })
-      stack.push({ x, y: y - 1 })
-    }
+    floodFillInPlace({
+      world: this.world,
+      typesView: this.typesView,
+      width,
+      height,
+      startX: cx,
+      startY: cy,
+      targetId,
+      limit: LIMIT,
+    })
 
     // Memory views might change if world resized
     this.updateMemoryViews()
@@ -317,19 +197,17 @@ export class WasmParticleEngine {
   loadSnapshot(types: Uint8Array): void {
     const expected = this._width * this._height
     if (types.length !== expected) {
-      console.warn('Snapshot size mismatch, skipping load')
+      debugWarn('Snapshot size mismatch, skipping load')
       return
     }
-    // Clear world then reapply particles
-    this.world = new this.wasm.World(this._width, this._height)
-    this.updateMemoryViews()
-    for (let i = 0; i < types.length; i++) {
-      const id = types[i]
-      if (id === 0) continue
-      const x = i % this._width
-      const y = Math.floor(i / this._width)
-      this.world.add_particle(x, y, id)
-    }
+
+    this.world = recreateWorldFromSnapshot({
+      wasm: this.wasm,
+      width: this._width,
+      height: this._height,
+      types,
+    })
+
     this.updateMemoryViews()
   }
   
@@ -337,7 +215,7 @@ export class WasmParticleEngine {
   
   /** Get WASM memory for zero-copy access */
   get memory(): WebAssembly.Memory | null {
-    return wasmMemory
+    return getWasmMemory()
   }
   
   /** Get the renderer instance */

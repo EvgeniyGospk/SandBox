@@ -36,14 +36,15 @@ impl PowderBehavior {
         my_density > ELEMENT_DATA[target_type as usize].density
     }
     
-    /// Check if blocked below (for dispersion trigger)
+    /// Check if blocked in gravity direction (for dispersion trigger)
     #[inline]
-    fn is_blocked_below(&self, ctx: &UpdateContext, xi: i32, yi: i32, gy: i32) -> bool {
+    fn is_blocked_in_gravity_dir(&self, ctx: &UpdateContext, xi: i32, yi: i32, gx: i32, gy: i32) -> bool {
+        let tx = xi + gx;
         let ty = yi + gy;
-        if !ctx.grid.in_bounds(xi, ty) { return true; }
+        if !ctx.grid.in_bounds(tx, ty) { return true; }
         
-        let below_type = unsafe { ctx.grid.get_type_unchecked(xi as u32, ty as u32) };
-        below_type != EL_EMPTY
+        let t = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
+        t != EL_EMPTY
     }
 }
 
@@ -60,33 +61,63 @@ impl Behavior for PowderBehavior {
         
         let my_density = ELEMENT_DATA[element as usize].density;
         
-        // Get gravity direction
-        let gx = if ctx.gravity_x > 0.0 { 1 } else if ctx.gravity_x < 0.0 { -1 } else { 0 };
-        let gy = if ctx.gravity_y > 0.0 { 1 } else if ctx.gravity_y < 0.0 { -1 } else { 0 };
-        
-        if gy == 0 && gx == 0 { return; }
+        // Get discrete gravity direction (defaults to down if zero)
+        let (gx, gy) = super::gravity_dir(ctx.gravity_x, ctx.gravity_y);
         
         // Phase 2: NO vertical falling here - physics.rs handles that!
         // Only do diagonal dispersion when blocked below
         
-        if !self.is_blocked_below(ctx, xi, yi, gy) {
+        if !self.is_blocked_in_gravity_dir(ctx, xi, yi, gx, gy) {
             // Not blocked - physics will handle the fall
             return;
         }
         
-        // Blocked below - try to roll diagonally
-        let ty = yi + gy;
-        let (dx1, dx2) = get_random_dir(ctx.frame, x);
-        
-        let tx1 = xi + dx1;
-        if self.can_displace(ctx, tx1, ty, my_density) {
-            unsafe { ctx.grid.swap_unchecked(x, y, tx1 as u32, ty as u32); }
-            return;
-        }
-        
-        let tx2 = xi + dx2;
-        if self.can_displace(ctx, tx2, ty, my_density) {
-            unsafe { ctx.grid.swap_unchecked(x, y, tx2 as u32, ty as u32); }
+        // Blocked - try to roll "diagonally" relative to gravity.
+        //
+        // For axis-aligned gravity, this is a true diagonal (gravity step + lateral step).
+        // For diagonal gravity, we approximate by trying each axis component separately.
+        if gx == 0 || gy == 0 {
+            // Axis-aligned gravity: pick a lateral axis and try both sides.
+            let lateral_key = if gx == 0 { x } else { y };
+            let (s1, s2) = get_random_dir(ctx.frame, lateral_key);
+
+            let (dx1, dy1, dx2, dy2) = if gx == 0 {
+                // Gravity is vertical → lateral is X.
+                (s1, gy, s2, gy)
+            } else {
+                // Gravity is horizontal → lateral is Y.
+                (gx, s1, gx, s2)
+            };
+
+            let tx1 = xi + dx1;
+            let ty1 = yi + dy1;
+            if self.can_displace(ctx, tx1, ty1, my_density) {
+                unsafe { ctx.grid.swap_unchecked(x, y, tx1 as u32, ty1 as u32); }
+                return;
+            }
+
+            let tx2 = xi + dx2;
+            let ty2 = yi + dy2;
+            if self.can_displace(ctx, tx2, ty2, my_density) {
+                unsafe { ctx.grid.swap_unchecked(x, y, tx2 as u32, ty2 as u32); }
+            }
+        } else {
+            // Diagonal gravity: try sliding along X then Y (or vice versa).
+            let prefer_x = ((ctx.frame as u32 + x + y) & 1) == 0;
+            let candidates = if prefer_x {
+                [(gx, 0), (0, gy)]
+            } else {
+                [(0, gy), (gx, 0)]
+            };
+
+            for (dx, dy) in candidates {
+                let tx = xi + dx;
+                let ty = yi + dy;
+                if self.can_displace(ctx, tx, ty, my_density) {
+                    unsafe { ctx.grid.swap_unchecked(x, y, tx as u32, ty as u32); }
+                    break;
+                }
+            }
         }
     }
 }

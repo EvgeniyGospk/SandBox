@@ -7,9 +7,13 @@ cd "$(dirname "$0")"
 
 echo "🦀 Building with Rust Nightly + Rayon parallel support..."
 
+# Pin nightly for reproducible builds (override via env var if needed)
+NIGHTLY_TOOLCHAIN="${PARTICULA_NIGHTLY_TOOLCHAIN:-nightly-2025-01-15}"
+echo "🧷 Using toolchain: ${NIGHTLY_TOOLCHAIN}"
+
 # Build with nightly, atomics, and build-std
 RUSTFLAGS="-C target-feature=+simd128,+atomics,+bulk-memory" \
-PATH="$HOME/.cargo/bin:$PATH" cargo +nightly build \
+PATH="$HOME/.cargo/bin:$PATH" cargo +"${NIGHTLY_TOOLCHAIN}" build \
   --lib \
   --release \
   --target wasm32-unknown-unknown \

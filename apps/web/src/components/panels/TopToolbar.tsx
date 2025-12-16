@@ -1,7 +1,6 @@
 import { useToolStore } from '@/stores/toolStore'
 import { useSimulationStore } from '@/stores/simulationStore'
 import { resetCamera } from '@/lib/canvasControls'
-import * as SimulationController from '@/lib/engine/SimulationController'
 import { 
   Circle, 
   Square, 
@@ -28,7 +27,7 @@ export function TopToolbar() {
     setBrushSize 
   } = useToolStore()
   
-  const { renderMode, toggleRenderMode } = useSimulationStore()
+  const { renderMode, toggleRenderMode, undo, redo, saveSnapshot, loadSnapshot } = useSimulationStore()
 
   return (
     <header className="h-14 bg-[#1A1A1A] border-b border-[#333] flex items-center px-4 gap-4">
@@ -142,23 +141,23 @@ export function TopToolbar() {
       <div className="flex items-center gap-1">
         <ToolButton
           icon={<Undo size={16} />}
-          onClick={() => SimulationController.undo()}
+          onClick={undo}
           tooltip="Undo"
         />
         <ToolButton
           icon={<Redo size={16} />}
-          onClick={() => SimulationController.redo()}
+          onClick={redo}
           tooltip="Redo"
         />
         <div className="w-px h-6 bg-border mx-1" />
         <ToolButton
           icon={<Save size={16} />}
-          onClick={() => SimulationController.saveSnapshot()}
+          onClick={saveSnapshot}
           tooltip="Save"
         />
         <ToolButton
           icon={<FolderOpen size={16} />}
-          onClick={() => SimulationController.loadSnapshot()}
+          onClick={loadSnapshot}
           tooltip="Load"
         />
       </div>
@@ -178,6 +177,7 @@ function ToolButton({ icon, isActive, onClick, tooltip }: ToolButtonProps) {
     <button
       onClick={onClick}
       title={tooltip}
+      aria-label={tooltip}
       className={`p-2.5 rounded-lg transition-colors ${
         isActive
           ? 'bg-[#3B82F6] text-white'

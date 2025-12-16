@@ -1,13 +1,14 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { useSimulationStore, getWorldSize } from '@/stores/simulationStore'
 import { useToolStore } from '@/stores/toolStore'
-import { WorkerBridge, isWorkerSupported } from '@/lib/engine/WorkerBridge'
+import { WorkerBridge, isWorkerSupported } from '@/lib/engine/worker'
 import { WasmParticleEngine } from '@/lib/engine'
+import { createWasmBackend, createWorkerBackend } from '@/lib/engine/backendAdapters'
 import { screenToWorld as invertTransform, solvePanForZoom } from '@/lib/engine/transform'
-import { ELEMENT_ID_TO_NAME } from '@/lib/engine/generated_elements'
-import * as SimulationController from '@/lib/engine/SimulationController'
-import { setBridge, setEngine } from '@/lib/engine/runtime'
+import { ELEMENT_ID_TO_NAME } from '@/lib/engine/data/generated_elements'
+import { BASE_STEP_MS, FPS_SAMPLES, MAX_DT_MS, MAX_STEPS_PER_FRAME, STATS_INTERVAL_MS } from '@/lib/engine/timing'
 import { setResetCameraHandler } from '@/lib/canvasControls'
+import { debugLog, debugWarn, logError } from '@/lib/log'
 
 /**
  * Canvas Component - Phase 1: WebWorker Architecture
@@ -28,6 +29,8 @@ export function Canvas() {
   const bridgeRef = useRef<WorkerBridge | null>(null)
   const engineRef = useRef<WasmParticleEngine | null>(null) // Fallback
   const viewportSizeRef = useRef({ width: 0, height: 0 })
+  const pendingWorldResizeRef = useRef<{ width: number; height: number } | null>(null)
+  const initialWorldSizeRef = useRef<{ width: number; height: number } | null>(null)
   
 	  // Input state
 	  const isDrawing = useRef(false)
@@ -44,7 +47,18 @@ export function Canvas() {
   const cameraRef = useRef({ x: 0, y: 0, zoom: 1 })
   
   // FIX 2: Достаем renderMode из стора
-  const { isPlaying, speed, gravity, ambientTemperature, renderMode, worldSizePreset, setFps, setParticleCount } = useSimulationStore()
+  const {
+    isPlaying,
+    speed,
+    gravity,
+    ambientTemperature,
+    renderMode,
+    worldSizePreset,
+    setFps,
+    setParticleCount,
+    setBackend,
+    captureSnapshotForUndo,
+  } = useSimulationStore()
   const { 
     selectedElement, 
     brushSize, 
@@ -82,12 +96,13 @@ export function Canvas() {
     const worldSize = getWorldSize(worldSizePreset, { width: viewportRect.width, height: viewportRect.height })
     const worldWidth = Math.max(1, Math.floor(worldSize.width))
     const worldHeight = Math.max(1, Math.floor(worldSize.height))
+    initialWorldSizeRef.current = { width: worldWidth, height: worldHeight }
     
     // Canvas = viewport size (for display)
     canvas.width = viewportWidth
     canvas.height = viewportHeight
     
-    console.log(`🌍 World Size: ${worldWidth}x${worldHeight} (preset: ${worldSizePreset})`)
+    debugLog(`🌍 World Size: ${worldWidth}x${worldHeight} (preset: ${worldSizePreset})`)
     
     const workerSupported = isWorkerSupported()
     setUseWorker(workerSupported)
@@ -96,8 +111,7 @@ export function Canvas() {
       // === PHASE 1: WORKER MODE ===
       const bridge = new WorkerBridge()
       bridgeRef.current = bridge
-      setBridge(bridge)
-      setEngine(null)
+      setBackend(createWorkerBackend(bridge))
       
       // Setup callbacks
       bridge.onStats = (stats) => {
@@ -108,17 +122,24 @@ export function Canvas() {
       
       bridge.onReady = () => {
         if (canceled) return
-        console.log('🚀 Worker ready! Physics runs in separate thread.')
+        debugLog('🚀 Worker ready! Physics runs in separate thread.')
         // Ensure current UI state is applied (messages may have been sent before init)
         bridge.setSettings({ gravity, ambientTemperature, speed })
         bridge.setRenderMode(renderMode)
         if (isPlaying) bridge.play()
+
+        // If a world-size change happened while the worker was booting, apply it now.
+        const pending = pendingWorldResizeRef.current
+        if (pending) {
+          pendingWorldResizeRef.current = null
+          bridge.resize(pending.width, pending.height)
+        }
         setIsLoading(false)
       }
       
       bridge.onError = (msg) => {
         if (canceled) return
-        console.error('Worker error:', msg)
+        logError('Worker error:', msg)
         canvasTransferred.current = bridge.hasTransferred
         setError(`Simulation error: ${msg}. Please refresh the page.`)
         setIsLoading(false)
@@ -126,7 +147,7 @@ export function Canvas() {
       
       bridge.onCrash = (msg) => {
         if (canceled) return
-        console.error('Worker crash:', msg)
+        logError('Worker crash:', msg)
         canvasTransferred.current = bridge.hasTransferred
         setError(`Simulation crashed: ${msg}. Please refresh the page.`)
         setIsLoading(false)
@@ -136,56 +157,55 @@ export function Canvas() {
       const initPromise = bridge.init(canvas, worldWidth, worldHeight, viewportWidth, viewportHeight)
       canvasTransferred.current = bridge.hasTransferred
 
-      initPromise
-        .then(() => {
+	      initPromise
+	        .then(() => {
+	          canvasTransferred.current = bridge.hasTransferred
+	        })
+	        .catch((err) => {
           canvasTransferred.current = bridge.hasTransferred
-        })
-        .catch((err) => {
-          canvasTransferred.current = bridge.hasTransferred
-          console.warn('Worker init failed:', err)
+          debugWarn('Worker init failed:', err)
 
-          // If transfer failed, we can still fall back to main-thread mode.
-          if (!bridge.hasTransferred) {
-            bridge.destroy()
-            bridgeRef.current = null
-            setBridge(null)
-            setUseWorker(false)
-            initFallbackEngine(canvas, worldWidth, worldHeight)
-            return
-          }
+	          // If transfer failed, we can still fall back to main-thread mode.
+	          if (!bridge.hasTransferred) {
+	            bridge.destroy()
+	            bridgeRef.current = null
+	            setBackend(null)
+	            setUseWorker(false)
+	            initFallbackEngine(canvas, worldWidth, worldHeight)
+	            return
+	          }
 
           setError(`Failed to initialize: ${err.message}. Please refresh.`)
           setIsLoading(false)
         })
       
-    } else {
-      // === FALLBACK: MAIN THREAD MODE ===
-      setBridge(null)
-      initFallbackEngine(canvas, worldWidth, worldHeight)
-    }
+	    } else {
+	      // === FALLBACK: MAIN THREAD MODE ===
+	      setBackend(null)
+	      initFallbackEngine(canvas, worldWidth, worldHeight)
+	    }
 
-    return () => {
-      canceled = true
-      if (bridgeRef.current) {
-        bridgeRef.current.destroy()
-        bridgeRef.current = null
-        setBridge(null)
-      }
-      if (engineRef.current) {
-        engineRef.current.destroy()
-        engineRef.current = null
-        setEngine(null)
-      }
-      canvasTransferred.current = false
-    }
+	    return () => {
+	      canceled = true
+	      if (bridgeRef.current) {
+	        bridgeRef.current.destroy()
+	        bridgeRef.current = null
+	      }
+	      if (engineRef.current) {
+	        engineRef.current.destroy()
+	        engineRef.current = null
+	      }
+	      setBackend(null)
+	      canvasTransferred.current = false
+	    }
   // worldSizePreset is read on mount (changes only happen in menu before game starts)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Fallback engine initialization (main thread)
-	  const initFallbackEngine = async (canvas: HTMLCanvasElement, width: number, height: number) => {
-	    try {
-	      console.log('🦀 Fallback: Loading WASM in main thread...')
+		  const initFallbackEngine = async (canvas: HTMLCanvasElement, width: number, height: number) => {
+		    try {
+	      debugLog('🦀 Fallback: Loading WASM in main thread...')
 	      const ctx = canvas.getContext('2d', { alpha: false })
 	      if (!ctx) throw new Error('No 2d context')
 	      
@@ -194,33 +214,61 @@ export function Canvas() {
 	      engine.setSettings({ gravity, ambientTemperature })
 	      engine.setRenderMode(renderMode)
 	      
-	      engineRef.current = engine
-	      setEngine(engine)
-	      setBridge(null)
-	      canvasTransferred.current = false
-	      setIsLoading(false)
-	      console.log('🦀 Fallback engine ready!')
+		      engineRef.current = engine
+		      setBackend(createWasmBackend(engine))
+		      canvasTransferred.current = false
+		      setIsLoading(false)
+		      debugLog('🦀 Fallback engine ready!')
+
+        // If a world-size change happened while the fallback was booting, apply it now.
+        const pending = pendingWorldResizeRef.current
+        if (pending) {
+          pendingWorldResizeRef.current = null
+          engine.resize(pending.width, pending.height)
+        }
 	      
 	      // Start main thread render loop
 	      startFallbackRenderLoop(engine, ctx)
     } catch (err) {
-      console.error('Failed to load WASM engine:', err)
+      logError('Failed to load WASM engine:', err)
+      setError(`Simulation error: ${err instanceof Error ? err.message : String(err)}`)
       setIsLoading(false)
     }
   }
   
   // Main thread render loop (fallback)
-	  const startFallbackRenderLoop = (engine: WasmParticleEngine, _ctx: CanvasRenderingContext2D) => {
-	    let lastStatsUpdate = 0
-	    const STATS_INTERVAL = 200
+		  const startFallbackRenderLoop = (engine: WasmParticleEngine, _ctx: CanvasRenderingContext2D) => {
+		    let lastStatsUpdate = 0
+	      let lastTime = 0
+	      let stepAccumulator = 0
+	      const fpsBuffer = new Float32Array(FPS_SAMPLES)
+	      let fpsIndex = 0
+	      let fpsCount = 0
 	    
 	    const render = (time: number) => {
 	      if (!engineRef.current) return
 	      const { isPlaying: playing, speed: currentSpeed } = useSimulationStore.getState()
+        const dtMs = lastTime > 0 ? time - lastTime : 0
+        lastTime = time
+
+        if (dtMs > 0) {
+          fpsBuffer[fpsIndex] = 1000 / dtMs
+          fpsIndex = (fpsIndex + 1) % FPS_SAMPLES
+          if (fpsCount < FPS_SAMPLES) fpsCount++
+        }
 	      
 	      // Step simulation
 	      if (playing) {
-	        const steps = currentSpeed >= 1 ? Math.floor(currentSpeed) : 1
+          const clampedDt = Math.min(dtMs, MAX_DT_MS)
+          const safeSpeed = Number.isFinite(currentSpeed) && currentSpeed > 0 ? currentSpeed : 1
+          stepAccumulator += (safeSpeed * clampedDt) / BASE_STEP_MS
+          let steps = Math.floor(stepAccumulator)
+          if (steps > MAX_STEPS_PER_FRAME) {
+            steps = MAX_STEPS_PER_FRAME
+            stepAccumulator = 0
+          } else {
+            stepAccumulator -= steps
+          }
 	        for (let i = 0; i < steps; i++) {
 	          engine.step()
 	        }
@@ -236,17 +284,58 @@ export function Canvas() {
       }
       
       // Stats update
-      if (time - lastStatsUpdate > STATS_INTERVAL) {
-        setFps(60) // Approximate
-        setParticleCount(engine.particleCount)
-        lastStatsUpdate = time
-      }
+	      if (time - lastStatsUpdate > STATS_INTERVAL_MS) {
+	        let sum = 0
+	        for (let i = 0; i < fpsCount; i++) sum += fpsBuffer[i]
+	        const avgFps = fpsCount > 0 ? sum / fpsCount : 0
+	        setFps(Math.round(avgFps))
+	        setParticleCount(engine.particleCount)
+	        lastStatsUpdate = time
+	      }
       
       requestAnimationFrame(render)
     }
     
     requestAnimationFrame(render)
   }
+
+  // Apply world size preset changes during gameplay (recreates world + clears simulation).
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const viewportRect = container.getBoundingClientRect()
+    if (viewportRect.width <= 0 || viewportRect.height <= 0) return
+
+    const worldSize = getWorldSize(worldSizePreset, { width: viewportRect.width, height: viewportRect.height })
+    const worldWidth = Math.max(1, Math.floor(worldSize.width))
+    const worldHeight = Math.max(1, Math.floor(worldSize.height))
+
+    // Worker mode
+    const bridge = bridgeRef.current
+    if (bridge) {
+      if (bridge.width === worldWidth && bridge.height === worldHeight) return
+      if (!bridge.isReady) {
+        pendingWorldResizeRef.current = { width: worldWidth, height: worldHeight }
+        return
+      }
+      setParticleCount(0)
+      bridge.resize(worldWidth, worldHeight)
+      return
+    }
+
+    // Fallback mode
+    const engine = engineRef.current
+    if (!engine) {
+      const initial = initialWorldSizeRef.current
+      if (initial && initial.width === worldWidth && initial.height === worldHeight) return
+      pendingWorldResizeRef.current = { width: worldWidth, height: worldHeight }
+      return
+    }
+    if (engine.width === worldWidth && engine.height === worldHeight) return
+    setParticleCount(0)
+    engine.resize(worldWidth, worldHeight)
+  }, [worldSizePreset, setParticleCount])
 
 	  // Handle resize - only resize world if preset is 'full'
 	  useEffect(() => {
@@ -290,9 +379,7 @@ export function Canvas() {
 	    handleResize()
 	    window.addEventListener('resize', handleResize)
 	    return () => window.removeEventListener('resize', handleResize)
-	  // worldSizePreset read on mount only
-	  // eslint-disable-next-line react-hooks/exhaustive-deps
-	  }, [])
+	  }, [worldSizePreset])
 
   // === INPUT HANDLERS ===
 
@@ -447,8 +534,8 @@ export function Canvas() {
 	      return
 		    }
 
-		    const isOneShotTool = selectedTool === 'fill' || selectedTool === 'rigid_body'
-		    await SimulationController.captureSnapshotForUndo()
+			    const isOneShotTool = selectedTool === 'fill' || selectedTool === 'rigid_body'
+			    await captureSnapshotForUndo()
 
 		    if (isOneShotTool) {
 		      draw(pos.x, pos.y)
@@ -458,7 +545,7 @@ export function Canvas() {
 	    // Continuous drawing
 	    isDrawing.current = true
 	    draw(pos.x, pos.y)
-	  }, [getCanvasPosition, screenToWorld, draw, selectedTool])
+		  }, [getCanvasPosition, screenToWorld, draw, selectedTool, captureSnapshotForUndo])
 
 	  const handleMouseMove = useCallback((e: React.MouseEvent) => {
 	    const pos = getCanvasPosition(e)

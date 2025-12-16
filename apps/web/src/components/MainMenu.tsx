@@ -234,6 +234,8 @@ export function MainMenu({ onStartGame }: MainMenuProps) {
                 <button
                   onClick={() => setShowSettings(false)}
                   className="text-gray-400 hover:text-white transition-colors"
+                  title="Close settings"
+                  aria-label="Close settings"
                 >
                   ✕
                 </button>

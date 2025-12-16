@@ -22,12 +22,13 @@ pub use plant::PlantBehavior;
 
 use crate::grid::Grid;
 use crate::chunks::ChunkGrid;
-use crate::elements::{CategoryId, ElementId, CAT_POWDER, CAT_LIQUID, CAT_GAS, CAT_ENERGY, CAT_UTILITY, CAT_BIO};
+use crate::elements::{CategoryId, ElementId, EL_EMPTY, CAT_POWDER, CAT_LIQUID, CAT_GAS, CAT_ENERGY, CAT_UTILITY, CAT_BIO};
 
 /// Update context passed to behaviors (mirrors TypeScript UpdateContext)
 pub struct UpdateContext<'a> {
     pub grid: &'a mut Grid,
     pub chunks: &'a mut ChunkGrid,
+    pub world_particle_count: &'a mut u32,
     pub x: u32,
     pub y: u32,
     pub frame: u64,
@@ -45,13 +46,24 @@ impl<'a> UpdateContext<'a> {
 
     #[inline]
     pub fn set_particle_dirty(&mut self, x: u32, y: u32, element: ElementId, color: u32, life: u16, temp: f32) {
+        let prev = self.grid.get_type(x as i32, y as i32);
         self.grid.set_particle(x, y, element, color, life, temp);
+        if prev == EL_EMPTY {
+            self.chunks.add_particle(x, y);
+            *self.world_particle_count = self.world_particle_count.saturating_add(1);
+        }
         self.chunks.mark_dirty(x, y);
     }
 
     #[inline]
     pub fn clear_cell_dirty(&mut self, x: u32, y: u32) {
+        let prev = self.grid.get_type(x as i32, y as i32);
+        if prev == EL_EMPTY {
+            return;
+        }
         self.grid.clear_cell(x, y);
+        self.chunks.remove_particle(x, y);
+        *self.world_particle_count = self.world_particle_count.saturating_sub(1);
         self.chunks.mark_dirty(x, y);
     }
 }
@@ -68,6 +80,27 @@ pub fn get_random_dir(frame: u64, x: u32) -> (i32, i32) {
     // TypeScript: goLeft = (frame + x) & 1 -> if truthy (1) then left first
     let go_left = ((frame as u32 + x) & 1) == 1;
     if go_left { (-1, 1) } else { (1, -1) }
+}
+
+/// Discrete gravity direction as a grid step (−1/0/1 per axis).
+/// If gravity is (0,0), defaults to down (0,1).
+#[inline]
+pub fn gravity_dir(gravity_x: f32, gravity_y: f32) -> (i32, i32) {
+    let gx = if gravity_x > 0.0 { 1 } else if gravity_x < 0.0 { -1 } else { 0 };
+    let gy = if gravity_y > 0.0 { 1 } else if gravity_y < 0.0 { -1 } else { 0 };
+    if gx == 0 && gy == 0 {
+        (0, 1)
+    } else {
+        (gx, gy)
+    }
+}
+
+/// Two perpendicular unit directions for a given direction.
+/// Returned as (left, right) relative to `dir`.
+#[inline]
+pub fn perp_dirs(dx: i32, dy: i32) -> ((i32, i32), (i32, i32)) {
+    // 90° rotations: (-dy, dx) and (dy, -dx)
+    ((-dy, dx), (dy, -dx))
 }
 
 /// Xorshift32 random number generator

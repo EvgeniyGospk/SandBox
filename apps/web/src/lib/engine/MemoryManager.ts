@@ -15,9 +15,13 @@
  *   const colors = mm.colors // Always valid!
  */
 
+import { debugLog, logError } from '../log'
+
+type WasmWorld = import('@particula/engine-wasm/particula_engine').World
+
 export class MemoryManager {
   private memory: WebAssembly.Memory
-  private engine: any  // WASM World instance
+  private engine: WasmWorld  // WASM World instance
   
   // Cached views (recreated on buffer detach)
   private _types: Uint8Array | null = null
@@ -30,7 +34,7 @@ export class MemoryManager {
   private lastColorsPtr: number = 0
   private lastTempPtr: number = 0
   
-  constructor(memory: WebAssembly.Memory, engine: any) {
+  constructor(memory: WebAssembly.Memory, engine: WasmWorld) {
     this.memory = memory
     this.engine = engine
     this.rebuildViews()
@@ -95,9 +99,9 @@ export class MemoryManager {
       this.lastColorsPtr = colorsPtr
       this.lastTempPtr = tempPtr
       
-      console.log(`🔒 MemoryManager: Views rebuilt (${size} cells, ${this.lastByteLength} bytes)`)
+      debugLog(`🔒 MemoryManager: Views rebuilt (${size} cells, ${this.lastByteLength} bytes)`)
     } catch (e) {
-      console.error('MemoryManager: Failed to rebuild views:', e)
+      logError('MemoryManager: Failed to rebuild views:', e)
       this._types = null
       this._colors = null
       this._temperature = null

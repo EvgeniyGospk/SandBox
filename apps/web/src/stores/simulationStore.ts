@@ -1,6 +1,7 @@
 import { create } from 'zustand'
-import type { RenderMode } from '@/lib/engine'
-import * as SimulationController from '@/lib/engine/SimulationController'
+import type { RenderMode } from '@/lib/engine/types'
+import type { ISimulationBackend } from '@/lib/engine/ISimulationBackend'
+import { SnapshotHistoryStore } from '@/lib/engine/SnapshotHistoryStore'
 
 // World size presets (width x height)
 export type WorldSizePreset = 'tiny' | 'small' | 'medium' | 'large' | 'full'
@@ -34,6 +35,10 @@ interface SimulationState {
   gravity: { x: number; y: number }
   ambientTemperature: number
   worldSizePreset: WorldSizePreset
+
+  // Runtime backend (worker or main-thread fallback)
+  backend: ISimulationBackend | null
+  setBackend: (backend: ISimulationBackend | null) => void
   
   // Actions
   startGame: () => void
@@ -49,60 +54,139 @@ interface SimulationState {
   setParticleCount: (count: number) => void
   toggleRenderMode: () => void
   setWorldSizePreset: (preset: WorldSizePreset) => void
+
+  // Snapshots / Undo
+  saveSnapshot: () => Promise<void>
+  loadSnapshot: () => void
+  captureSnapshotForUndo: () => Promise<void>
+  undo: () => void
+  redo: () => void
 }
 
 export const useSimulationStore = create<SimulationState>((set, get) => ({
-  // Initial state
-  gameState: 'menu',
-  isPlaying: false,
-  speed: 1,
-  fps: 60,
-  particleCount: 0,
-  renderMode: 'normal' as RenderMode,
-  gravity: { x: 0, y: 9.8 },
-  ambientTemperature: 20,
-  worldSizePreset: 'medium',
-  
-  // Actions
-  startGame: () => set({ gameState: 'playing', isPlaying: true }),
-  returnToMenu: () => {
-    SimulationController.pause()
-    set({ gameState: 'menu', isPlaying: false })
-  },
-  play: () => {
-    SimulationController.play()
-    set({ isPlaying: true })
-  },
-  pause: () => {
-    SimulationController.pause()
-    set({ isPlaying: false })
-  },
-  step: () => {
-    SimulationController.step()
-  },
-  reset: () => {
-    SimulationController.reset()
-    set({ particleCount: 0, isPlaying: false })
-  },
-  setSpeed: (speed) => {
-    SimulationController.setSpeed(speed)
-    set({ speed })
-  },
-  setGravity: (gravity) => {
-    SimulationController.setGravity(gravity)
-    set({ gravity })
-  },
-  setAmbientTemperature: (ambientTemperature) => {
-    SimulationController.setAmbientTemperature(ambientTemperature)
-    set({ ambientTemperature })
-  },
-  setFps: (fps) => set({ fps }),
-  setParticleCount: (particleCount) => set({ particleCount }),
-  toggleRenderMode: () => {
-    const currentMode = get().renderMode
-    const newMode: RenderMode = currentMode === 'normal' ? 'thermal' : 'normal'
-    SimulationController.setRenderMode(newMode)
-    set({ renderMode: newMode })
-  },
-  setWorldSizePreset: (worldSizePreset) => set({ worldSizePreset }),
+  // This store also owns the runtime glue (backend + snapshots), but keeps it
+  // behind stable action boundaries to avoid the old "mutable module singleton".
+  //
+  // Snapshot sizes can be large (worldW*worldH bytes), so enforce byte limits.
+  ...(() => {
+    const history = new SnapshotHistoryStore({ maxEntries: 20, maxBytes: 64 * 1024 * 1024 })
+
+    async function getCurrentSnapshot(): Promise<ArrayBuffer | null> {
+      const backend = get().backend
+      if (!backend) return null
+      return await backend.saveSnapshot()
+    }
+
+    function pauseAndUpdateUI(backend: ISimulationBackend): void {
+      backend.pause()
+      set({ isPlaying: false })
+    }
+
+    return {
+      // Non-UI state
+      backend: null,
+      setBackend: (backend: ISimulationBackend | null) => {
+        if (!backend) history.clear()
+        set({ backend })
+      },
+
+      // Initial state
+      gameState: 'menu' as GameState,
+      isPlaying: false,
+      speed: 1,
+      fps: 60,
+      particleCount: 0,
+      renderMode: 'normal' as RenderMode,
+      gravity: { x: 0, y: 9.8 },
+      ambientTemperature: 20,
+      worldSizePreset: 'medium' as WorldSizePreset,
+
+      // Actions
+      startGame: () => set({ gameState: 'playing', isPlaying: true }),
+      returnToMenu: () => {
+        const backend = get().backend
+        if (backend) pauseAndUpdateUI(backend)
+        history.clear()
+        set({ gameState: 'menu', isPlaying: false })
+      },
+      play: () => {
+        get().backend?.play()
+        set({ isPlaying: true })
+      },
+      pause: () => {
+        get().backend?.pause()
+        set({ isPlaying: false })
+      },
+      step: () => {
+        get().backend?.step()
+      },
+      reset: () => {
+        const backend = get().backend
+        if (backend) pauseAndUpdateUI(backend)
+        backend?.clear()
+        history.clear()
+        set({ particleCount: 0, isPlaying: false })
+      },
+      setSpeed: (speed: 0.5 | 1 | 2 | 4) => {
+        get().backend?.setSettings({ speed })
+        set({ speed })
+      },
+      setGravity: (gravity: { x: number; y: number }) => {
+        get().backend?.setSettings({ gravity })
+        set({ gravity })
+      },
+      setAmbientTemperature: (ambientTemperature: number) => {
+        get().backend?.setSettings({ ambientTemperature })
+        set({ ambientTemperature })
+      },
+      setFps: (fps: number) => set({ fps }),
+      setParticleCount: (particleCount: number) => set({ particleCount }),
+      toggleRenderMode: () => {
+        const currentMode = get().renderMode
+        const newMode: RenderMode = currentMode === 'normal' ? 'thermal' : 'normal'
+        get().backend?.setRenderMode(newMode)
+        set({ renderMode: newMode })
+      },
+      setWorldSizePreset: (worldSizePreset: WorldSizePreset) => {
+        history.clear()
+        set({ worldSizePreset, particleCount: 0 })
+      },
+
+      // Snapshots / Undo
+      saveSnapshot: async () => {
+        const buffer = await getCurrentSnapshot()
+        history.setSavedSnapshot(buffer)
+        if (buffer) history.captureUndoSnapshot(buffer)
+      },
+      loadSnapshot: () => {
+        const backend = get().backend
+        if (!backend) return
+        const buffer = history.getSavedSnapshotCopy()
+        if (!buffer) return
+        pauseAndUpdateUI(backend)
+        backend.loadSnapshot(buffer)
+      },
+      captureSnapshotForUndo: async () => {
+        const buffer = await getCurrentSnapshot()
+        if (!buffer) return
+        history.captureUndoSnapshot(buffer)
+      },
+      undo: () => {
+        const backend = get().backend
+        if (!backend) return
+        const buffer = history.undoCopy()
+        if (!buffer) return
+        pauseAndUpdateUI(backend)
+        backend.loadSnapshot(buffer)
+      },
+      redo: () => {
+        const backend = get().backend
+        if (!backend) return
+        const buffer = history.redoCopy()
+        if (!buffer) return
+        pauseAndUpdateUI(backend)
+        backend.loadSnapshot(buffer)
+      },
+    }
+  })(),
 }))

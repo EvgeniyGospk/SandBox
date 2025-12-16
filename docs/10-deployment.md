@@ -40,6 +40,25 @@ npm -w apps/web run build
 
 Без них браузер отключит `SharedArrayBuffer`, и проект деградирует на медленный input‑path (postMessage).
 
+### Готовые конфиги в репозитории
+
+- Netlify: `apps/web/public/_headers` (попадает в `dist/` при билде). В Netlify publish directory должен указывать на `apps/web/dist/`.
+- Nginx/другие static hosts: настройте эквивалентные заголовки на уровне веб‑сервера (пример ниже).
+
+Важно: cross‑origin isolation плохо сочетается с внешними ресурсами без CORS/CORP. Поэтому по умолчанию в `apps/web/index.html` убраны Google Fonts.
+
+## CSP / security headers (рекомендуется)
+
+Проект — чистый SPA без backend‑surface, но базовые security headers всё равно полезны.
+
+Минимальный пример CSP (может потребовать адаптации под ваш хостинг/бандлер):
+
+- `Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; img-src 'self' data:; style-src 'self';`
+
+Примечания:
+- Для WebAssembly обычно требуется `'wasm-unsafe-eval'` (или `'unsafe-eval'` в некоторых окружениях).
+- Если вы включаете внешние шрифты/аналитику/CDN — расширьте `style-src`/`connect-src`/`font-src` осознанно.
+
 ## Пример конфигурации Nginx (static hosting)
 
 ```nginx
@@ -76,4 +95,3 @@ server {
 
 - Не копипастить “дефолтные” пароли/ключи из старых примеров деплоя: в репозитории сейчас нет backend‑surface, но такие примеры часто мигрируют в прод по ошибке.
 - Держать зависимости зафиксированными (без `"latest"`) и обновлять их через контролируемый процесс (Renovate/Dependabot).
-

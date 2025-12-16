@@ -6,9 +6,9 @@
  */
 
 // Core exports
-export { ELEMENTS, getElementColor } from './elements'
+export { ELEMENTS, getElementColor } from './data/elements'
 export type { ElementType, WorldSettings } from './types'
-export type { RenderMode } from './Renderer'
+export type { RenderMode } from './rendering/Renderer'
 
 // Primary engine: Rust WASM
 export { WasmParticleEngine, loadWasmEngine, isWasmAvailable } from './WasmParticleEngine'

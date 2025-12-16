@@ -49,6 +49,7 @@ export function LeftPanel() {
           onClick={() => setIsCollapsed(false)}
           className="p-2.5 hover:bg-[#252525] rounded-lg transition-colors"
           title="Expand panel"
+          aria-label="Expand panel"
         >
           <ChevronRight size={18} />
         </button>
@@ -88,6 +89,7 @@ export function LeftPanel() {
           onClick={() => setIsCollapsed(true)}
           className="p-2 hover:bg-[#252525] rounded-lg transition-colors"
           title="Collapse panel"
+          aria-label="Collapse panel"
         >
           <ChevronLeft size={16} />
         </button>

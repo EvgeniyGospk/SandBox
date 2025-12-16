@@ -24,6 +24,7 @@ export function BottomBar() {
           onClick={isPlaying ? pause : play}
           className="p-2 rounded-lg hover:bg-[#252525] transition-colors"
           title={isPlaying ? 'Pause' : 'Play'}
+          aria-label={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? <Pause size={18} /> : <Play size={18} />}
         </button>
@@ -32,6 +33,7 @@ export function BottomBar() {
           disabled={isPlaying}
           className="p-2 rounded-lg hover:bg-[#252525] transition-colors disabled:opacity-50"
           title="Step"
+          aria-label="Step"
         >
           <SkipForward size={18} />
         </button>
@@ -39,6 +41,7 @@ export function BottomBar() {
           onClick={reset}
           className="p-2 rounded-lg hover:bg-[#252525] transition-colors text-[#EF4444]"
           title="Reset"
+          aria-label="Reset"
         >
           <RotateCcw size={18} />
         </button>

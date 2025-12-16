@@ -5,6 +5,8 @@
 //! - 64x memory reduction for dirty flags
 //! - L1 Cache friendly iteration
 
+use crate::elements::{ElementId, EL_EMPTY};
+
 /// Chunk size in pixels (32x32 is cache-friendly)
 pub const CHUNK_SIZE: u32 = 32;
 
@@ -149,12 +151,12 @@ impl ChunkGrid {
     pub fn mark_dirty_idx(&mut self, idx: usize) {
         if idx >= self.chunk_count { return; }
         
-        // Only reset idle_frames when WAKING a sleeping chunk
-        // For already-active chunks, idle_frames is managed by end_chunk_update
+        // Any touch means the chunk is active again.
+        self.idle_frames[idx] = 0;
+
         if self.state[idx] == ChunkState::Sleeping {
             self.just_woke_up[idx] = true;
             self.woke_this_frame = self.woke_this_frame.saturating_add(1);
-            self.idle_frames[idx] = 0;
             self.state[idx] = ChunkState::Active;
         }
         
@@ -178,12 +180,13 @@ impl ChunkGrid {
     }
     
     /// Should we process this chunk? (BitSet version)
-    /// Only process chunks that are explicitly marked dirty
-    /// Active state just means "not sleeping", it doesn't force processing
+    ///
+    /// CRITICAL: Chunks with particles must be processed so lifetime/reactions
+    /// don't "freeze" when there is no movement.
     #[inline]
     pub fn should_process(&self, cx: u32, cy: u32) -> bool {
         let idx = self.chunk_idx_from_coords(cx, cy);
-        Self::check_bit(&self.dirty_bits, idx)
+        Self::check_bit(&self.dirty_bits, idx) || self.particle_count[idx] > 0
     }
     
     // === Wake neighbors ===
@@ -314,10 +317,38 @@ impl ChunkGrid {
     
     /// Called at start of each frame - prepare for processing
     pub fn begin_frame(&mut self) {
-        // Dirty flags are preserved from previous frame
-        // They get cleared as chunks are processed
         self.woke_this_frame = 0;
         self.slept_this_frame = 0;
+
+        // Empty-chunk sleeping is based on time, not on whether the chunk happened
+        // to be processed this frame.
+        for idx in 0..self.chunk_count {
+            if self.particle_count[idx] > 0 {
+                self.idle_frames[idx] = 0;
+                self.state[idx] = ChunkState::Active;
+                continue;
+            }
+
+            // Keep empty-but-dirty chunks active (e.g. after a clear/remove), so we
+            // don't sleep them immediately and cause "popping" on re-wake.
+            if Self::check_bit(&self.dirty_bits, idx) {
+                self.idle_frames[idx] = 0;
+                if self.state[idx] == ChunkState::Sleeping {
+                    self.state[idx] = ChunkState::Active;
+                }
+                continue;
+            }
+
+            if self.state[idx] == ChunkState::Sleeping {
+                continue;
+            }
+
+            self.idle_frames[idx] = self.idle_frames[idx].saturating_add(1);
+            if self.idle_frames[idx] >= SLEEP_THRESHOLD {
+                self.state[idx] = ChunkState::Sleeping;
+                self.slept_this_frame = self.slept_this_frame.saturating_add(1);
+            }
+        }
     }
     
     /// Called after processing a chunk (BitSet version)
@@ -326,7 +357,6 @@ impl ChunkGrid {
     /// Only truly empty chunks (particle_count == 0) can go to sleep.
     pub fn end_chunk_update(&mut self, cx: u32, cy: u32, had_movement: bool) {
         let idx = self.chunk_idx_from_coords(cx, cy);
-        let has_particles = self.particle_count[idx] > 0;
         
         if had_movement {
             self.idle_frames[idx] = 0;
@@ -341,21 +371,6 @@ impl ChunkGrid {
                 if self.particle_count[below_idx] > 0 || self.state[below_idx] == ChunkState::Sleeping {
                     // Only set dirty bit, don't force Active state
                     Self::set_bit(&mut self.dirty_bits, below_idx);
-                }
-            }
-        } else {
-            // CRITICAL: Only EMPTY chunks can sleep!
-            // Chunks with particles must always be processed for temperature, reactions, etc.
-            if has_particles {
-                // Has particles - stay active, don't increment idle counter
-                self.idle_frames[idx] = 0;
-                self.state[idx] = ChunkState::Active;
-            } else {
-                // Empty chunk - can potentially sleep after threshold
-                self.idle_frames[idx] += 1;
-                if self.idle_frames[idx] >= SLEEP_THRESHOLD {
-                    self.state[idx] = ChunkState::Sleeping;
-                    self.slept_this_frame = self.slept_this_frame.saturating_add(1);
                 }
             }
         }
@@ -383,6 +398,55 @@ impl ChunkGrid {
         self.particle_count.fill(0);
         self.virtual_temp.fill(20.0);
         self.just_woke_up.fill(false);
+    }
+
+    /// Emergency recovery: rebuild `particle_count` from the full grid.
+    ///
+    /// This is intentionally O(W*H) and should only run in degraded mode
+    /// (e.g. when the move buffer overflows and incremental tracking becomes unreliable).
+    pub fn rebuild_particle_counts(&mut self, world_width: u32, world_height: u32, types: &[ElementId]) {
+        self.particle_count.fill(0);
+
+        let chunks_x = self.chunks_x;
+        let width = world_width as usize;
+        let height = world_height as usize;
+
+        debug_assert_eq!(types.len(), width * height, "rebuild_particle_counts: types length mismatch");
+
+        for y in 0..height {
+            let row = y * width;
+            let cy = (y as u32) / CHUNK_SIZE;
+            for x in 0..width {
+                let t = types[row + x];
+                if t == EL_EMPTY {
+                    continue;
+                }
+                let cx = (x as u32) / CHUNK_SIZE;
+                let idx = (cy * chunks_x + cx) as usize;
+                if idx < self.particle_count.len() {
+                    self.particle_count[idx] = self.particle_count[idx].saturating_add(1);
+                }
+            }
+        }
+
+        // Ensure chunk states are consistent with the rebuilt counts.
+        for idx in 0..self.chunk_count {
+            if self.particle_count[idx] > 0 {
+                if self.state[idx] == ChunkState::Sleeping {
+                    self.just_woke_up[idx] = true;
+                    self.woke_this_frame = self.woke_this_frame.saturating_add(1);
+                }
+                self.state[idx] = ChunkState::Active;
+                self.idle_frames[idx] = 0;
+            }
+        }
+    }
+
+    /// Emergency recovery: force full simulation + full render upload next frame.
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty_bits.fill(!0u64);
+        self.visual_dirty_bits.fill(!0u64);
+        self.visual_dirty.fill(true);
     }
     
     // === Lazy Hydration Methods ===

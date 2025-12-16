@@ -19,7 +19,9 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@particula/engine-wasm": ["../../packages/engine-wasm"],
+      "@particula/engine-wasm/*": ["../../packages/engine-wasm/*"]
     }
   },
   "include": ["src", "src/lib/engine/WebGLRenderer.ts"],

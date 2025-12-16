@@ -10,12 +10,12 @@
 //! - Bounce factor determines energy retained after collision
 
 use crate::grid::Grid;
-use crate::elements::{ElementId, EL_EMPTY, ELEMENT_DATA, GRAVITY, AIR_FRICTION, MAX_VELOCITY, CAT_GAS, CAT_SOLID, CAT_ENERGY};
+use crate::elements::{ElementId, EL_EMPTY, ELEMENT_DATA, GRAVITY, AIR_FRICTION, MAX_VELOCITY, CAT_GAS, CAT_SOLID, CAT_ENERGY, CAT_BIO};
 use crate::chunks::ChunkGrid;
 use std::cell::RefCell;
 
 /// Cap for DDA steps to avoid extremely long raycasts on high velocities
-const MAX_RAYCAST_STEPS: i32 = 16;
+const MAX_RAYCAST_STEPS: i32 = 64;
 
 thread_local! {
     pub static PERF_RAYCAST_STEPS: RefCell<u64> = RefCell::new(0);
@@ -52,6 +52,10 @@ pub struct PhysicsResult {
     pub collided: bool,
     /// Element that was hit (if collided)
     pub hit_element: ElementId,
+    pub hit_x: i32,
+    pub hit_y: i32,
+    pub normal_x: i32,
+    pub normal_y: i32,
     /// Steps taken in the DDA raycast
     pub steps: u32,
     /// Speed magnitude used for this integration
@@ -98,8 +102,7 @@ pub fn apply_friction(grid: &mut Grid, x: u32, y: u32) {
     
     let props = &ELEMENT_DATA[element as usize];
     
-    // Use 1.0 (no decay) if friction is zero to avoid "static" elements ignoring physics
-    let friction = if props.friction == 0.0 { 1.0 } else { props.friction };
+    let friction = props.friction.clamp(0.0, 1.0);
     
     // Apply element-specific friction
     grid.vx[idx] *= friction;
@@ -133,6 +136,20 @@ pub fn raycast_move(
     vy: f32,
 ) -> PhysicsResult {
     let speed = (vx * vx + vy * vy).sqrt();
+    if !vx.is_finite() || !vy.is_finite() {
+        return PhysicsResult {
+            new_x: start_x,
+            new_y: start_y,
+            collided: false,
+            hit_element: EL_EMPTY,
+            hit_x: start_x as i32,
+            hit_y: start_y as i32,
+            normal_x: 0,
+            normal_y: 0,
+            steps: 0,
+            speed,
+        };
+    }
     // If no velocity, stay in place
     if vx.abs() < 0.01 && vy.abs() < 0.01 {
         return PhysicsResult {
@@ -140,49 +157,67 @@ pub fn raycast_move(
             new_y: start_y,
             collided: false,
             hit_element: EL_EMPTY,
+            hit_x: start_x as i32,
+            hit_y: start_y as i32,
+            normal_x: 0,
+            normal_y: 0,
             steps: 0,
             speed,
         };
     }
-    
-    let mut x = start_x as f32;
-    let mut y = start_y as f32;
-    
-    let dx = vx;
-    let dy = vy;
-    
-    // Number of steps = max of |dx| and |dy|, at least 1
-    let steps = dx.abs().max(dy.abs()).ceil() as i32;
-    let steps = steps.min(MAX_RAYCAST_STEPS); // clamp to reduce DDA cost
-    if steps == 0 {
-        return PhysicsResult {
-            new_x: start_x,
-            new_y: start_y,
-            collided: false,
-            hit_element: EL_EMPTY,
-            steps: 0,
-            speed,
-        };
-    }
-    
-    let step_x = dx / steps as f32;
-    let step_y = dy / steps as f32;
-    
+
+    let x0 = start_x as f32 + 0.5;
+    let y0 = start_y as f32 + 0.5;
+    let x1 = x0 + vx;
+    let y1 = y0 + vy;
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+
+    let mut cx = start_x as i32;
+    let mut cy = start_y as i32;
     let mut last_valid_x = start_x;
     let mut last_valid_y = start_y;
+
+    let step_x = if dx > 0.0 { 1 } else if dx < 0.0 { -1 } else { 0 };
+    let step_y = if dy > 0.0 { 1 } else if dy < 0.0 { -1 } else { 0 };
+
+    let inv_dx = if dx != 0.0 { 1.0 / dx.abs() } else { f32::INFINITY };
+    let inv_dy = if dy != 0.0 { 1.0 / dy.abs() } else { f32::INFINITY };
+
+    let next_boundary_x = if step_x > 0 { (cx + 1) as f32 } else { cx as f32 };
+    let next_boundary_y = if step_y > 0 { (cy + 1) as f32 } else { cy as f32 };
+
+    let mut t_max_x = if step_x != 0 { (next_boundary_x - x0).abs() * inv_dx } else { f32::INFINITY };
+    let mut t_max_y = if step_y != 0 { (next_boundary_y - y0).abs() * inv_dy } else { f32::INFINITY };
+    let t_delta_x = if step_x != 0 { inv_dx } else { f32::INFINITY };
+    let t_delta_y = if step_y != 0 { inv_dy } else { f32::INFINITY };
+
     let mut steps_taken: u32 = 0;
-    
-    for _ in 0..steps {
-        x += step_x;
-        y += step_y;
+    let max_steps = ((vx.abs() + vy.abs()).ceil() as i32).clamp(1, MAX_RAYCAST_STEPS) as u32;
+
+    let mut hit_x: i32 = cx;
+    let mut hit_y: i32 = cy;
+    let mut normal_x: i32 = 0;
+    let mut normal_y: i32 = 0;
+
+    while steps_taken < max_steps {
+        if t_max_x < t_max_y {
+            cx += step_x;
+            t_max_x += t_delta_x;
+            normal_x = -step_x;
+            normal_y = 0;
+        } else {
+            cy += step_y;
+            t_max_y += t_delta_y;
+            normal_x = 0;
+            normal_y = -step_y;
+        }
+
         steps_taken += 1;
-        
-        let ix = x.round() as i32;
-        let iy = y.round() as i32;
-        
-        // Check bounds
-        if !grid.in_bounds(ix, iy) {
-            // Hit world boundary
+
+        if !grid.in_bounds(cx, cy) {
+            hit_x = cx;
+            hit_y = cy;
             PERF_RAYCAST_STEPS.with(|c| {
                 let mut v = c.borrow_mut();
                 *v = v.saturating_add(steps_taken as u64);
@@ -195,48 +230,55 @@ pub fn raycast_move(
                 new_x: last_valid_x,
                 new_y: last_valid_y,
                 collided: true,
-                hit_element: EL_EMPTY, // Boundary
+                hit_element: EL_EMPTY,
+                hit_x,
+                hit_y,
+                normal_x,
+                normal_y,
                 steps: steps_taken,
                 speed,
             };
         }
-        
-        let ux = ix as u32;
-        let uy = iy as u32;
-        
+
         // Skip if we're at start position
-        if ux == start_x && uy == start_y {
+        if cx as u32 == start_x && cy as u32 == start_y {
             continue;
         }
-        
-        // Check if cell is occupied
-            let hit_element = grid.get_type(ix, iy);
-            if hit_element != EL_EMPTY {
-                // Collision!
-                PERF_RAYCAST_STEPS.with(|c| {
-                    let mut v = c.borrow_mut();
-                    *v = v.saturating_add(steps_taken as u64);
-                });
-                PERF_RAYCAST_COLLISIONS.with(|c| {
-                    let mut v = c.borrow_mut();
-                    *v = v.saturating_add(1);
-                });
+
+        let hit_element = grid.get_type(cx, cy);
+        if hit_element != EL_EMPTY {
+            hit_x = cx;
+            hit_y = cy;
+            PERF_RAYCAST_STEPS.with(|c| {
+                let mut v = c.borrow_mut();
+                *v = v.saturating_add(steps_taken as u64);
+            });
+            PERF_RAYCAST_COLLISIONS.with(|c| {
+                let mut v = c.borrow_mut();
+                *v = v.saturating_add(1);
+            });
             return PhysicsResult {
                 new_x: last_valid_x,
                 new_y: last_valid_y,
                 collided: true,
                 hit_element,
+                hit_x,
+                hit_y,
+                normal_x,
+                normal_y,
                 steps: steps_taken,
                 speed,
             };
         }
-        
-        // Cell is empty, we can move here
-        last_valid_x = ux;
-        last_valid_y = uy;
+
+        last_valid_x = cx as u32;
+        last_valid_y = cy as u32;
+
+        if t_max_x.min(t_max_y) > 1.0 {
+            break;
+        }
     }
-    
-    // Reached end without collision
+
     PERF_RAYCAST_STEPS.with(|c| {
         let mut v = c.borrow_mut();
         *v = v.saturating_add(steps_taken as u64);
@@ -246,6 +288,10 @@ pub fn raycast_move(
         new_y: last_valid_y,
         collided: false,
         hit_element: EL_EMPTY,
+        hit_x,
+        hit_y,
+        normal_x: 0,
+        normal_y: 0,
         steps: steps_taken,
         speed,
     }
@@ -272,26 +318,15 @@ pub fn handle_collision(
     let props = &ELEMENT_DATA[element as usize];
     let bounce = props.bounce;
     
-    // Determine collision direction and apply bounce
     let vx = grid.vx[idx];
     let vy = grid.vy[idx];
-    
-    // Simple bounce: reverse velocity component and apply bounce factor
-    // If we hit something below, reverse vy
-    // If we hit something to the side, reverse vx
-    
-    let dx = result.new_x as i32 - x as i32;
-    let dy = result.new_y as i32 - y as i32;
-    
-    // Vertical collision (hit floor/ceiling)
-    if dy.abs() < vy.abs() as i32 && vy.abs() > 0.1 {
+
+    if result.normal_y != 0 && vy.abs() > 0.1 {
         grid.vy[idx] = -vy * bounce;
-        // Add some horizontal scatter when bouncing
-        grid.vx[idx] += (vx.signum()) * vy.abs() * 0.1;
+        grid.vx[idx] += vx.signum() * vy.abs() * 0.1;
     }
-    
-    // Horizontal collision (hit wall)
-    if dx.abs() < vx.abs() as i32 && vx.abs() > 0.1 {
+
+    if result.normal_x != 0 && vx.abs() > 0.1 {
         grid.vx[idx] = -vx * bounce;
     }
     
@@ -319,13 +354,14 @@ pub fn update_particle_physics(
     chunks: &mut ChunkGrid,
     x: u32,
     y: u32,
+    gravity_x: f32,
     gravity_y: f32,
 ) -> PhysicsResult {
     let idx = grid.index(x, y);
     
     let element = grid.types[idx];
     if element == EL_EMPTY {
-        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, steps: 0, speed: 0.0 };
+        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, hit_x: x as i32, hit_y: y as i32, normal_x: 0, normal_y: 0, steps: 0, speed: 0.0 };
     }
     
     let props = &ELEMENT_DATA[element as usize];
@@ -334,41 +370,52 @@ pub fn update_particle_physics(
     if props.category == CAT_SOLID {
         grid.set_vx(x, y, 0.0);
         grid.set_vy(x, y, 0.0);
-        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, steps: 0, speed: 0.0 };
+        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, hit_x: x as i32, hit_y: y as i32, normal_x: 0, normal_y: 0, steps: 0, speed: 0.0 };
     }
     
     // Energy (fire/spark/electricity) is driven by its own behavior, not gravity
     if props.category == CAT_ENERGY {
         grid.set_vx(x, y, 0.0);
         grid.set_vy(x, y, 0.0);
-        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, steps: 0, speed: 0.0 };
+        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, hit_x: x as i32, hit_y: y as i32, normal_x: 0, normal_y: 0, steps: 0, speed: 0.0 };
+    }
+
+    // Bio (plants/seeds) are behavior-driven; physics movement here causes double-moves.
+    if props.category == CAT_BIO {
+        grid.set_vx(x, y, 0.0);
+        grid.set_vy(x, y, 0.0);
+        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, hit_x: x as i32, hit_y: y as i32, normal_x: 0, normal_y: 0, steps: 0, speed: 0.0 };
     }
     
     // Respect explicit "ignore gravity" flag for future elements
     if props.ignores_gravity() {
-        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, steps: 0, speed: 0.0 };
+        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, hit_x: x as i32, hit_y: y as i32, normal_x: 0, normal_y: 0, steps: 0, speed: 0.0 };
     }
     
     // Skip gases - they rise (inverted gravity) and are handled by gas.rs behavior
     // Processing them here would cause double-processing issues
     if props.category == CAT_GAS {
-        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, steps: 0, speed: 0.0 };
+        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, hit_x: x as i32, hit_y: y as i32, normal_x: 0, normal_y: 0, steps: 0, speed: 0.0 };
     }
     
     // PERF: Inline gravity + friction to avoid re-reading element/props
     // 1. Apply gravity
+    grid.vx[idx] += gravity_x * GRAVITY;
     grid.vy[idx] += gravity_y * GRAVITY;
     grid.vy[idx] = grid.vy[idx].clamp(-MAX_VELOCITY, MAX_VELOCITY);
     grid.vx[idx] = grid.vx[idx].clamp(-MAX_VELOCITY, MAX_VELOCITY);
     
-    // 2. Apply friction (use 1.0 if friction is 0 to avoid static elements)
-    let friction = if props.friction == 0.0 { 1.0 } else { props.friction };
+    // 2. Apply friction
+    let friction = props.friction.clamp(0.0, 1.0);
     grid.vx[idx] *= friction * AIR_FRICTION;
     grid.vy[idx] *= friction * AIR_FRICTION;
     
     // Zero out very small velocities
     if grid.vx[idx].abs() < 0.01 { grid.vx[idx] = 0.0; }
     if grid.vy[idx].abs() < 0.01 { grid.vy[idx] = 0.0; }
+
+    if !grid.vx[idx].is_finite() { grid.vx[idx] = 0.0; }
+    if !grid.vy[idx].is_finite() { grid.vy[idx] = 0.0; }
     
     // 3. Get current velocity
     let vx = grid.vx[idx];
@@ -376,7 +423,7 @@ pub fn update_particle_physics(
     
     // 4. No movement if velocity is zero
     if vx.abs() < 0.1 && vy.abs() < 0.1 {
-        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, steps: 0, speed: 0.0 };
+        return PhysicsResult { new_x: x, new_y: y, collided: false, hit_element: EL_EMPTY, hit_x: x as i32, hit_y: y as i32, normal_x: 0, normal_y: 0, steps: 0, speed: 0.0 };
     }
     
     // 5. Raycast to find collision point

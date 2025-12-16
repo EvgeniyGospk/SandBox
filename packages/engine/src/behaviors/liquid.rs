@@ -10,7 +10,7 @@
 //! 
 //! Phase 2: Vertical falling is now done by velocity-based physics
 
-use super::{Behavior, UpdateContext, xorshift32};
+use super::{Behavior, UpdateContext, xorshift32, gravity_dir, perp_dirs};
 use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_LIQUID, CAT_GAS};
 use std::cell::RefCell;
 
@@ -34,6 +34,7 @@ pub fn take_liquid_scan_counter() -> u64 {
 struct ScanResult {
     found: bool,
     x: i32,
+    y: i32,
     has_cliff: bool,
 }
 
@@ -75,11 +76,23 @@ impl LiquidBehavior {
         false
     }
     
-    /// Scan horizontally for empty cells or cliffs (mirrors TypeScript scanLine)
+    /// Scan along a "horizontal" axis (perpendicular to gravity) for empty cells or cliffs.
     /// PHASE 1: Uses unsafe after bounds check
     #[inline]
-    fn scan_line(&self, ctx: &UpdateContext, start_x: i32, y: i32, dir: i32, range: i32, my_density: f32) -> ScanResult {
+    fn scan_line(
+        &self,
+        ctx: &UpdateContext,
+        start_x: i32,
+        start_y: i32,
+        dir_x: i32,
+        dir_y: i32,
+        range: i32,
+        my_density: f32,
+        gx: i32,
+        gy: i32,
+    ) -> ScanResult {
         let mut best_x = start_x;
+        let mut best_y = start_y;
         let mut found = false;
         let mut has_cliff = false;
 
@@ -87,28 +100,28 @@ impl LiquidBehavior {
             let mut v = c.borrow_mut();
             *v = v.saturating_add(1);
         });
-
-        let gy = if ctx.gravity_y > 0.0 { 1 } else if ctx.gravity_y < 0.0 { -1 } else { 0 };
-        let gravity_y = if gy == 0 { 1 } else { gy }; // default downward when zero
         
         for i in 1..=range {
-            let tx = start_x + (dir * i);
+            let tx = start_x + (dir_x * i);
+            let ty = start_y + (dir_y * i);
             
-            if !ctx.grid.in_bounds(tx, y) { break; }
+            if !ctx.grid.in_bounds(tx, ty) { break; }
             
             // SAFETY: We just checked in_bounds above
-            let target_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, y as u32) };
+            let target_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
             
             // CASE 1: Empty cell
             if target_type == EL_EMPTY {
                 best_x = tx;
+                best_y = ty;
                 found = true;
                 
                 // Check for cliff below (waterfall effect)
-                let below_y = y + gravity_y;
-                if ctx.grid.in_bounds(tx, below_y) {
+                let below_x = tx + gx;
+                let below_y = ty + gy;
+                if ctx.grid.in_bounds(below_x, below_y) {
                     // SAFETY: We just checked in_bounds above
-                    let below_type = unsafe { ctx.grid.get_type_unchecked(tx as u32, below_y as u32) };
+                    let below_type = unsafe { ctx.grid.get_type_unchecked(below_x as u32, below_y as u32) };
                     if below_type == EL_EMPTY {
                         has_cliff = true;
                         break;
@@ -128,6 +141,7 @@ impl LiquidBehavior {
                 
                 if my_density > t_density {
                     best_x = tx;
+                    best_y = ty;
                     found = true;
                     break;
                 }
@@ -137,7 +151,7 @@ impl LiquidBehavior {
             break;
         }
         
-        ScanResult { found, x: best_x, has_cliff }
+        ScanResult { found, x: best_x, y: best_y, has_cliff }
     }
 }
 
@@ -156,31 +170,34 @@ impl Behavior for LiquidBehavior {
         let density = props.density;
         let range = if props.dispersion > 0 { props.dispersion as i32 } else { 5 };
 
-        // Gravity direction (sign)
-        let gy = if ctx.gravity_y > 0.0 { 1 } else if ctx.gravity_y < 0.0 { -1 } else { 0 };
-        let gravity_y = if gy == 0 { 1 } else { gy }; // fallback to downwards when gravity is zero
+        // Discrete gravity direction (defaults to down if zero)
+        let (gx, gy) = gravity_dir(ctx.gravity_x, ctx.gravity_y);
+        let ((px1, py1), (px2, py2)) = perp_dirs(gx, gy);
         
         // Phase 2: Check if we should do dispersion
         // We disperse when:
         // 1. At boundary in gravity direction
         // 2. Blocked by solid/heavy particle in gravity direction
         // 3. Has very low velocity (settled/resting state)
-        let adj_y = yi + gravity_y;
+        let adj_x = xi + gx;
+        let adj_y = yi + gy;
         
         // Check velocity - if we have significant velocity in gravity direction, let physics handle it
         let idx = ctx.grid.index(x, y);
+        let vx = ctx.grid.vx[idx];
         let vy = ctx.grid.vy[idx];
-        let moving_in_gravity_dir = if gy > 0 { vy > 0.3 } else if gy < 0 { vy < -0.3 } else { false };
+        let v_parallel = vx * (gx as f32) + vy * (gy as f32);
+        let moving_in_gravity_dir = v_parallel > 0.3;
         
         // If actively moving in gravity direction with velocity, skip dispersion - physics will handle it
         if moving_in_gravity_dir {
             return;
         }
         
-        let blocked_in_gravity_dir = if !ctx.grid.in_bounds(xi, adj_y) {
+        let blocked_in_gravity_dir = if !ctx.grid.in_bounds(adj_x, adj_y) {
             true // boundary is blocking
         } else {
-            let adj_type = unsafe { ctx.grid.get_type_unchecked(x, adj_y as u32) };
+            let adj_type = unsafe { ctx.grid.get_type_unchecked(adj_x as u32, adj_y as u32) };
             // Blocked if cell in gravity direction is occupied (not empty)
             adj_type != EL_EMPTY
         };
@@ -191,13 +208,22 @@ impl Behavior for LiquidBehavior {
             // Check if there's a "cliff" nearby - empty space in gravity direction at neighboring X
             // If so, we should still try to spread towards it
             let has_nearby_cliff = {
-                let left_cliff = if ctx.grid.in_bounds(xi - 1, adj_y) {
-                    unsafe { ctx.grid.get_type_unchecked((x - 1) as u32, adj_y as u32) == EL_EMPTY }
-                } else { false };
-                let right_cliff = if ctx.grid.in_bounds(xi + 1, adj_y) {
-                    unsafe { ctx.grid.get_type_unchecked((x + 1) as u32, adj_y as u32) == EL_EMPTY }
-                } else { false };
-                left_cliff || right_cliff
+                let cliff1_x = xi + px1 + gx;
+                let cliff1_y = yi + py1 + gy;
+                let cliff2_x = xi + px2 + gx;
+                let cliff2_y = yi + py2 + gy;
+
+                let c1 = if ctx.grid.in_bounds(cliff1_x, cliff1_y) {
+                    unsafe { ctx.grid.get_type_unchecked(cliff1_x as u32, cliff1_y as u32) == EL_EMPTY }
+                } else {
+                    false
+                };
+                let c2 = if ctx.grid.in_bounds(cliff2_x, cliff2_y) {
+                    unsafe { ctx.grid.get_type_unchecked(cliff2_x as u32, cliff2_y as u32) == EL_EMPTY }
+                } else {
+                    false
+                };
+                c1 || c2
             };
             
             if !has_nearby_cliff {
@@ -206,29 +232,29 @@ impl Behavior for LiquidBehavior {
         }
         
         // --- Dispersion: Scan & Teleport (EXACT TypeScript algorithm) ---
-        let left_target = self.scan_line(ctx, xi, yi, -1, range, density);
-        let right_target = self.scan_line(ctx, xi, yi, 1, range, density);
+        let left_target = self.scan_line(ctx, xi, yi, px1, py1, range, density, gx, gy);
+        let right_target = self.scan_line(ctx, xi, yi, px2, py2, range, density, gx, gy);
         
         // Choose best target (mirrors TypeScript logic exactly)
-        let target_x = if left_target.found && right_target.found {
+        let target = if left_target.found && right_target.found {
             if left_target.has_cliff && !right_target.has_cliff {
-                left_target.x
+                left_target
             } else if !left_target.has_cliff && right_target.has_cliff {
-                right_target.x
+                right_target
             } else {
                 let rand = xorshift32(ctx.rng);
-                if rand & 1 == 0 { left_target.x } else { right_target.x }
+                if rand & 1 == 0 { left_target } else { right_target }
             }
         } else if left_target.found {
-            left_target.x
+            left_target
         } else if right_target.found {
-            right_target.x
+            right_target
         } else {
-            xi
+            ScanResult { found: false, x: xi, y: yi, has_cliff: false }
         };
         
-        if target_x != xi {
-            unsafe { ctx.grid.swap_unchecked(x, y, target_x as u32, y); }
+        if target.found && (target.x != xi || target.y != yi) {
+            let _ = self.try_move(ctx, x, y, target.x, target.y, density);
         }
     }
 }

@@ -5,7 +5,7 @@
 //! 
 //! Fire rises erratically, spark/electricity move through conductors
 
-use super::{Behavior, UpdateContext, xorshift32};
+use super::{Behavior, UpdateContext, xorshift32, gravity_dir, perp_dirs};
 use crate::elements::{EL_EMPTY, EL_FIRE, EL_SPARK, EL_ELECTRICITY};
 
 pub struct EnergyBehavior;
@@ -24,19 +24,32 @@ impl EnergyBehavior {
         let xi = x as i32;
         let yi = y as i32;
         
-        // Fire drifts mostly upward but can spread sideways a bit.
+        // Fire drifts opposite gravity but can spread sideways a bit.
+        let (gx, gy) = gravity_dir(ctx.gravity_x, ctx.gravity_y);
+        let rise_x = -gx;
+        let rise_y = -gy;
+        let ((px1, py1), (px2, py2)) = perp_dirs(rise_x, rise_y);
+
         let rand = xorshift32(ctx.rng);
-        let lateral = if rand & 1 == 0 { -1 } else { 1 };
+        let lateral = if rand & 1 == 0 { (px1, py1) } else { (px2, py2) };
+        let other_lateral = (-lateral.0, -lateral.1);
+
+        let diag1 = (rise_x + lateral.0, rise_y + lateral.1);
+        let diag2 = (rise_x + other_lateral.0, rise_y + other_lateral.1);
         
         // Randomize attempt order to avoid straight pillars
         let attempts = match rand & 3 {
-            0 => [(0, -1), (lateral, -1), (lateral, 0), (-lateral, 0)],
-            1 => [(lateral, -1), (0, -1), (-lateral, -1), (lateral, 0)],
-            2 => [(0, -1), (-lateral, -1), (lateral, 0), (-lateral, 0)],
-            _ => [(lateral, 0), (0, -1), (lateral, -1), (-lateral, -1)],
+            0 => [(rise_x, rise_y), diag1, lateral, other_lateral],
+            1 => [diag1, (rise_x, rise_y), diag2, lateral],
+            2 => [(rise_x, rise_y), diag2, lateral, other_lateral],
+            _ => [lateral, (rise_x, rise_y), diag1, diag2],
         };
         
         for (dx, dy) in attempts {
+            // Skip invalid "diagonals" when rise is diagonal (can produce 0/2 steps).
+            if dx.abs() > 1 || dy.abs() > 1 || (dx == 0 && dy == 0) {
+                continue;
+            }
             let tx = xi + dx;
             let ty = yi + dy;
             if !ctx.grid.in_bounds(tx, ty) { continue; }
