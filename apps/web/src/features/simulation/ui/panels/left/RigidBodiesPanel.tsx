@@ -1,4 +1,4 @@
-import type { ElementType } from '@/core/engine'
+import type { ElementType } from '@/features/simulation/engine'
 import type { ComponentType } from 'react'
 
 import { RigidBodyInstructions } from './RigidBodyInstructions'

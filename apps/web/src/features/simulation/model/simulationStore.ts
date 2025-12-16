@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import type { RenderMode } from '@/core/engine/types'
-import type { ISimulationBackend } from '@/core/engine/ISimulationBackend'
+import type { RenderMode } from '@/features/simulation/engine/api/types'
+import type { ISimulationBackend } from '@/features/simulation/engine/api/ISimulationBackend'
 import { createSnapshotHistoryController } from './snapshotHistoryController'
 import { WORLD_SIZE_PRESETS, getWorldSize, type WorldSizePreset } from './worldSize'
 

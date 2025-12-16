@@ -1,5 +1,5 @@
 import type { Element } from '@/features/simulation/domain/elements'
-import type { ElementType } from '@/core/engine'
+import type { ElementType } from '@/features/simulation/engine'
 import type { ToolType } from '@/features/tools/model/toolTypes'
 
 import { CategoryTabs } from './CategoryTabs'

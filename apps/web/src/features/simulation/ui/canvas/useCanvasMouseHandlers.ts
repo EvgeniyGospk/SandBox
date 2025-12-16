@@ -1,8 +1,8 @@
 import { useCallback } from 'react'
 import type { MutableRefObject, MouseEvent as ReactMouseEvent } from 'react'
-import type { WorkerBridge } from '@/core/engine/worker'
-import type { WasmParticleEngine } from '@/core/engine'
-import { ELEMENT_ID_TO_NAME } from '@/core/engine/data/generated_elements'
+import type { WorkerBridge } from '@/features/simulation/engine/worker'
+import type { WasmParticleEngine } from '@/features/simulation/engine'
+import { ELEMENT_ID_TO_NAME } from '@/features/simulation/engine/api/types'
 import { useToolStore } from '@/features/tools/model/toolStore'
 import type { CameraState } from './useCanvasRefs'
 

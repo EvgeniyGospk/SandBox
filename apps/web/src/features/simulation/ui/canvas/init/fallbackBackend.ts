@@ -1,7 +1,7 @@
-import { WasmParticleEngine } from '@/core/engine'
-import { createWasmBackend } from '@/core/engine/backendAdapters'
-import type { ISimulationBackend } from '@/core/engine/ISimulationBackend'
-import { logError, debugLog } from '@/core/logging/log'
+import { WasmParticleEngine } from '@/features/simulation/engine'
+import { createWasmBackend } from '@/features/simulation/engine/backends/backendAdapters'
+import type { ISimulationBackend } from '@/features/simulation/engine/api/ISimulationBackend'
+import { logError, debugLog } from '@/platform/logging/log'
 import { startFallbackRenderLoop } from '@/features/simulation/ui/canvas/startFallbackRenderLoop'
 import type { MutableRefObject } from 'react'
 

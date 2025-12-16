@@ -1,7 +1,7 @@
-import { WorkerBridge } from '@/core/engine/worker'
-import { createWorkerBackend } from '@/core/engine/backendAdapters'
-import type { ISimulationBackend } from '@/core/engine/ISimulationBackend'
-import { debugLog, debugWarn, logError } from '@/core/logging/log'
+import { WorkerBridge } from '@/features/simulation/engine/worker'
+import { createWorkerBackend } from '@/features/simulation/engine/backends/backendAdapters'
+import type { ISimulationBackend } from '@/features/simulation/engine/api/ISimulationBackend'
+import { debugLog, debugWarn, logError } from '@/platform/logging/log'
 import type { MutableRefObject } from 'react'
 
 export function initWorkerBackend(args: {

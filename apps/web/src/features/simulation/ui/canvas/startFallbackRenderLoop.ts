@@ -1,7 +1,7 @@
 import type { MutableRefObject } from 'react'
-import type { WasmParticleEngine } from '@/core/engine'
+import type { WasmParticleEngine } from '@/features/simulation/engine'
 import { useSimulationStore } from '@/features/simulation/model/simulationStore'
-import { BASE_STEP_MS, FPS_SAMPLES, MAX_DT_MS, MAX_STEPS_PER_FRAME, STATS_INTERVAL_MS } from '@/core/engine/timing'
+import { BASE_STEP_MS, FPS_SAMPLES, MAX_DT_MS, MAX_STEPS_PER_FRAME, STATS_INTERVAL_MS } from '@/features/simulation/engine/timing'
 
 export function startFallbackRenderLoop(args: {
   engineRef: MutableRefObject<WasmParticleEngine | null>

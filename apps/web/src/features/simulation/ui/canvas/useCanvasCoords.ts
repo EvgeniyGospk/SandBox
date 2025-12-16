@@ -1,7 +1,7 @@
 import type { MutableRefObject, RefObject } from 'react'
-import type { WorkerBridge } from '@/core/engine/worker'
-import type { WasmParticleEngine } from '@/core/engine'
-import { screenToWorld as invertTransform } from '@/core/engine/transform'
+import type { WorkerBridge } from '@/features/simulation/engine/worker'
+import type { WasmParticleEngine } from '@/features/simulation/engine'
+import { screenToWorld as invertTransform } from '@/features/simulation/engine/transform'
 import type { CameraState, ViewportSize } from './useCanvasRefs'
 
 export function useCanvasCoords(args: {

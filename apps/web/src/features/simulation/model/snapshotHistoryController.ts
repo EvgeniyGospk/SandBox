@@ -1,5 +1,5 @@
-import type { ISimulationBackend } from '@/core/engine/ISimulationBackend'
-import { SnapshotHistoryStore } from '@/core/engine/SnapshotHistoryStore'
+import type { ISimulationBackend } from '@/features/simulation/engine/api/ISimulationBackend'
+import { SnapshotHistoryStore } from '@/features/simulation/engine/snapshotting/SnapshotHistoryStore'
 
 type SetState = (partial: Partial<{ backend: ISimulationBackend | null; isPlaying: boolean }>) => void
 

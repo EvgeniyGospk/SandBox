@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ElementType } from '@/core/engine'
+import type { ElementType } from '@/features/simulation/engine'
 import type { BrushShape, RigidBodyShape, ToolType } from './toolTypes'
 
 interface ToolState {

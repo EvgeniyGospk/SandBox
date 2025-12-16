@@ -1,4 +1,4 @@
-import type { ElementType } from '@/core/engine'
+import type { ElementType } from '@/features/simulation/engine'
 
 export function RigidBodyMaterialSelector(args: {
   materials: ReadonlyArray<{ id: ElementType; name: string; color: string }>

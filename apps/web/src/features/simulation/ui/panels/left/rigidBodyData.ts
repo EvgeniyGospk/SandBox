@@ -1,4 +1,4 @@
-import type { ElementType } from '@/core/engine'
+import type { ElementType } from '@/features/simulation/engine'
 import { Circle, Square } from 'lucide-react'
 
 export const RIGID_BODY_SHAPES = [

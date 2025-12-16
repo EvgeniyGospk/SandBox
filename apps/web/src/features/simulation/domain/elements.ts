@@ -2,7 +2,7 @@
  * UI-facing element definitions for LeftPanel
  */
 
-import type { ElementType } from '@/core/engine'
+import type { ElementType } from '@/features/simulation/engine'
 
 export type { ElementType }
 

@@ -1,7 +1,7 @@
 import type { MutableRefObject } from 'react'
-import type { ISimulationBackend } from '@/core/engine/ISimulationBackend'
-import type { WorkerBridge } from '@/core/engine/worker'
-import type { WasmParticleEngine } from '@/core/engine'
+import type { ISimulationBackend } from '@/features/simulation/engine/api/ISimulationBackend'
+import type { WorkerBridge } from '@/features/simulation/engine/worker'
+import type { WasmParticleEngine } from '@/features/simulation/engine'
 
 export function cleanupSimulationBackend(args: {
   bridgeRef: MutableRefObject<WorkerBridge | null>

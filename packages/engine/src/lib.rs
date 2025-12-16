@@ -16,9 +16,12 @@ pub mod core;
 pub mod spatial;
 pub mod domain;
 pub mod systems;
-pub mod world;
 pub mod simulation;
 pub mod api;
+
+pub mod world {
+    pub use crate::simulation::*;
+}
 
 // Compatibility re-exports (keeps existing internal/external paths working)
 pub use spatial::chunks;
@@ -60,7 +63,7 @@ pub fn version() -> String {
 }
 
 // Re-export main types
-pub use simulation::World;
+pub use api::wasm::World;
 pub use domain::elements::ElementType;
 
 // Export element constants for JS

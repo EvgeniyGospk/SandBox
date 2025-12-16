@@ -1,6 +1,6 @@
 import { useToolStore } from '@/features/tools/model/toolStore'
 import { useSimulationStore } from '@/features/simulation/model/simulationStore'
-import { resetCamera } from '@/core/canvas/canvasControls'
+import { resetCamera } from '@/features/simulation/ui/canvas/canvasControls'
 import { 
   Circle, 
   Square, 

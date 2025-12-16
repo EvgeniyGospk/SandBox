@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import type { MutableRefObject, RefObject } from 'react'
-import type { WorkerBridge } from '@/core/engine/worker'
-import type { WasmParticleEngine } from '@/core/engine'
+import type { WorkerBridge } from '@/features/simulation/engine/worker'
+import type { WasmParticleEngine } from '@/features/simulation/engine'
 
 export type ViewportSize = { width: number; height: number }
 export type WorldSize = { width: number; height: number }

@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import type { MutableRefObject, RefObject } from 'react'
-import type { WorkerBridge } from '@/core/engine/worker'
-import type { WasmParticleEngine } from '@/core/engine'
+import type { WorkerBridge } from '@/features/simulation/engine/worker'
+import type { WasmParticleEngine } from '@/features/simulation/engine'
 import { getWorldSize, type WorldSizePreset } from '@/features/simulation/model/simulationStore'
 import type { WorldSize } from './useCanvasRefs'
 

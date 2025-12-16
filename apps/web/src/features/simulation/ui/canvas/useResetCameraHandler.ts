@@ -1,8 +1,8 @@
 import { useEffect } from 'react'
 import type { MutableRefObject } from 'react'
-import type { WorkerBridge } from '@/core/engine/worker'
-import type { WasmParticleEngine } from '@/core/engine'
-import { setResetCameraHandler } from '@/core/canvas/canvasControls'
+import type { WorkerBridge } from '@/features/simulation/engine/worker'
+import type { WasmParticleEngine } from '@/features/simulation/engine'
+import { setResetCameraHandler } from '@/features/simulation/ui/canvas/canvasControls'
 import type { CameraState } from './useCanvasRefs'
 
 export function useResetCameraHandler(args: {
