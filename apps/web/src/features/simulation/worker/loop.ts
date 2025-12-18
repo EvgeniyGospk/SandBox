@@ -1,79 +1,93 @@
 import { debugWarn, logError } from '@/platform/logging/log'
 import { BASE_STEP_MS, MAX_DT_MS, MAX_STEPS_PER_FRAME, STATS_INTERVAL_MS as STATS_INTERVAL, FPS_SAMPLES } from '@/features/simulation/engine/timing'
 
-import { state } from './state'
+import type { WorkerContext } from './context'
+
 import { updateMemoryViews } from './memory'
 import { processSharedInput } from './input'
 import { renderFrame } from './render'
 import { sendStats } from './stats'
+import { canRecoverFromCrash, postWorkerCrash } from './errors'
 
-export function renderLoop(time: number): void {
-  const hasWebGL = state.useWebGL && state.renderer && state.engine && state.canvas && state.wasmMemory
-  const hasCanvas2D = !state.useWebGL && state.ctx && state.screenCtx && state.engine && state.canvas
+function renderLoop(ctx: WorkerContext, token: number, time: number): void {
+  if (token !== ctx.loopToken) return
+
+  const state = ctx.state
+  const hasWebGL = state.render.useWebGL && state.render.renderer && state.wasm.engine && state.render.canvas && state.wasm.memory
+  const hasCanvas2D = !state.render.useWebGL && state.render.ctx && state.render.screenCtx && state.wasm.engine && state.render.canvas
 
   if (!hasWebGL && !hasCanvas2D) {
-    requestAnimationFrame(renderLoop)
+    requestAnimationFrame((t) => renderLoop(ctx, token, t))
     return
   }
 
-  const world = state.engine
+  const world = state.wasm.engine
   if (!world) {
-    requestAnimationFrame(renderLoop)
+    requestAnimationFrame((t) => renderLoop(ctx, token, t))
     return
   }
 
-  const dtMs = state.lastTime > 0 ? time - state.lastTime : 0
+  const dtMs = state.timing.lastTime > 0 ? time - state.timing.lastTime : 0
   if (dtMs > 0) {
-    state.fpsBuffer[state.fpsIndex] = 1000 / dtMs
-    state.fpsIndex = (state.fpsIndex + 1) % FPS_SAMPLES
-    if (state.fpsCount < FPS_SAMPLES) state.fpsCount++
+    state.timing.fpsBuffer[state.timing.fpsIndex] = 1000 / dtMs
+    state.timing.fpsIndex = (state.timing.fpsIndex + 1) % FPS_SAMPLES
+    if (state.timing.fpsCount < FPS_SAMPLES) state.timing.fpsCount++
   }
-  state.lastTime = time
+  state.timing.lastTime = time
 
-  processSharedInput()
+  processSharedInput(ctx)
 
-  if (state.isPlaying) {
+  if (state.sim.isPlaying) {
     try {
       const clampedDt = Math.min(dtMs, MAX_DT_MS)
-      const safeSpeed = Number.isFinite(state.speed) && state.speed > 0 ? state.speed : 1
+      const safeSpeed = Number.isFinite(state.settings.speed) && state.settings.speed > 0 ? state.settings.speed : 1
 
-      state.stepAccumulator += (safeSpeed * clampedDt) / BASE_STEP_MS
-      let steps = Math.floor(state.stepAccumulator)
+      state.sim.stepAccumulator += (safeSpeed * clampedDt) / BASE_STEP_MS
+      let steps = Math.floor(state.sim.stepAccumulator)
       if (steps > MAX_STEPS_PER_FRAME) {
         steps = MAX_STEPS_PER_FRAME
-        state.stepAccumulator = 0
+        state.sim.stepAccumulator = Math.min(Math.max(state.sim.stepAccumulator - steps, 0), 1)
       } else {
-        state.stepAccumulator -= steps
+        state.sim.stepAccumulator -= steps
       }
 
       for (let i = 0; i < steps; i++) {
         world.step()
       }
-      updateMemoryViews()
+      ctx.metrics.lastFrameSteps = steps
+      ctx.metrics.stepsSinceLastStats += steps
+      ctx.metrics.framesSinceLastStats += 1
+      updateMemoryViews(ctx)
     } catch (e) {
       logError('💥 WASM simulation crashed:', e)
-      state.isPlaying = false
-      state.isCrashed = true
-      self.postMessage({
-        type: 'CRASH',
+      state.sim.isPlaying = false
+      state.sim.isCrashed = true
+      postWorkerCrash({
         message: String(e),
-        canRecover: false,
+        error: e,
+        canRecover: canRecoverFromCrash(e),
+        extra: { phase: 'step' },
       })
     }
   }
 
   try {
-    renderFrame()
+    renderFrame(ctx)
   } catch (e) {
     debugWarn('renderFrame failed:', e)
-    updateMemoryViews()
-    if (state.renderer) state.renderer.requestFullUpload()
+    updateMemoryViews(ctx)
+    if (state.render.renderer) state.render.renderer.requestFullUpload()
   }
 
-  if (time - state.lastStatsUpdate > STATS_INTERVAL) {
-    sendStats()
-    state.lastStatsUpdate = time
+  if (time - state.timing.lastStatsUpdate > STATS_INTERVAL) {
+    sendStats(ctx)
+    state.timing.lastStatsUpdate = time
   }
 
-  requestAnimationFrame(renderLoop)
+  requestAnimationFrame((t) => renderLoop(ctx, token, t))
+}
+
+export function startRenderLoop(ctx: WorkerContext): void {
+  const token = ++ctx.loopToken
+  requestAnimationFrame((t) => renderLoop(ctx, token, t))
 }

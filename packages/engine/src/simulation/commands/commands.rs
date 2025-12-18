@@ -1,4 +1,4 @@
-use crate::elements::{get_color_with_variation, get_props, EL_EMPTY, ELEMENT_COUNT};
+use crate::elements::EL_EMPTY;
 
 use super::WorldCore;
 
@@ -8,7 +8,7 @@ pub(super) fn add_particle(world: &mut WorldCore, x: u32, y: u32, element: u8) -
     }
 
     // Validate element ID
-    if (element as usize) >= ELEMENT_COUNT || element == EL_EMPTY {
+    if element == EL_EMPTY || !world.content.is_valid_element_id(element) {
         return false;
     }
 
@@ -17,13 +17,21 @@ pub(super) fn add_particle(world: &mut WorldCore, x: u32, y: u32, element: u8) -
     }
 
     let seed = ((x * 7 + y * 13 + world.frame as u32) & 31) as u8;
-    let props = get_props(element);
+
+    let Some(props) = world.content.props(element) else {
+        return false;
+    };
+
+    let color = world
+        .content
+        .color_with_variation(element, seed)
+        .unwrap_or(props.color);
 
     world.grid.set_particle(
         x,
         y,
         element,
-        get_color_with_variation(element, seed),
+        color,
         props.lifetime,
         props.default_temp,
     );

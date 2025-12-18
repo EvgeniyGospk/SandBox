@@ -1,4 +1,4 @@
-import type { ElementType, RenderMode, ToolType } from '@/features/simulation/engine/api/types'
+import type { RenderMode, ToolType } from '@/features/simulation/engine/api/types'
 
 export type WasmModule = typeof import('@particula/engine-wasm/particula_engine')
 export type WasmWorld = import('@particula/engine-wasm/particula_engine').World
@@ -20,7 +20,7 @@ export interface InputMessage {
   x: number
   y: number
   radius: number
-  element: ElementType
+  elementId: number
   tool: ToolType
   brushShape?: 'circle' | 'square' | 'line'
 }
@@ -68,7 +68,8 @@ export type WorkerMessage =
   | { type: 'PAUSE' }
   | { type: 'STEP' }
   | { type: 'CLEAR' }
-  | { type: 'FILL'; x: number; y: number; element: ElementType }
+  | { type: 'LOAD_CONTENT_BUNDLE'; json: string }
+  | { type: 'FILL'; x: number; y: number; elementId: number }
   | { type: 'PIPETTE'; id: number; x: number; y: number }
   | { type: 'SNAPSHOT'; id: number }
   | { type: 'LOAD_SNAPSHOT'; buffer: ArrayBuffer }
@@ -79,5 +80,5 @@ export type WorkerMessage =
       y: number
       size: number
       shape: 'box' | 'circle'
-      element: ElementType
+      elementId: number
     }

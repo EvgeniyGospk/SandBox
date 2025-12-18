@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "fire_plant",
+  "aggressor": "fire",
+  "victim": "plant",
+  "resultAggressor": "smoke",
+  "resultVictim": "fire",
+  "chance": 0.1,
+  "spawn": "smoke",
+  "comment": "Plants burn like wood"
+}

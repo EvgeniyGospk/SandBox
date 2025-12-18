@@ -74,6 +74,47 @@ pub const FLAG_COLD: ElementFlags = 4096;
 pub const FLAG_RIGID: ElementFlags = 8192;
 
 // ============================================================================
+// BEHAVIOR KIND (Element-level dispatch)
+// ============================================================================
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BehaviorKind {
+    None = 0,
+    BioPlant = 1,
+    BioSeed = 2,
+    EnergyElectricity = 3,
+    EnergyFire = 4,
+    EnergySpark = 5,
+    UtilityClone = 6,
+    UtilityVoid = 7,
+}
+
+pub const BEHAVIOR_KIND_BY_ID: [BehaviorKind; ELEMENT_COUNT] = [
+    BehaviorKind::None, // 0: empty
+    BehaviorKind::None, // 1: stone
+    BehaviorKind::None, // 2: sand
+    BehaviorKind::None, // 3: wood
+    BehaviorKind::None, // 4: metal
+    BehaviorKind::None, // 5: ice
+    BehaviorKind::None, // 6: water
+    BehaviorKind::None, // 7: oil
+    BehaviorKind::None, // 8: lava
+    BehaviorKind::None, // 9: acid
+    BehaviorKind::None, // 10: steam
+    BehaviorKind::None, // 11: smoke
+    BehaviorKind::EnergyFire, // 12: fire
+    BehaviorKind::EnergySpark, // 13: spark
+    BehaviorKind::EnergyElectricity, // 14: electricity
+    BehaviorKind::None, // 15: gunpowder
+    BehaviorKind::UtilityClone, // 16: clone
+    BehaviorKind::UtilityVoid, // 17: void
+    BehaviorKind::None, // 18: dirt
+    BehaviorKind::BioSeed, // 19: seed
+    BehaviorKind::BioPlant, // 20: plant
+];
+
+// ============================================================================
 // PHYSICS CONSTANTS - Phase 2 Newtonian Physics
 // ============================================================================
 
@@ -271,7 +312,7 @@ pub static ELEMENT_DATA: [ElementProps; ELEMENT_COUNT] = [
     },
     // 11: Smoke
     ElementProps {
-        color: 0xC83F3F3F,
+        color: 0xC82F2F2F,
         density: 1.1,
         category: CAT_GAS,
         flags: 8, // 0x0008
@@ -402,6 +443,79 @@ pub static ELEMENT_DATA: [ElementProps; ELEMENT_COUNT] = [
 ];
 
 // ============================================================================
+// PHASE CHANGES - Data-driven
+// ============================================================================
+
+#[derive(Clone, Copy)]
+pub struct PhaseChange {
+    pub high: Option<(f32, ElementId)>,
+    pub low: Option<(f32, ElementId)>,
+}
+
+pub const PHASE_CHANGES: [PhaseChange; ELEMENT_COUNT] = [
+    // 0: empty
+    PhaseChange { high: None, low: None },
+    // 1: stone
+    PhaseChange { high: Some((900.0, EL_LAVA)), low: None },
+    // 2: sand
+    PhaseChange { high: Some((1700.0, EL_LAVA)), low: None },
+    // 3: wood
+    PhaseChange { high: None, low: None },
+    // 4: metal
+    PhaseChange { high: Some((1500.0, EL_LAVA)), low: None },
+    // 5: ice
+    PhaseChange { high: Some((0.0, EL_WATER)), low: None },
+    // 6: water
+    PhaseChange { high: Some((100.0, EL_STEAM)), low: Some((0.0, EL_ICE)) },
+    // 7: oil
+    PhaseChange { high: None, low: None },
+    // 8: lava
+    PhaseChange { high: None, low: Some((700.0, EL_STONE)) },
+    // 9: acid
+    PhaseChange { high: None, low: None },
+    // 10: steam
+    PhaseChange { high: None, low: Some((90.0, EL_WATER)) },
+    // 11: smoke
+    PhaseChange { high: None, low: None },
+    // 12: fire
+    PhaseChange { high: None, low: None },
+    // 13: spark
+    PhaseChange { high: None, low: None },
+    // 14: electricity
+    PhaseChange { high: None, low: None },
+    // 15: gunpowder
+    PhaseChange { high: None, low: None },
+    // 16: clone
+    PhaseChange { high: None, low: None },
+    // 17: void
+    PhaseChange { high: None, low: None },
+    // 18: dirt
+    PhaseChange { high: None, low: None },
+    // 19: seed
+    PhaseChange { high: None, low: None },
+    // 20: plant
+    PhaseChange { high: None, low: None },
+];
+
+/// Get phase change for element at given temperature
+/// Returns new element if phase change occurs, None otherwise
+#[inline]
+pub fn check_phase_change(element: ElementId, temp: f32) -> Option<ElementId> {
+    let idx = element as usize;
+    if idx >= ELEMENT_COUNT { return None; }
+    let pc = PHASE_CHANGES[idx];
+    // Check high temp (melting/boiling)
+    if let Some((threshold, new_el)) = pc.high {
+        if temp > threshold { return Some(new_el); }
+    }
+    // Check low temp (freezing/condensing)
+    if let Some((threshold, new_el)) = pc.low {
+        if temp < threshold { return Some(new_el); }
+    }
+    None
+}
+
+// ============================================================================
 // REACTION LOOKUP TABLE (LUT) - O(1) Access
 // ============================================================================
 
@@ -479,12 +593,6 @@ impl ReactionSystem {
         unsafe { self.lut.get_unchecked(idx).as_ref() }
         #[cfg(debug_assertions)]
         self.lut[idx].as_ref()
-    }
-}
-
-impl Default for ReactionSystem {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

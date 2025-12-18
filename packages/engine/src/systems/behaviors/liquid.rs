@@ -17,7 +17,7 @@ mod scan;
 pub use perf::{reset_liquid_scan_counter, take_liquid_scan_counter};
 
 use super::{Behavior, UpdateContext, xorshift32, gravity_dir, perp_dirs};
-use crate::elements::{ELEMENT_DATA, EL_EMPTY};
+use crate::elements::EL_EMPTY;
 
 /// Result of scanning a horizontal line
 struct ScanResult {
@@ -70,9 +70,10 @@ impl Behavior for LiquidBehavior {
         
         let element = unsafe { ctx.grid.get_type_unchecked(x, y) };
         if element == EL_EMPTY { return; }
-        if (element as usize) >= ELEMENT_DATA.len() { return; }
-        
-        let props = &ELEMENT_DATA[element as usize];
+
+        let Some(props) = ctx.content.props(element) else {
+            return;
+        };
         let density = props.density;
         let range = if props.dispersion > 0 { props.dispersion as i32 } else { 5 };
 

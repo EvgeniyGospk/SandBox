@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "fire_oil",
+  "aggressor": "fire",
+  "victim": "oil",
+  "resultAggressor": "smoke",
+  "resultVictim": "fire",
+  "chance": 0.2,
+  "spawn": "smoke",
+  "comment": "Oil catches fire easily"
+}

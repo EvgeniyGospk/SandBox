@@ -91,7 +91,11 @@ void main() {
     // 5. Slight contrast boost
     finalColor = pow(finalColor, vec3(0.95));
     
-    outColor = vec4(finalColor, color.a);
+    // Always write opaque alpha for the world texture pass.
+    // We render into an \`alpha: false\` framebuffer, and leaving alpha from the texture
+    // can create visible seams if blending is ever enabled (e.g. due to future refactors)
+    // or if any texels are uninitialized (alpha=0).
+    outColor = vec4(finalColor, 1.0);
 }`;
 
 export const LINE_VERTEX_SHADER = `#version 300 es

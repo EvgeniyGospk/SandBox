@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "fire_gunpowder",
+  "aggressor": "fire",
+  "victim": "gunpowder",
+  "resultAggressor": "fire",
+  "resultVictim": "fire",
+  "chance": 1,
+  "spawn": "smoke",
+  "comment": "Gunpowder explodes instantly"
+}

@@ -29,7 +29,7 @@ export function updateBorderAndPBO(args: {
   let pbo: [WebGLBuffer | null, WebGLBuffer | null] = args.pbo
   let pboIndex = args.pboIndex
   let usePBO = false
-  let pboSize = worldWidth * worldHeight * 4
+  const pboSize = worldWidth * worldHeight * 4
 
   // Recreate PBOs to match new texture size
   if (usePboConstant) {
@@ -74,7 +74,7 @@ export function resizeWorldResources(args: {
   gl.bindTexture(gl.TEXTURE_2D, texture)
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, worldWidth, worldHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
 
-  let pboSize = worldWidth * worldHeight * 4
+  const pboSize = worldWidth * worldHeight * 4
   let pboIndex = args.pboIndex
 
   // Resize PBO buffers (if enabled)

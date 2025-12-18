@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 17,
+  "key": "void",
+  "category": "utility",
+  "color": "0xFF000000",
+  "density": "Infinity",
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 0,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": true,
+    "rigid": false
+  },
+  "behavior": "utility_void",
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "utility",
+    "displayName": "Void",
+    "description": "Destroys all particles",
+    "sort": 1
+  }
+}

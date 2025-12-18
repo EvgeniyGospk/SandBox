@@ -8,6 +8,10 @@ impl ChunkGrid {
         self.woke_this_frame = 0;
         self.slept_this_frame = 0;
 
+        if !self.sleep_enabled {
+            return;
+        }
+
         // Empty-chunk sleeping is based on time, not on whether the chunk happened
         // to be processed this frame.
         for idx in 0..self.chunk_count {
@@ -56,7 +60,7 @@ impl ChunkGrid {
             // Don't wake empty chunks - this prevents cascade wakeups
             if cy + 1 < self.chunks_y {
                 let below_idx = self.chunk_idx_from_coords(cx, cy + 1);
-                if self.particle_count[below_idx] > 0 || self.state[below_idx] == ChunkState::Sleeping {
+                if self.particle_count[below_idx] > 0 {
                     // Only set dirty bit, don't force Active state
                     Self::set_bit(&mut self.dirty_bits, below_idx);
                 }
@@ -86,6 +90,24 @@ impl ChunkGrid {
         self.particle_count.fill(0);
         self.virtual_temp.fill(20.0);
         self.just_woke_up.fill(false);
+    }
+
+    /// Enable/disable empty-chunk sleeping.
+    ///
+    /// This is primarily intended for performance experiments and debugging.
+    /// Disabling sleeping forces all chunks to `Active` and clears any pending wake flags.
+    pub fn set_sleeping_enabled(&mut self, enabled: bool) {
+        if self.sleep_enabled == enabled {
+            return;
+        }
+
+        self.sleep_enabled = enabled;
+
+        if !enabled {
+            self.state.fill(ChunkState::Active);
+            self.idle_frames.fill(0);
+            self.just_woke_up.fill(false);
+        }
     }
 
     /// Emergency recovery: force full simulation + full render upload next frame.

@@ -1,18 +1,28 @@
-import type { ElementType } from '../api/types'
-
-export const SIMULATION_PROTOCOL_VERSION = 1 as const
+export const SIMULATION_PROTOCOL_VERSION = 2 as const
 
 export type WorkerCapabilities = {
   webgl: boolean
   sharedInput: boolean
 }
 
+export type ContentBundlePhase = 'init' | 'reload'
+export type ContentBundleStatus = 'loading' | 'loaded' | 'error'
+
 export type WorkerToMainMessage =
   | { type: 'READY'; protocolVersion: number; width: number; height: number; capabilities?: WorkerCapabilities }
-  | { type: 'STATS'; fps: number; particleCount: number }
+  | { type: 'CONTENT_MANIFEST'; json: string }
+  | { type: 'CONTENT_BUNDLE_STATUS'; phase: ContentBundlePhase; status: ContentBundleStatus; message?: string }
+  | {
+      type: 'STATS'
+      fps: number
+      particleCount: number
+      stepsPerFrame?: number
+      inputOverflowCount?: number
+      wasmMemoryBytes?: number
+    }
   | { type: 'ERROR'; message: string }
   | { type: 'CRASH'; message: string; canRecover?: boolean }
-  | { type: 'PIPETTE_RESULT'; id: number; element: ElementType | null }
+  | { type: 'PIPETTE_RESULT'; id: number; elementId: number | null }
   | { type: 'SNAPSHOT_RESULT'; id: number; buffer: ArrayBuffer | null }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -23,9 +33,21 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
+function isOptionalFiniteNumber(value: unknown): value is number | undefined {
+  return value === undefined || isFiniteNumber(value)
+}
+
 function isWorkerCapabilities(value: unknown): value is WorkerCapabilities {
   if (!isRecord(value)) return false
   return typeof value.webgl === 'boolean' && typeof value.sharedInput === 'boolean'
+}
+
+function isContentBundlePhase(value: unknown): value is ContentBundlePhase {
+  return value === 'init' || value === 'reload'
+}
+
+function isContentBundleStatus(value: unknown): value is ContentBundleStatus {
+  return value === 'loading' || value === 'loaded' || value === 'error'
 }
 
 export function parseWorkerToMainMessage(data: unknown): WorkerToMainMessage | null {
@@ -33,6 +55,21 @@ export function parseWorkerToMainMessage(data: unknown): WorkerToMainMessage | n
   if (typeof data.type !== 'string') return null
 
   switch (data.type) {
+    case 'CONTENT_MANIFEST': {
+      if (typeof data.json !== 'string') return null
+      return { type: 'CONTENT_MANIFEST', json: data.json }
+    }
+    case 'CONTENT_BUNDLE_STATUS': {
+      if (!isContentBundlePhase(data.phase)) return null
+      if (!isContentBundleStatus(data.status)) return null
+      if (data.message !== undefined && typeof data.message !== 'string') return null
+      return {
+        type: 'CONTENT_BUNDLE_STATUS',
+        phase: data.phase,
+        status: data.status,
+        ...(data.message !== undefined ? { message: data.message } : {}),
+      }
+    }
     case 'READY': {
       if (!isFiniteNumber(data.protocolVersion)) return null
       if (!isFiniteNumber(data.width) || !isFiniteNumber(data.height)) return null
@@ -47,7 +84,19 @@ export function parseWorkerToMainMessage(data: unknown): WorkerToMainMessage | n
     }
     case 'STATS': {
       if (!isFiniteNumber(data.fps) || !isFiniteNumber(data.particleCount)) return null
-      return { type: 'STATS', fps: data.fps, particleCount: data.particleCount }
+
+      if (!isOptionalFiniteNumber(data.stepsPerFrame)) return null
+      if (!isOptionalFiniteNumber(data.inputOverflowCount)) return null
+      if (!isOptionalFiniteNumber(data.wasmMemoryBytes)) return null
+
+      return {
+        type: 'STATS',
+        fps: data.fps,
+        particleCount: data.particleCount,
+        ...(data.stepsPerFrame !== undefined ? { stepsPerFrame: data.stepsPerFrame } : {}),
+        ...(data.inputOverflowCount !== undefined ? { inputOverflowCount: data.inputOverflowCount } : {}),
+        ...(data.wasmMemoryBytes !== undefined ? { wasmMemoryBytes: data.wasmMemoryBytes } : {}),
+      }
     }
     case 'ERROR': {
       if (typeof data.message !== 'string') return null
@@ -61,9 +110,9 @@ export function parseWorkerToMainMessage(data: unknown): WorkerToMainMessage | n
     }
     case 'PIPETTE_RESULT': {
       if (!isFiniteNumber(data.id)) return null
-      const element = data.element
-      if (element !== null && typeof element !== 'string') return null
-      return { type: 'PIPETTE_RESULT', id: data.id, element: (element ?? null) as ElementType | null }
+      const elementId = data.elementId
+      if (elementId !== null && !isFiniteNumber(elementId)) return null
+      return { type: 'PIPETTE_RESULT', id: data.id, elementId: (elementId ?? null) as number | null }
     }
     case 'SNAPSHOT_RESULT': {
       if (!isFiniteNumber(data.id)) return null

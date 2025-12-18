@@ -1,5 +1,5 @@
 import type { MutableRefObject } from 'react'
-import { isWorkerSupported, type WorkerBridge } from '@/features/simulation/engine/worker'
+import { isCrossOriginIsolated, isWorkerSupported, type WorkerBridge } from '@/features/simulation/engine/worker'
 import type { WasmParticleEngine } from '@/features/simulation/engine/WasmParticleEngine'
 import { debugLog } from '@/platform/logging/log'
 import type { ISimulationBackend } from '@/features/simulation/engine/api/ISimulationBackend'
@@ -31,6 +31,7 @@ export function initSimulationBackend(args: {
   setUseWorker: (v: boolean) => void
   setIsLoading: (v: boolean) => void
   setError: (v: string | null) => void
+  setWarning: (v: string | null) => void
   setBackend: (backend: ISimulationBackend | null) => void
 
   setFps: (fps: number) => void
@@ -54,6 +55,7 @@ export function initSimulationBackend(args: {
     setUseWorker,
     setIsLoading,
     setError,
+    setWarning,
     setBackend,
     setFps,
     setParticleCount,
@@ -103,6 +105,14 @@ export function initSimulationBackend(args: {
   const workerSupported = isWorkerSupported()
   setUseWorker(workerSupported)
 
+  if (!isCrossOriginIsolated()) {
+    setWarning(
+      'Cross-origin isolation is disabled (COOP/COEP). SharedArrayBuffer features (zero-latency input, multi-threaded WASM) may be unavailable. If this is production, ensure COOP/COEP headers are set.'
+    )
+  } else {
+    setWarning(null)
+  }
+
   if (workerSupported) {
     initWorkerBackend({
       canvas,
@@ -123,6 +133,7 @@ export function initSimulationBackend(args: {
       setUseWorker,
       setIsLoading,
       setError,
+      setWarning,
       setFps,
       setParticleCount,
       initFallback: initFallbackEngine,

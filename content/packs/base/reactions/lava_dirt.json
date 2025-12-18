@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "lava_dirt",
+  "aggressor": "lava",
+  "victim": "dirt",
+  "resultAggressor": null,
+  "resultVictim": "stone",
+  "chance": 0.05,
+  "spawn": null,
+  "comment": "Lava slowly hardens dirt to stone"
+}

@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "acid_dirt",
+  "aggressor": "acid",
+  "victim": "dirt",
+  "resultAggressor": "empty",
+  "resultVictim": "empty",
+  "chance": 0.05,
+  "spawn": null,
+  "comment": "Acid dissolves dirt slowly"
+}

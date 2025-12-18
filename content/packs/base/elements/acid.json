@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 9,
+  "key": "acid",
+  "category": "liquid",
+  "color": "0xFF39FF14",
+  "density": 1050,
+  "dispersion": 5,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 35,
+  "flags": {
+    "flammable": false,
+    "conductive": true,
+    "corrosive": true,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "liquids",
+    "displayName": "Acid",
+    "description": "Dissolves stone, metal, wood (1:1)",
+    "sort": 3
+  }
+}

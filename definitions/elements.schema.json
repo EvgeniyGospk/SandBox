@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "./elements.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "description", "flags", "physics", "categories", "elements"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "string" },
+    "description": { "type": "string" },
+    "flags": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "physics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gravity", "airFriction", "maxVelocity"],
+      "properties": {
+        "gravity": { "type": "number" },
+        "airFriction": { "type": "number" },
+        "maxVelocity": { "type": "number" }
+      }
+    },
+    "categories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "rustName"],
+        "properties": {
+          "id": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "name": { "type": "string", "minLength": 1 },
+          "rustName": { "type": "string", "pattern": "^CAT_[A-Z0-9_]+$" }
+        }
+      }
+    },
+    "uiCategories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "label", "sort"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "label": { "type": "string" },
+          "sort": { "type": "integer" }
+        }
+      }
+    },
+    "elements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "rustName",
+          "category",
+          "color",
+          "density",
+          "dispersion",
+          "lifetime",
+          "defaultTemp",
+          "heatConductivity",
+          "flammable",
+          "conductive"
+        ],
+        "properties": {
+          "id": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "rustName": { "type": "string", "pattern": "^EL_[A-Z0-9_]+$" },
+          "category": { "type": "string", "minLength": 1 },
+          "color": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{8}$" },
+          "density": {
+            "oneOf": [
+              { "type": "number" },
+              { "type": "string", "enum": ["Infinity"] }
+            ]
+          },
+          "dispersion": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "lifetime": { "type": "integer", "minimum": 0, "maximum": 65535 },
+          "defaultTemp": { "type": "number" },
+          "heatConductivity": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "flammable": { "type": "boolean" },
+          "conductive": { "type": "boolean" },
+          "hidden": { "type": "boolean" },
+          "behaviorKind": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "bounce": { "type": "number" },
+          "friction": { "type": "number" },
+          "corrosive": { "type": "boolean" },
+          "hot": { "type": "boolean" },
+          "cold": { "type": "boolean" },
+          "ignoreGravity": { "type": "boolean" },
+          "rigid": { "type": "boolean" },
+          "ui": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["category", "displayName", "description", "sort"],
+            "properties": {
+              "category": { "type": "string", "minLength": 1 },
+              "displayName": { "type": "string" },
+              "description": { "type": "string" },
+              "sort": { "type": "integer" },
+              "hidden": { "type": "boolean" }
+            }
+          },
+          "phaseChange": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "high": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["temp", "to"],
+                "properties": {
+                  "temp": { "type": "number" },
+                  "to": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+                }
+              },
+              "low": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["temp", "to"],
+                "properties": {
+                  "temp": { "type": "number" },
+                  "to": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

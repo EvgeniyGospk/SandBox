@@ -4,12 +4,12 @@ export function renderCanvas2DToScreen(
   state: SimulationWorkerState,
   transform: { zoom: number; panX: number; panY: number }
 ): void {
-  if (!state.canvas || !state.thermalCanvas || !state.screenCtx) return
+  if (!state.render.canvas || !state.render.thermalCanvas || !state.render.screenCtx) return
 
-  const viewportW = state.canvas.width
-  const viewportH = state.canvas.height
-  const worldW = state.thermalCanvas.width
-  const worldH = state.thermalCanvas.height
+  const viewportW = state.render.canvas.width
+  const viewportH = state.render.canvas.height
+  const worldW = state.render.thermalCanvas.width
+  const worldH = state.render.thermalCanvas.height
 
   if (viewportW <= 0 || viewportH <= 0 || worldW <= 0 || worldH <= 0) return
 
@@ -21,22 +21,22 @@ export function renderCanvas2DToScreen(
   const offsetX = (viewportW - drawW) / 2
   const offsetY = (viewportH - drawH) / 2
 
-  state.screenCtx.setTransform(1, 0, 0, 1, 0, 0)
-  state.screenCtx.fillStyle = '#0a0a0a'
-  state.screenCtx.fillRect(0, 0, viewportW, viewportH)
+  state.render.screenCtx.setTransform(1, 0, 0, 1, 0, 0)
+  state.render.screenCtx.fillStyle = '#0a0a0a'
+  state.render.screenCtx.fillRect(0, 0, viewportW, viewportH)
 
-  state.screenCtx.save()
+  state.render.screenCtx.save()
 
   const centerX = viewportW / 2
   const centerY = viewportH / 2
-  state.screenCtx.translate(centerX + transform.panX, centerY + transform.panY)
-  state.screenCtx.scale(transform.zoom, transform.zoom)
-  state.screenCtx.translate(-centerX, -centerY)
+  state.render.screenCtx.translate(centerX + transform.panX, centerY + transform.panY)
+  state.render.screenCtx.scale(transform.zoom, transform.zoom)
+  state.render.screenCtx.translate(-centerX, -centerY)
 
-  state.screenCtx.drawImage(state.thermalCanvas, 0, 0, worldW, worldH, offsetX, offsetY, drawW, drawH)
+  state.render.screenCtx.drawImage(state.render.thermalCanvas, 0, 0, worldW, worldH, offsetX, offsetY, drawW, drawH)
 
-  drawWorldBorder2D(state.screenCtx, offsetX, offsetY, drawW, drawH, transform.zoom)
-  state.screenCtx.restore()
+  drawWorldBorder2D(state.render.screenCtx, offsetX, offsetY, drawW, drawH, transform.zoom)
+  state.render.screenCtx.restore()
 }
 
 function drawWorldBorder2D(

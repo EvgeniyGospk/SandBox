@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "water_fire",
+  "aggressor": "water",
+  "victim": "fire",
+  "resultAggressor": "steam",
+  "resultVictim": "empty",
+  "chance": 0.3,
+  "spawn": null,
+  "comment": "Water extinguishes fire"
+}

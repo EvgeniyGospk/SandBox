@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 20,
+  "key": "plant",
+  "category": "bio",
+  "color": "0xFF228B22",
+  "density": 900,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 10,
+  "flags": {
+    "flammable": true,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": "bio_plant",
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "bio",
+    "displayName": "Plant",
+    "description": "Grows with water, burns easily",
+    "sort": 2
+  }
+}

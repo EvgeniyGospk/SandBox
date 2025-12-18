@@ -4,7 +4,10 @@ use super::WorldCore;
 
 pub(super) fn spawn_rigid_body(world: &mut WorldCore, x: f32, y: f32, w: i32, h: i32, element_id: u8) -> u32 {
     let body = RigidBody::new_rect(x, y, w, h, element_id, 0);
-    match world.rigid_bodies.add_body(body, &mut world.grid, &mut world.chunks) {
+    match world
+        .rigid_bodies
+        .add_body(&world.content, body, &mut world.grid, &mut world.chunks)
+    {
         Some(res) => {
             world.particle_count = world.particle_count.saturating_add(res.pixels);
             res.id
@@ -15,7 +18,10 @@ pub(super) fn spawn_rigid_body(world: &mut WorldCore, x: f32, y: f32, w: i32, h:
 
 pub(super) fn spawn_rigid_circle(world: &mut WorldCore, x: f32, y: f32, radius: i32, element_id: u8) -> u32 {
     let body = RigidBody::new_circle(x, y, radius, element_id, 0);
-    match world.rigid_bodies.add_body(body, &mut world.grid, &mut world.chunks) {
+    match world
+        .rigid_bodies
+        .add_body(&world.content, body, &mut world.grid, &mut world.chunks)
+    {
         Some(res) => {
             world.particle_count = world.particle_count.saturating_add(res.pixels);
             res.id

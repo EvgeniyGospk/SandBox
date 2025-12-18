@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "lava_plant",
+  "aggressor": "lava",
+  "victim": "plant",
+  "resultAggressor": null,
+  "resultVictim": "fire",
+  "chance": 0.5,
+  "spawn": "smoke",
+  "comment": "Lava burns plants"
+}

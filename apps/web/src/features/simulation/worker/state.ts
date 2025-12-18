@@ -14,113 +14,141 @@ export const EL_EMPTY = 0
 export const ELEMENT_MAP: Record<string, number> = ELEMENT_NAME_TO_ID
 
 export type SimulationWorkerState = {
-  engine: WasmWorld | null
-  wasmModule: WasmModule | null
-  wasmMemory: WebAssembly.Memory | null
-  canvas: OffscreenCanvas | null
+  wasm: {
+    engine: WasmWorld | null
+    module: WasmModule | null
+    memory: WebAssembly.Memory | null
+  }
 
-  renderer: WebGLRenderer | null
-  useWebGL: boolean
+  render: {
+    canvas: OffscreenCanvas | null
+    renderer: WebGLRenderer | null
+    useWebGL: boolean
+    thermalCanvas: OffscreenCanvas | null
+    ctx: OffscreenCanvasRenderingContext2D | null
+    screenCtx: OffscreenCanvasRenderingContext2D | null
+    imageData: ImageData | null
+    pixels: Uint8ClampedArray | null
+    pixels32: Uint32Array | null
+    mode: RenderMode
+  }
 
-  sharedInputBuffer: SharedInputBuffer | null
+  view: {
+    transform: { zoom: number; panX: number; panY: number }
+    viewportWidth: number
+    viewportHeight: number
+  }
 
-  thermalCanvas: OffscreenCanvas | null
-  ctx: OffscreenCanvasRenderingContext2D | null
-  screenCtx: OffscreenCanvasRenderingContext2D | null
-  imageData: ImageData | null
-  pixels: Uint8ClampedArray | null
-  pixels32: Uint32Array | null
+  sim: {
+    isPlaying: boolean
+    stepAccumulator: number
+    isCrashed: boolean
+  }
 
-  memoryManager: MemoryManager | null
-  memoryManagerEngine: WasmWorld | null
+  settings: {
+    gravity: { x: number; y: number } | null
+    ambientTemperature: number | null
+    speed: number
+  }
 
-  currentGravity: { x: number; y: number } | null
-  currentAmbientTemperature: number | null
+  input: {
+    sharedBuffer: SharedInputBuffer | null
+    lastX: number | null
+    lastY: number | null
+  }
 
-  fillVisited: Int32Array | null
-  fillStamp: number
+  memory: {
+    manager: MemoryManager | null
+    engine: WasmWorld | null
+  }
 
-  isPlaying: boolean
-  speed: number
-  stepAccumulator: number
-  renderMode: RenderMode
-  isCrashed: boolean
+  fill: {
+    visited: Int32Array | null
+    stamp: number
+  }
 
-  zoom: number
-  panX: number
-  panY: number
+  timing: {
+    lastTime: number
+    fpsBuffer: Float32Array
+    fpsIndex: number
+    fpsCount: number
+    lastStatsUpdate: number
+  }
 
-  viewportWidth: number
-  viewportHeight: number
-
-  lastTime: number
-
-  fpsBuffer: Float32Array
-  fpsIndex: number
-  fpsCount: number
-
-  lastStatsUpdate: number
-
-  debugDirty: boolean
-  debugLogInterval: number
-  debugLogEvery: number
-
-  lastInputX: number | null
-  lastInputY: number | null
+  debug: {
+    dirty: boolean
+    logInterval: number
+    logEvery: number
+  }
 }
 
-export const state: SimulationWorkerState = {
-  engine: null,
-  wasmModule: null,
-  wasmMemory: null,
-  canvas: null,
+export function createInitialWorkerState(): SimulationWorkerState {
+  return {
+    wasm: {
+      engine: null,
+      module: null,
+      memory: null,
+    },
 
-  renderer: null,
-  useWebGL: true,
+    render: {
+      canvas: null,
+      renderer: null,
+      useWebGL: true,
+      thermalCanvas: null,
+      ctx: null,
+      screenCtx: null,
+      imageData: null,
+      pixels: null,
+      pixels32: null,
+      mode: 'normal',
+    },
 
-  sharedInputBuffer: null,
+    view: {
+      transform: { zoom: 1, panX: 0, panY: 0 },
+      viewportWidth: 0,
+      viewportHeight: 0,
+    },
 
-  thermalCanvas: null,
-  ctx: null,
-  screenCtx: null,
-  imageData: null,
-  pixels: null,
-  pixels32: null,
+    sim: {
+      isPlaying: false,
+      stepAccumulator: 0,
+      isCrashed: false,
+    },
 
-  memoryManager: null,
-  memoryManagerEngine: null,
+    settings: {
+      gravity: null,
+      ambientTemperature: null,
+      speed: 1,
+    },
 
-  currentGravity: null,
-  currentAmbientTemperature: null,
+    input: {
+      sharedBuffer: null,
+      lastX: null,
+      lastY: null,
+    },
 
-  fillVisited: null,
-  fillStamp: 1,
+    memory: {
+      manager: null,
+      engine: null,
+    },
 
-  isPlaying: false,
-  speed: 1,
-  stepAccumulator: 0,
-  renderMode: 'normal',
-  isCrashed: false,
+    fill: {
+      visited: null,
+      stamp: 1,
+    },
 
-  zoom: 1,
-  panX: 0,
-  panY: 0,
+    timing: {
+      lastTime: 0,
+      fpsBuffer: new Float32Array(FPS_SAMPLES),
+      fpsIndex: 0,
+      fpsCount: 0,
+      lastStatsUpdate: 0,
+    },
 
-  viewportWidth: 0,
-  viewportHeight: 0,
-
-  lastTime: 0,
-
-  fpsBuffer: new Float32Array(FPS_SAMPLES),
-  fpsIndex: 0,
-  fpsCount: 0,
-
-  lastStatsUpdate: 0,
-
-  debugDirty: import.meta.env.VITE_DEBUG_DIRTY === 'true',
-  debugLogInterval: 0,
-  debugLogEvery: 60,
-
-  lastInputX: null,
-  lastInputY: null,
+    debug: {
+      dirty: import.meta.env.VITE_DEBUG_DIRTY === 'true',
+      logInterval: 0,
+      logEvery: 60,
+    },
+  }
 }

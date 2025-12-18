@@ -1,4 +1,4 @@
-use crate::elements::{EL_EMPTY, ELEMENT_DATA};
+use crate::elements::EL_EMPTY;
 use crate::grid::Grid;
 
 use super::types::PhysicsResult;
@@ -9,6 +9,7 @@ pub fn handle_collision(
     x: u32,
     y: u32,
     result: &PhysicsResult,
+    bounce: f32,
 ) {
     if !result.collided {
         return;
@@ -21,28 +22,54 @@ pub fn handle_collision(
         return;
     }
 
-    let props = &ELEMENT_DATA[element as usize];
-    let bounce = props.bounce;
+    let bounce = bounce.clamp(0.0, 1.0);
 
-    let vx = grid.vx[idx];
-    let vy = grid.vy[idx];
+    let mut vx = grid.vx[idx];
+    let mut vy = grid.vy[idx];
 
-    if result.normal_y != 0 && vy.abs() > 0.1 {
-        grid.vy[idx] = -vy * bounce;
-        grid.vx[idx] += vx.signum() * vy.abs() * 0.1;
+    let mut nx = result.normal_x as f32;
+    let mut ny = result.normal_y as f32;
+    let n2 = nx * nx + ny * ny;
+    if n2 <= 0.0 {
+        return;
     }
+    let inv_len = 1.0 / n2.sqrt();
+    nx *= inv_len;
+    ny *= inv_len;
 
-    if result.normal_x != 0 && vx.abs() > 0.1 {
-        grid.vx[idx] = -vx * bounce;
-    }
+    let vdotn = vx * nx + vy * ny;
+    if vdotn < 0.0 {
+        let restitution = bounce;
+        let tangent_damp = 0.1;
+        let mut out_vn = -restitution * vdotn;
 
-    // If bounce is very small, just stop
-    if bounce < 0.1 {
-        if vy.abs() < 1.0 {
-            grid.vy[idx] = 0.0;
+        if bounce < 0.1 && vdotn.abs() < 1.0 {
+            out_vn = 0.0;
         }
-        if vx.abs() < 1.0 {
-            grid.vx[idx] = 0.0;
-        }
+
+        let tx = -ny;
+        let ty = nx;
+        let vt = vx * tx + vy * ty;
+        let out_vt = vt * (1.0 - tangent_damp);
+
+        vx = out_vn * nx + out_vt * tx;
+        vy = out_vn * ny + out_vt * ty;
     }
+
+    if vx.abs() < 0.01 {
+        vx = 0.0;
+    }
+    if vy.abs() < 0.01 {
+        vy = 0.0;
+    }
+
+    if !vx.is_finite() {
+        vx = 0.0;
+    }
+    if !vy.is_finite() {
+        vy = 0.0;
+    }
+
+    grid.vx[idx] = vx;
+    grid.vy[idx] = vy;
 }

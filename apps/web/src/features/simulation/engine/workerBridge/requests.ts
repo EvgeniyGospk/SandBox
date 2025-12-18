@@ -1,18 +1,44 @@
-import type { ElementType } from '../api/types'
+import { debugWarn } from '@/platform/logging/log'
+
+export type RequestTimeoutKind = 'pipette' | 'snapshot'
+
+export type RequestTimeouts = {
+  pipetteMs: number
+  snapshotMs: number
+}
+
+export const DEFAULT_REQUEST_TIMEOUTS: RequestTimeouts = {
+  pipetteMs: 1_000,
+  snapshotMs: 5_000,
+}
 
 export type RequestState = {
-  pipetteResolvers: Map<number, (el: ElementType | null) => void>
+  pipetteResolvers: Map<number, (elementId: number | null) => void>
   snapshotResolvers: Map<number, (data: ArrayBuffer | null) => void>
   requestTimeouts: Map<number, ReturnType<typeof setTimeout>>
   requestId: number
+
+  timeouts: RequestTimeouts
+  onTimeout: ((args: { kind: RequestTimeoutKind; id: number; timeoutMs: number }) => void) | null
 }
 
-export function createRequestState(): RequestState {
+export function createRequestState(args?: {
+  timeouts?: Partial<RequestTimeouts>
+  onTimeout?: (args: { kind: RequestTimeoutKind; id: number; timeoutMs: number }) => void
+}): RequestState {
+  const timeouts: RequestTimeouts = {
+    ...DEFAULT_REQUEST_TIMEOUTS,
+    ...(args?.timeouts ?? {}),
+  }
+
   return {
     pipetteResolvers: new Map(),
     snapshotResolvers: new Map(),
     requestTimeouts: new Map(),
     requestId: 1,
+
+    timeouts,
+    onTimeout: args?.onTimeout ?? null,
   }
 }
 
@@ -36,6 +62,8 @@ export function resolveAllPendingRequests(state: RequestState): void {
     resolver(null)
   }
   state.snapshotResolvers.clear()
+
+  state.requestTimeouts.clear()
 }
 
 function nextRequestId(state: RequestState): number {
@@ -44,11 +72,11 @@ function nextRequestId(state: RequestState): number {
   return id
 }
 
-export function handlePipetteResult(state: RequestState, id: number, element: ElementType | null): void {
+export function handlePipetteResult(state: RequestState, id: number, elementId: number | null): void {
   const resolver = state.pipetteResolvers.get(id)
   if (resolver) {
     clearRequestTimeout(state, id)
-    resolver(element)
+    resolver(elementId)
     state.pipetteResolvers.delete(id)
   }
 }
@@ -62,17 +90,19 @@ export function handleSnapshotResult(state: RequestState, id: number, buffer: Ar
   }
 }
 
-export function requestPipette(state: RequestState, worker: Worker, x: number, y: number): Promise<ElementType | null> {
+export function requestPipette(state: RequestState, worker: Worker, x: number, y: number): Promise<number | null> {
   const id = nextRequestId(state)
   return new Promise((resolve) => {
     state.pipetteResolvers.set(id, resolve)
-    const timeoutMs = 1_000
+    const timeoutMs = state.timeouts.pipetteMs
     state.requestTimeouts.set(
       id,
       setTimeout(() => {
         if (!state.pipetteResolvers.has(id)) return
         state.pipetteResolvers.delete(id)
         state.requestTimeouts.delete(id)
+        debugWarn('WorkerBridge request timed out', { kind: 'pipette', id, timeoutMs })
+        state.onTimeout?.({ kind: 'pipette', id, timeoutMs })
         resolve(null)
       }, timeoutMs)
     )
@@ -89,13 +119,15 @@ export function requestSnapshot(state: RequestState, worker: Worker): Promise<Ar
   const id = nextRequestId(state)
   return new Promise((resolve) => {
     state.snapshotResolvers.set(id, resolve)
-    const timeoutMs = 5_000
+    const timeoutMs = state.timeouts.snapshotMs
     state.requestTimeouts.set(
       id,
       setTimeout(() => {
         if (!state.snapshotResolvers.has(id)) return
         state.snapshotResolvers.delete(id)
         state.requestTimeouts.delete(id)
+        debugWarn('WorkerBridge request timed out', { kind: 'snapshot', id, timeoutMs })
+        state.onTimeout?.({ kind: 'snapshot', id, timeoutMs })
         resolve(null)
       }, timeoutMs)
     )

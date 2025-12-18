@@ -1,4 +1,4 @@
-use crate::elements::{get_color_with_variation, ElementId, EL_EMPTY, ELEMENT_DATA};
+use crate::elements::{ElementId, EL_EMPTY};
 use crate::reactions::Reaction;
 
 use super::WorldCore;
@@ -31,7 +31,7 @@ pub(super) fn process_reactions(world: &mut WorldCore, x: u32, y: u32, element: 
     }
 
     // Phase 1: O(1) reaction lookup from LUT
-    if let Some(reaction) = world.reactions.get(element, neighbor_type) {
+    if let Some(reaction) = world.content.reaction(element, neighbor_type) {
         // Roll the dice (chance is 0-255 in new system)
         let roll = (super::xorshift32(&mut world.rng_state) & 0xFF) as u8;
         if roll >= reaction.chance {
@@ -90,7 +90,16 @@ pub(super) fn apply_reaction(
 
 pub(super) fn replace_particle(world: &mut WorldCore, x: u32, y: u32, element: ElementId) {
     let seed = ((x * 7 + y * 13 + world.frame as u32) & 31) as u8;
-    let props = &ELEMENT_DATA[element as usize];
+
+    let Some(props) = world.content.props(element) else {
+        world.remove_particle(x, y);
+        return;
+    };
+
+    let color = world
+        .content
+        .color_with_variation(element, seed)
+        .unwrap_or(props.color);
 
     // Save current temperature BEFORE replacing
     let current_temp = world.grid.get_temp(x as i32, y as i32);
@@ -99,7 +108,7 @@ pub(super) fn replace_particle(world: &mut WorldCore, x: u32, y: u32, element: E
         x,
         y,
         element,
-        get_color_with_variation(element, seed),
+        color,
         props.lifetime,
         current_temp,
     );

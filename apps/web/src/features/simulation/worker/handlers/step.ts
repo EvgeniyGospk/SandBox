@@ -1,8 +1,9 @@
-import { state } from '../state'
 import { updateMemoryViews } from '../memory'
+import type { WorkerContext } from '../context'
 
-export function handleStep(): void {
-  if (!state.engine) return
-  state.engine.step()
-  updateMemoryViews()
+export function handleStep(ctx: WorkerContext): void {
+  const state = ctx.state
+  if (!state.wasm.engine) return
+  state.wasm.engine.step()
+  updateMemoryViews(ctx)
 }

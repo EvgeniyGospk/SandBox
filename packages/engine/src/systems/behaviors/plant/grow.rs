@@ -1,7 +1,4 @@
 use super::super::{UpdateContext, gravity_dir, perp_dirs, xorshift32};
-use crate::elements::{
-    ELEMENT_DATA,
-};
 
 use super::transform::transform_to_plant;
 use super::water::find_water;
@@ -92,5 +89,5 @@ pub(super) fn process_plant(ctx: &mut UpdateContext) {
     }
 
     // Keep legacy reference so `ELEMENT_DATA` is used (avoids unused import in some cfgs)
-    let _ = ELEMENT_DATA.len();
+    let _ = ctx.content.element_count();
 }

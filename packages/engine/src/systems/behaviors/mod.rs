@@ -25,10 +25,12 @@ pub use common::{get_random_dir, gravity_dir, perp_dirs, xorshift32};
 
 use crate::grid::Grid;
 use crate::chunks::ChunkGrid;
+use crate::domain::content::ContentRegistry;
 use crate::elements::{CategoryId, ElementId, EL_EMPTY, CAT_POWDER, CAT_LIQUID, CAT_GAS, CAT_ENERGY, CAT_UTILITY, CAT_BIO};
 
 /// Update context passed to behaviors (mirrors TypeScript UpdateContext)
 pub struct UpdateContext<'a> {
+    pub content: &'a ContentRegistry,
     pub grid: &'a mut Grid,
     pub chunks: &'a mut ChunkGrid,
     pub world_particle_count: &'a mut u32,

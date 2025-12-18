@@ -37,6 +37,15 @@
     { "id": 6, "name": "bio",     "rustName": "CAT_BIO" }
   ],
   
+  "uiCategories": [
+    { "key": "solids", "label": "Solids", "sort": 0 },
+    { "key": "liquids", "label": "Liquids", "sort": 1 },
+    { "key": "gases", "label": "Gases", "sort": 2 },
+    { "key": "energy", "label": "Energy", "sort": 3 },
+    { "key": "utility", "label": "Utility", "sort": 4 },
+    { "key": "bio", "label": "Nature", "sort": 5 }
+  ],
+  
   "elements": [
     {
       "id": 0,
@@ -51,7 +60,8 @@
       "heatConductivity": 5,
       "flammable": false,
       "conductive": false,
-      "hidden": true
+      "hidden": true,
+      "ui": { "category": "utility", "displayName": "Empty", "description": "", "sort": 0, "hidden": true }
     },
     {
       "id": 1,
@@ -66,7 +76,8 @@
       "heatConductivity": 10,
       "flammable": false,
       "conductive": false,
-      "phaseChange": { "high": { "temp": 900.0, "to": "lava" } }
+      "phaseChange": { "high": { "temp": 900.0, "to": "lava" } },
+      "ui": { "category": "solids", "displayName": "Stone", "description": "Heavy solid, melts at high temperature", "sort": 0 }
     },
     {
       "id": 2,
@@ -81,7 +92,8 @@
       "heatConductivity": 15,
       "flammable": false,
       "conductive": false,
-      "phaseChange": { "high": { "temp": 1700.0, "to": "lava" } }
+      "phaseChange": { "high": { "temp": 1700.0, "to": "lava" } },
+      "ui": { "category": "solids", "displayName": "Sand", "description": "Falls and piles up, melts into glass", "sort": 1 }
     },
     {
       "id": 3,
@@ -95,7 +107,8 @@
       "defaultTemp": 20.0,
       "heatConductivity": 5,
       "flammable": true,
-      "conductive": false
+      "conductive": false,
+      "ui": { "category": "solids", "displayName": "Wood", "description": "Flammable solid", "sort": 2 }
     },
     {
       "id": 4,
@@ -110,7 +123,8 @@
       "heatConductivity": 90,
       "flammable": false,
       "conductive": true,
-      "phaseChange": { "high": { "temp": 1500.0, "to": "lava" } }
+      "phaseChange": { "high": { "temp": 1500.0, "to": "lava" } },
+      "ui": { "category": "solids", "displayName": "Metal", "description": "Conducts heat and electricity", "sort": 3 }
     },
     {
       "id": 5,
@@ -125,7 +139,9 @@
       "heatConductivity": 20,
       "flammable": false,
       "conductive": false,
-      "phaseChange": { "high": { "temp": 0.0, "to": "water" } }
+      "cold": true,
+      "phaseChange": { "high": { "temp": 0.0, "to": "water" } },
+      "ui": { "category": "solids", "displayName": "Ice", "description": "Melts from fire/lava, floats on water", "sort": 4 }
     },
     {
       "id": 6,
@@ -143,7 +159,8 @@
       "phaseChange": {
         "high": { "temp": 100.0, "to": "steam" },
         "low": { "temp": 0.0, "to": "ice" }
-      }
+      },
+      "ui": { "category": "liquids", "displayName": "Water", "description": "Flows, evaporates, extinguishes fire", "sort": 0 }
     },
     {
       "id": 7,
@@ -157,7 +174,8 @@
       "defaultTemp": 20.0,
       "heatConductivity": 15,
       "flammable": true,
-      "conductive": false
+      "conductive": false,
+      "ui": { "category": "liquids", "displayName": "Oil", "description": "Flammable liquid, floats on water", "sort": 1 }
     },
     {
       "id": 8,
@@ -172,7 +190,9 @@
       "heatConductivity": 30,
       "flammable": false,
       "conductive": false,
-      "phaseChange": { "low": { "temp": 700.0, "to": "stone" } }
+      "hot": true,
+      "phaseChange": { "low": { "temp": 700.0, "to": "stone" } },
+      "ui": { "category": "liquids", "displayName": "Lava", "description": "Hot liquid, ignites flammables", "sort": 2 }
     },
     {
       "id": 9,
@@ -186,7 +206,9 @@
       "defaultTemp": 20.0,
       "heatConductivity": 35,
       "flammable": false,
-      "conductive": true
+      "conductive": true,
+      "corrosive": true,
+      "ui": { "category": "liquids", "displayName": "Acid", "description": "Dissolves stone, metal, wood (1:1)", "sort": 3 }
     },
     {
       "id": 10,
@@ -201,21 +223,23 @@
       "heatConductivity": 10,
       "flammable": false,
       "conductive": false,
-      "phaseChange": { "low": { "temp": 90.0, "to": "water" } }
+      "phaseChange": { "low": { "temp": 90.0, "to": "water" } },
+      "ui": { "category": "gases", "displayName": "Steam", "description": "Rises up, condenses into water", "sort": 0 }
     },
     {
       "id": 11,
       "name": "smoke",
       "rustName": "EL_SMOKE",
       "category": "gas",
-      "color": "0xC83F3F3F",
+      "color": "0xC82F2F2F",
       "density": 1.1,
       "dispersion": 4,
       "lifetime": 0,
       "defaultTemp": 50.0,
       "heatConductivity": 5,
       "flammable": false,
-      "conductive": false
+      "conductive": false,
+      "ui": { "category": "gases", "displayName": "Smoke", "description": "Rises and dissipates", "sort": 1 }
     },
     {
       "id": 12,
@@ -229,7 +253,10 @@
       "defaultTemp": 800.0,
       "heatConductivity": 50,
       "flammable": false,
-      "conductive": false
+      "conductive": false,
+      "hot": true,
+      "behaviorKind": "energy_fire",
+      "ui": { "category": "energy", "displayName": "Fire", "description": "Burns flammables, extinguished by water", "sort": 0 }
     },
     {
       "id": 13,
@@ -243,7 +270,9 @@
       "defaultTemp": 500.0,
       "heatConductivity": 50,
       "flammable": false,
-      "conductive": false
+      "conductive": false,
+      "behaviorKind": "energy_spark",
+      "ui": { "category": "energy", "displayName": "Spark", "description": "Brief ignition source", "sort": 1 }
     },
     {
       "id": 14,
@@ -257,7 +286,9 @@
       "defaultTemp": 200.0,
       "heatConductivity": 80,
       "flammable": false,
-      "conductive": false
+      "conductive": false,
+      "behaviorKind": "energy_electricity",
+      "ui": { "category": "energy", "displayName": "Electric", "description": "Flows through conductors", "sort": 2 }
     },
     {
       "id": 15,
@@ -271,7 +302,8 @@
       "defaultTemp": 20.0,
       "heatConductivity": 10,
       "flammable": true,
-      "conductive": false
+      "conductive": false,
+      "ui": { "category": "solids", "displayName": "Gunpowder", "description": "Explosive! Ignites instantly from fire", "sort": 5 }
     },
     {
       "id": 16,
@@ -285,7 +317,10 @@
       "defaultTemp": 20.0,
       "heatConductivity": 0,
       "flammable": false,
-      "conductive": false
+      "conductive": false,
+      "ignoreGravity": true,
+      "behaviorKind": "utility_clone",
+      "ui": { "category": "utility", "displayName": "Clone", "description": "Duplicates touching particles", "sort": 0 }
     },
     {
       "id": 17,
@@ -299,7 +334,10 @@
       "defaultTemp": 20.0,
       "heatConductivity": 0,
       "flammable": false,
-      "conductive": false
+      "conductive": false,
+      "ignoreGravity": true,
+      "behaviorKind": "utility_void",
+      "ui": { "category": "utility", "displayName": "Void", "description": "Destroys all particles", "sort": 1 }
     },
     {
       "id": 18,
@@ -313,7 +351,8 @@
       "defaultTemp": 20.0,
       "heatConductivity": 10,
       "flammable": false,
-      "conductive": false
+      "conductive": false,
+      "ui": { "category": "bio", "displayName": "Dirt", "description": "Fertile soil for plants", "sort": 0 }
     },
     {
       "id": 19,
@@ -327,7 +366,9 @@
       "defaultTemp": 20.0,
       "heatConductivity": 5,
       "flammable": true,
-      "conductive": false
+      "conductive": false,
+      "behaviorKind": "bio_seed",
+      "ui": { "category": "bio", "displayName": "Seed", "description": "Plant on wet dirt to grow!", "sort": 1 }
     },
     {
       "id": 20,
@@ -341,7 +382,9 @@
       "defaultTemp": 20.0,
       "heatConductivity": 10,
       "flammable": true,
-      "conductive": false
+      "conductive": false,
+      "behaviorKind": "bio_plant",
+      "ui": { "category": "bio", "displayName": "Plant", "description": "Grows with water, burns easily", "sort": 2 }
     }
   ]
 }

@@ -1,5 +1,3 @@
-import type { ElementType } from '../../api/types'
-
 import { postSpawnRigidBody } from '../bridge'
 
 export function spawnRigidBody(args: {
@@ -8,13 +6,13 @@ export function spawnRigidBody(args: {
   y: number
   size: number
   shape: 'box' | 'circle'
-  element: ElementType
+  elementId: number
 }): void {
   postSpawnRigidBody(args.worker, {
     x: args.x,
     y: args.y,
     size: args.size,
     shape: args.shape,
-    element: args.element,
+    elementId: args.elementId,
   })
 }

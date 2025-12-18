@@ -1,5 +1,5 @@
 import type { Element } from '@/features/simulation/domain/elements'
-import type { ElementType } from '@/features/simulation/engine'
+import type { ElementId } from '@/features/simulation/engine/api/types'
 import type { ToolType } from '@/features/tools/model/toolTypes'
 
 import { CategoryTabs } from './CategoryTabs'
@@ -12,18 +12,18 @@ export function ElementsPanel(args: {
   onSelectCategory: (key: string) => void
 
   elementsInCategory: ReadonlyArray<Element>
-  selectedElement: ElementType
+  selectedElementId: ElementId
   selectedTool: ToolType
-  onSelectElement: (id: ElementType) => void
+  onSelectElementId: (id: ElementId) => void
 }) {
   const {
     categories,
     activeCategory,
     onSelectCategory,
     elementsInCategory,
-    selectedElement,
+    selectedElementId,
     selectedTool,
-    onSelectElement,
+    onSelectElementId,
   } = args
 
   return (
@@ -36,8 +36,8 @@ export function ElementsPanel(args: {
           <ElementButton
             key={element.id}
             element={element}
-            isSelected={selectedElement === element.id && selectedTool !== 'rigid_body'}
-            onClick={() => onSelectElement(element.id)}
+            isSelected={selectedElementId === element.id && selectedTool !== 'rigid_body'}
+            onClick={() => onSelectElementId(element.id)}
           />
         )}
       />

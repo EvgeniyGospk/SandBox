@@ -1,0 +1,35 @@
+{
+  "kind": "element",
+  "id": 1,
+  "key": "stone",
+  "category": "solid",
+  "color": "0xFF808080",
+  "density": 2500,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 10,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": {
+    "high": {
+      "temp": 900,
+      "to": "lava"
+    }
+  },
+  "hidden": false,
+  "ui": {
+    "category": "solids",
+    "displayName": "Stone",
+    "description": "Heavy solid, melts at high temperature",
+    "sort": 0
+  }
+}

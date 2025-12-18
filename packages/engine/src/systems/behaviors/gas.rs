@@ -12,7 +12,7 @@ mod r#move;
 mod scan;
 
 use super::{Behavior, UpdateContext, get_random_dir, xorshift32, gravity_dir, perp_dirs};
-use crate::elements::{ELEMENT_DATA, EL_EMPTY};
+use crate::elements::EL_EMPTY;
 
 pub struct GasBehavior;
 
@@ -32,9 +32,10 @@ impl Behavior for GasBehavior {
         // SAFETY: x,y come from update_particle_chunked which guarantees valid coords
         let element = unsafe { ctx.grid.get_type_unchecked(x, y) };
         if element == EL_EMPTY { return; }
-        if (element as usize) >= ELEMENT_DATA.len() { return; }
-        
-        let props = &ELEMENT_DATA[element as usize];
+
+        let Some(props) = ctx.content.props(element) else {
+            return;
+        };
         let density = props.density;
         // Match TypeScript: props.dispersion || 5 (fallback to 5 if 0)
         let range = if props.dispersion > 0 { props.dispersion as i32 } else { 5 };

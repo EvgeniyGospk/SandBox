@@ -67,5 +67,5 @@ export function useViewportResize(args: {
     handleResize()
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
-  }, [worldSizePreset])
+  }, [worldSizePreset, bridgeRef, canvasRef, canvasTransferredRef, containerRef, engineRef, viewportSizeRef])
 }

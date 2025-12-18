@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "lava_oil",
+  "aggressor": "lava",
+  "victim": "oil",
+  "resultAggressor": null,
+  "resultVictim": "fire",
+  "chance": 0.4,
+  "spawn": "smoke",
+  "comment": "Lava ignites oil"
+}

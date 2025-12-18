@@ -11,11 +11,14 @@
 //! Temperature system is in temperature.rs
 //! Chunk optimization in chunks.rs
 
+use std::sync::Arc;
+
 use crate::grid::Grid;
 use crate::chunks::{ChunkGrid, CHUNK_SIZE, MergedDirtyRects};
+use crate::domain::content::ContentRegistry;
 use crate::elements::ElementId;
 use crate::behaviors::BehaviorRegistry;
-use crate::reactions::{Reaction, ReactionSystem};
+use crate::reactions::Reaction;
 use crate::rigid_body_system::RigidBodySystem;
 
 #[path = "perf/perf_timer.rs"]
@@ -61,12 +64,40 @@ fn xorshift32(state: &mut u32) -> u32 {
     random::xorshift32(state)
 }
 
+pub(crate) struct AbiLayoutData {
+    pub(crate) types_ptr: *const u8,
+    pub(crate) types_len_elements: usize,
+    pub(crate) types_len_bytes: usize,
+    pub(crate) colors_ptr: *const u32,
+    pub(crate) colors_len_elements: usize,
+    pub(crate) colors_len_bytes: usize,
+    pub(crate) temperature_ptr: *const f32,
+    pub(crate) temperature_len_elements: usize,
+    pub(crate) temperature_len_bytes: usize,
+    pub(crate) chunk_transfer_ptr: *const u32,
+    pub(crate) chunk_transfer_len_elements: usize,
+    pub(crate) chunk_transfer_len_bytes: usize,
+    pub(crate) dirty_list_ptr: *const u32,
+    pub(crate) dirty_list_len_elements: usize,
+    pub(crate) dirty_list_len_bytes: usize,
+    pub(crate) rect_transfer_ptr: *const u32,
+    pub(crate) rect_transfer_len_elements: usize,
+    pub(crate) rect_transfer_len_bytes: usize,
+}
+
+struct RenderBuffers {
+    dirty_list: Vec<u32>,
+    chunk_transfer_buffer: Vec<u32>,
+    merged_rects: MergedDirtyRects,
+    rect_transfer_buffer: Vec<u32>,
+}
+
 /// The simulation world
 pub struct WorldCore {
+    content: Arc<ContentRegistry>,
     grid: Grid,
     chunks: ChunkGrid,
     behaviors: BehaviorRegistry,
-    reactions: ReactionSystem,  // Phase 1: Data-driven O(1) reaction lookup
     rigid_bodies: RigidBodySystem,  // Rigid body physics system
     
     // Settings
@@ -78,14 +109,8 @@ pub struct WorldCore {
     particle_count: u32,
     frame: u64,
     rng_state: u32,
-    
-    // Phase 3: Smart Rendering buffers
-    dirty_list: Vec<u32>,           // List of dirty chunk indices for rendering
-    chunk_transfer_buffer: Vec<u32>, // 32x32 pixel buffer for chunk extraction
-    
-    // Phase 2: Merged dirty rectangles for GPU batching
-    merged_rects: MergedDirtyRects,
-    rect_transfer_buffer: Vec<u32>, // Reused buffer for merged-rect extraction (resized on demand)
+
+    render: RenderBuffers,
 
     // Perf metrics
     perf_enabled: bool,
@@ -97,6 +122,21 @@ impl WorldCore {
     /// Create a new world with given dimensions
     pub fn new(width: u32, height: u32) -> Self {
         init::create_world_core(width, height)
+    }
+
+    pub fn new_with_move_buffer_capacity(width: u32, height: u32, move_buffer_capacity: usize) -> Self {
+        init::create_world_core_with_move_buffer_capacity(width, height, move_buffer_capacity)
+    }
+
+    pub fn load_content_bundle_json(&mut self, json: &str) -> Result<(), String> {
+        let registry = ContentRegistry::from_bundle_json(json)?;
+        self.content = Arc::new(registry);
+        self.clear();
+        Ok(())
+    }
+
+    pub fn get_content_manifest_json(&self) -> String {
+        self.content.manifest_json()
     }
 
     pub fn width(&self) -> u32 { self.grid.width() }
@@ -128,6 +168,10 @@ impl WorldCore {
     /// DEBUG: Get current ambient temperature
     pub fn get_ambient_temperature(&self) -> f32 {
         settings::get_ambient_temperature(self)
+    }
+
+    pub fn set_chunk_sleeping_enabled(&mut self, enabled: bool) {
+        settings::set_chunk_sleeping_enabled(self, enabled);
     }
 
     /// Add a particle at position
@@ -241,7 +285,31 @@ impl WorldCore {
 
     /// Get grid size for colors
     pub fn colors_len(&self) -> usize {
-        self.grid.size() * 4
+        self.colors_len_elements()
+    }
+
+    pub fn colors_len_elements(&self) -> usize {
+        self.grid.size()
+    }
+
+    pub fn colors_len_bytes(&self) -> usize {
+        self.grid.size() * std::mem::size_of::<u32>()
+    }
+
+    pub fn colors_elements_len(&self) -> usize {
+        self.colors_len_elements()
+    }
+
+    pub fn types_byte_len(&self) -> usize {
+        self.grid.size()
+    }
+
+    pub fn colors_byte_len(&self) -> usize {
+        self.colors_len_bytes()
+    }
+
+    pub fn temperature_byte_len(&self) -> usize {
+        self.grid.size() * std::mem::size_of::<f32>()
     }
     
     /// Get pointer to temperature array (for JS thermal rendering)
@@ -252,6 +320,18 @@ impl WorldCore {
     /// Get temperature array length
     pub fn temperature_len(&self) -> usize {
         self.grid.size()
+    }
+
+    pub fn move_buffer_capacity(&self) -> usize {
+        self.grid.pending_moves.capacity()
+    }
+
+    pub fn move_buffer_count(&self) -> usize {
+        self.grid.pending_moves.count
+    }
+
+    pub fn move_buffer_overflow_count(&self) -> usize {
+        self.grid.pending_moves.overflow_count()
     }
     
     // === PHASE 3: SMART RENDERING API ===
@@ -264,7 +344,39 @@ impl WorldCore {
     
     /// Get pointer to dirty chunk list
     pub fn get_dirty_list_ptr(&self) -> *const u32 {
-        self.dirty_list.as_ptr()
+        self.render.dirty_list.as_ptr()
+    }
+
+    pub(crate) fn dirty_list_len_elements(&self) -> usize {
+        self.render.dirty_list.len()
+    }
+
+    pub(crate) fn dirty_list_len_bytes(&self) -> usize {
+        self.render.dirty_list.len() * std::mem::size_of::<u32>()
+    }
+
+    pub(crate) fn chunk_transfer_ptr(&self) -> *const u32 {
+        self.render.chunk_transfer_buffer.as_ptr()
+    }
+
+    pub(crate) fn chunk_transfer_len_elements(&self) -> usize {
+        self.render.chunk_transfer_buffer.len()
+    }
+
+    pub(crate) fn chunk_transfer_len_bytes(&self) -> usize {
+        self.render.chunk_transfer_buffer.len() * std::mem::size_of::<u32>()
+    }
+
+    pub(crate) fn rect_transfer_ptr(&self) -> *const u32 {
+        self.render.rect_transfer_buffer.as_ptr()
+    }
+
+    pub(crate) fn rect_transfer_len_elements(&self) -> usize {
+        self.render.rect_transfer_buffer.len()
+    }
+
+    pub(crate) fn rect_transfer_len_bytes(&self) -> usize {
+        self.render.rect_transfer_buffer.len() * std::mem::size_of::<u32>()
     }
     
     /// Extract pixels from a chunk into transfer buffer (strided -> linear)
@@ -334,6 +446,29 @@ impl WorldCore {
     /// Get the size of the rect transfer buffer in bytes
     pub fn rect_buffer_size(&self) -> usize {
         render_extract::rect_buffer_size(self)
+    }
+
+    pub(crate) fn abi_layout_data(&self) -> AbiLayoutData {
+        AbiLayoutData {
+            types_ptr: self.types_ptr(),
+            types_len_elements: self.types_len(),
+            types_len_bytes: self.types_byte_len(),
+            colors_ptr: self.colors_ptr(),
+            colors_len_elements: self.colors_len_elements(),
+            colors_len_bytes: self.colors_len_bytes(),
+            temperature_ptr: self.temperature_ptr(),
+            temperature_len_elements: self.temperature_len(),
+            temperature_len_bytes: self.temperature_byte_len(),
+            chunk_transfer_ptr: self.chunk_transfer_ptr(),
+            chunk_transfer_len_elements: self.chunk_transfer_len_elements(),
+            chunk_transfer_len_bytes: self.chunk_transfer_len_bytes(),
+            dirty_list_ptr: self.get_dirty_list_ptr(),
+            dirty_list_len_elements: self.dirty_list_len_elements(),
+            dirty_list_len_bytes: self.dirty_list_len_bytes(),
+            rect_transfer_ptr: self.rect_transfer_ptr(),
+            rect_transfer_len_elements: self.rect_transfer_len_elements(),
+            rect_transfer_len_bytes: self.rect_transfer_len_bytes(),
+        }
     }
 }
 

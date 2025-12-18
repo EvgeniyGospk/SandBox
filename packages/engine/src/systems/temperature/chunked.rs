@@ -1,9 +1,9 @@
 use crate::chunks::{ChunkGrid, CHUNK_SIZE};
-use crate::elements::{ELEMENT_DATA, EL_EMPTY, ELEMENT_COUNT};
+use crate::domain::content::ContentRegistry;
+use crate::elements::EL_EMPTY;
 use crate::grid::Grid;
 
 use super::legacy_air::update_air_temperature_legacy;
-use super::phase_changes::check_phase_change;
 use super::rng::xorshift32;
 use super::transform::transform_particle_with_chunks;
 
@@ -13,6 +13,7 @@ use super::transform::transform_particle_with_chunks;
 /// - Active chunks: Per-pixel processing for smoother thermodynamics
 ///   (each air cell samples a random neighbor for realistic heat diffusion)
 pub fn process_temperature_grid_chunked(
+    content: &ContentRegistry,
     grid: &mut Grid,
     chunks: &mut ChunkGrid,  // Now mutable for virtual_temp updates!
     ambient_temp: f32,
@@ -52,7 +53,7 @@ pub fn process_temperature_grid_chunked(
                             simd_air_cells += 1;
                         } else {
                             // Particle: full heat transfer logic
-                            update_particle_temperature(grid, chunks, x, y, ambient_temp, frame, rng);
+                            update_particle_temperature(content, grid, chunks, x, y, ambient_temp, frame, rng);
                             processed_non_empty += 1;
                         }
                     }
@@ -73,6 +74,7 @@ pub fn process_temperature_grid_chunked(
 /// Update temperature for a single NON-EMPTY cell (particle)
 /// PHASE 1 OPT: Separate function for particles only (air handled by SIMD batch)
 fn update_particle_temperature(
+    content: &ContentRegistry,
     grid: &mut Grid,
     chunks: &mut ChunkGrid,
     x: u32,
@@ -91,11 +93,11 @@ fn update_particle_temperature(
     if element == EL_EMPTY { return; }
 
     // Get conductivity
-    let conductivity = if (element as usize) < ELEMENT_COUNT {
-        ELEMENT_DATA[element as usize].heat_conductivity
-    } else {
-        return; // Invalid element
+    let Some(props) = content.props(element) else {
+        return;
     };
+
+    let conductivity = props.heat_conductivity;
 
     // Skip if insulator (conductivity 0)
     if conductivity == 0 { return; }
@@ -103,8 +105,8 @@ fn update_particle_temperature(
     // BUG FIX: Check phase changes FIRST using CURRENT temperature
     // This ensures frozen water turns to ice even if at thermal equilibrium
     // (when diff < 0.5 would cause early return before old phase check)
-    if let Some(new_element) = check_phase_change(element, my_temp) {
-        transform_particle_with_chunks(grid, chunks, x, y, new_element, my_temp, frame);
+    if let Some(new_element) = content.check_phase_change(element, my_temp) {
+        transform_particle_with_chunks(content, grid, chunks, x, y, new_element, my_temp, frame);
         return; // Already transformed, no need for heat transfer
     }
 
@@ -141,7 +143,7 @@ fn update_particle_temperature(
     grid.set_temp(nx as u32, ny as u32, neighbor_temp - diff * transfer_rate);
 
     // Check phase changes for particles
-    if let Some(new_element) = check_phase_change(element, new_temp) {
-        transform_particle_with_chunks(grid, chunks, x, y, new_element, new_temp, frame);
+    if let Some(new_element) = content.check_phase_change(element, new_temp) {
+        transform_particle_with_chunks(content, grid, chunks, x, y, new_element, new_temp, frame);
     }
 }

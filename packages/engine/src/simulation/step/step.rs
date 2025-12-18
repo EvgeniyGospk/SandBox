@@ -55,12 +55,12 @@ pub(super) fn step(world: &mut WorldCore) {
         let t0 = PerfTimer::start();
         world
             .rigid_bodies
-            .update(&mut world.grid, &mut world.chunks, world.gravity_x, world.gravity_y);
+            .update(&world.content, &mut world.grid, &mut world.chunks, world.gravity_x, world.gravity_y);
         world.perf_stats.rigid_ms = t0.elapsed_ms();
     } else {
         world
             .rigid_bodies
-            .update(&mut world.grid, &mut world.chunks, world.gravity_x, world.gravity_y);
+            .update(&world.content, &mut world.grid, &mut world.chunks, world.gravity_x, world.gravity_y);
     }
 
     // === PHASE 2: PHYSICS PASS ===
@@ -119,9 +119,6 @@ pub(super) fn step(world: &mut WorldCore) {
     // Rebuild chunk particle counts from the authoritative grid to prevent
     // frozen/sleeping chunks and other desync symptoms.
     if world.grid.pending_moves.overflow_count() > 0 {
-        world
-            .chunks
-            .rebuild_particle_counts(world.grid.width(), world.grid.height(), &world.grid.types);
         world.chunks.mark_all_dirty();
     }
 
@@ -132,6 +129,7 @@ pub(super) fn step(world: &mut WorldCore) {
         if perf_on {
             let t0 = PerfTimer::start();
             let (temp_processed, air_processed) = process_temperature_grid_chunked(
+                &world.content,
                 &mut world.grid,
                 &mut world.chunks, // Now mutable for virtual_temp updates
                 world.ambient_temperature,
@@ -143,6 +141,7 @@ pub(super) fn step(world: &mut WorldCore) {
             world.perf_stats.simd_air_cells = air_processed;
         } else {
             process_temperature_grid_chunked(
+                &world.content,
                 &mut world.grid,
                 &mut world.chunks, // Now mutable for virtual_temp updates
                 world.ambient_temperature,

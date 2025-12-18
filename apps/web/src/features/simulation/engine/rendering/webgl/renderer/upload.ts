@@ -2,7 +2,7 @@ import { logError } from '@/platform/logging/log'
 
 import { uploadDirtyChunk } from '../upload/dirtyChunksUpload'
 import { uploadFullTexture } from '../upload/fullUpload'
-import { uploadMergedRectsBatch } from '../upload/mergedRectsUpload'
+import { uploadMergedRectsBatch, type UploadRect } from '../upload/mergedRectsUpload'
 import {
   computeClampedRectArea,
   getChunkUploadRect,
@@ -15,7 +15,7 @@ type WasmWorld = import('@particula/engine-wasm/particula_engine').World
 
 export function uploadFull(args: {
   gl: WebGL2RenderingContext
-  memoryView: Uint8Array
+  memory: WebAssembly.Memory
   engine: WasmWorld
   worldWidth: number
   worldHeight: number
@@ -29,7 +29,7 @@ export function uploadFull(args: {
 }): { pboIndex: number } {
   const {
     gl,
-    memoryView,
+    memory,
     engine,
     worldWidth,
     worldHeight,
@@ -40,7 +40,13 @@ export function uploadFull(args: {
     immediate = false,
   } = args
 
+  // Defensive: ensure no PBO is bound when doing CPU-backed uploads.
+  // (uploadFullTexture also does this for the non-PBO path, but keeping it here
+  // prevents state leaks from earlier GL code.)
+  gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null)
+
   const colorsPtr = engine.colors_ptr()
+  const memoryView = new Uint8Array(memory.buffer)
   const res = uploadFullTexture({
     gl,
     memoryView,
@@ -59,7 +65,6 @@ export function uploadFull(args: {
 
 export function uploadDirtyChunks(args: {
   gl: WebGL2RenderingContext
-  memoryView: Uint8Array
   engine: WasmWorld
   memory: WebAssembly.Memory
 
@@ -76,7 +81,6 @@ export function uploadDirtyChunks(args: {
 }): { forceFullUpload: boolean; pboIndex: number } {
   const {
     gl,
-    memoryView,
     engine,
     memory,
     worldWidth,
@@ -94,7 +98,7 @@ export function uploadDirtyChunks(args: {
   if (forceFullUpload) {
     const res = uploadFull({
       gl,
-      memoryView,
+      memory,
       engine,
       worldWidth,
       worldHeight,
@@ -120,7 +124,7 @@ export function uploadDirtyChunks(args: {
   if (shouldFullUploadForDirtyChunks({ dirtyCount, totalChunks, hasEdgeChunks: hasEdge })) {
     const res = uploadFull({
       gl,
-      memoryView,
+      memory,
       engine,
       worldWidth,
       worldHeight,
@@ -134,30 +138,48 @@ export function uploadDirtyChunks(args: {
   }
 
   const dirtyListPtr = engine.get_dirty_list_ptr()
+  const colorsPtr = engine.colors_ptr()
+
+  // Create views AFTER any WASM calls that might grow memory.
+  const memoryView = new Uint8Array(memory.buffer)
   const dirtyList = new Uint32Array(memory.buffer, dirtyListPtr, dirtyCount)
 
-  for (let i = 0; i < dirtyCount; i++) {
-    const chunkIdx = dirtyList[i]
+  // Upload dirty chunk rects directly from the full world color buffer.
+  gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null)
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, worldWidth)
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0)
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0)
 
-    const rect = getChunkUploadRect({
-      chunkIdx,
-      chunksX,
-      chunkSize,
-      worldWidth,
-      worldHeight,
-    })
-    if (!rect) continue
+  try {
+    for (let i = 0; i < dirtyCount; i++) {
+      const chunkIdx = dirtyList[i]
 
-    uploadDirtyChunk({
-      gl,
-      memoryView,
-      engine,
-      chunkIdx,
-      xOffset: rect.xOffset,
-      yOffset: rect.yOffset,
-      uploadW: rect.uploadW,
-      uploadH: rect.uploadH,
-    })
+      const rect = getChunkUploadRect({
+        chunkIdx,
+        chunksX,
+        chunkSize,
+        worldWidth,
+        worldHeight,
+      })
+      if (!rect) continue
+
+      uploadDirtyChunk({
+        gl,
+        memoryView,
+        colorsPtr,
+        worldWidth,
+        worldHeight,
+        xOffset: rect.xOffset,
+        yOffset: rect.yOffset,
+        uploadW: rect.uploadW,
+        uploadH: rect.uploadH,
+      })
+    }
+  } finally {
+    // Reset pixel store state for later full uploads (tight packing).
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0)
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0)
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0)
   }
 
   return { forceFullUpload, pboIndex }
@@ -165,8 +187,8 @@ export function uploadDirtyChunks(args: {
 
 export function uploadWithMergedRects(args: {
   gl: WebGL2RenderingContext
-  memoryView: Uint8Array
   engine: WasmWorld
+  memory: WebAssembly.Memory
 
   worldWidth: number
   worldHeight: number
@@ -178,15 +200,15 @@ export function uploadWithMergedRects(args: {
   pbo: [WebGLBuffer | null, WebGLBuffer | null]
   pboIndex: number
 }): { forceFullUpload: boolean; pboIndex: number } {
-  const { gl, memoryView, engine, worldWidth, worldHeight, pboSize, usePBO, pbo } = args
+  const { gl, engine, memory, worldWidth, worldHeight, pboSize, usePBO, pbo } = args
 
-  let { forceFullUpload, pboIndex } = args
+  const { forceFullUpload, pboIndex } = args
 
   const DEBUG_FORCE_FULL = import.meta.env.VITE_FORCE_FULL_UPLOAD === 'true'
   if (DEBUG_FORCE_FULL) {
     const res = uploadFull({
       gl,
-      memoryView,
+      memory,
       engine,
       worldWidth,
       worldHeight,
@@ -201,7 +223,7 @@ export function uploadWithMergedRects(args: {
   if (forceFullUpload) {
     const res = uploadFull({
       gl,
-      memoryView,
+      memory,
       engine,
       worldWidth,
       worldHeight,
@@ -225,7 +247,7 @@ export function uploadWithMergedRects(args: {
   if (shouldFullUploadForMergedRects({ rectCount, totalChunks })) {
     const res = uploadFull({
       gl,
-      memoryView,
+      memory,
       engine,
       worldWidth,
       worldHeight,
@@ -239,6 +261,7 @@ export function uploadWithMergedRects(args: {
 
   const worldPixels = worldWidth * worldHeight
   let coveredPixels = 0
+  const rects: UploadRect[] = []
 
   for (let i = 0; i < rectCount; i++) {
     const x = engine.get_merged_rect_x(i)
@@ -248,12 +271,13 @@ export function uploadWithMergedRects(args: {
 
     const area = computeClampedRectArea({ x, y, w, h, worldWidth, worldHeight })
     if (!area) continue
+    rects.push({ x, y, w: area.w, h: area.h })
 
     coveredPixels += area.area
     if (coveredPixels > worldPixels * 0.5) {
       const res = uploadFull({
         gl,
-        memoryView,
+        memory,
         engine,
         worldWidth,
         worldHeight,
@@ -266,20 +290,25 @@ export function uploadWithMergedRects(args: {
     }
   }
 
+  if (rects.length === 0) return { forceFullUpload, pboIndex }
+
+  const colorsPtr = engine.colors_ptr()
+  const memoryView = new Uint8Array(memory.buffer)
+
   const res = uploadMergedRectsBatch({
     gl,
     memoryView,
-    engine,
-    rectCount,
+    colorsPtr,
     worldWidth,
     worldHeight,
+    rects,
   })
 
   if (!res.ok) {
     logError('uploadWithMergedRects failed, falling back to full upload:', res.error)
     const full = uploadFull({
       gl,
-      memoryView,
+      memory,
       engine,
       worldWidth,
       worldHeight,

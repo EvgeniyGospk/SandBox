@@ -62,6 +62,11 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+#[wasm_bindgen]
+pub fn abi_version() -> u32 {
+    1
+}
+
 // Re-export main types
 pub use api::wasm::World;
 pub use domain::elements::ElementType;

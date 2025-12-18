@@ -1,10 +1,11 @@
-use crate::elements::{EL_EMPTY, ELEMENT_DATA, GRAVITY, AIR_FRICTION, MAX_VELOCITY, CAT_GAS};
+use crate::domain::content::ContentRegistry;
+use crate::elements::{EL_EMPTY, GRAVITY, AIR_FRICTION, MAX_VELOCITY, CAT_GAS};
 use crate::grid::Grid;
 
 /// Apply gravity to a particle's velocity
 /// Gases get INVERTED gravity (they rise instead of fall)
 #[inline(always)]
-pub fn apply_gravity(grid: &mut Grid, x: u32, y: u32, gravity_y: f32) {
+pub fn apply_gravity(content: &ContentRegistry, grid: &mut Grid, x: u32, y: u32, gravity_y: f32) {
     let idx = grid.index(x, y);
     let element = grid.types[idx];
 
@@ -12,7 +13,9 @@ pub fn apply_gravity(grid: &mut Grid, x: u32, y: u32, gravity_y: f32) {
         return;
     }
 
-    let props = &ELEMENT_DATA[element as usize];
+    let Some(props) = content.props(element) else {
+        return;
+    };
 
     // Gases rise (inverted gravity)
     let effective_gravity = if props.category == CAT_GAS {
@@ -31,7 +34,7 @@ pub fn apply_gravity(grid: &mut Grid, x: u32, y: u32, gravity_y: f32) {
 
 /// Apply friction to a particle's velocity
 #[inline(always)]
-pub fn apply_friction(grid: &mut Grid, x: u32, y: u32) {
+pub fn apply_friction(content: &ContentRegistry, grid: &mut Grid, x: u32, y: u32) {
     let idx = grid.index(x, y);
     let element = grid.types[idx];
 
@@ -39,7 +42,9 @@ pub fn apply_friction(grid: &mut Grid, x: u32, y: u32) {
         return;
     }
 
-    let props = &ELEMENT_DATA[element as usize];
+    let Some(props) = content.props(element) else {
+        return;
+    };
 
     let friction = props.friction.clamp(0.0, 1.0);
 

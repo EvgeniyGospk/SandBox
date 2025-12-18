@@ -47,6 +47,25 @@ export const CAT_UTILITY = 5
 export const CAT_BIO = 6
 
 // ============================================================================
+// UI CATEGORY DEFINITIONS
+// ============================================================================
+
+export interface UiCategoryDef {
+  key: string
+  label: string
+  sort: number
+}
+
+export const UI_CATEGORIES: UiCategoryDef[] = [
+  { key: "solids", label: "Solids", sort: 0 },
+  { key: "liquids", label: "Liquids", sort: 1 },
+  { key: "gases", label: "Gases", sort: 2 },
+  { key: "energy", label: "Energy", sort: 3 },
+  { key: "utility", label: "Utility", sort: 4 },
+  { key: "bio", label: "Nature", sort: 5 },
+]
+
+// ============================================================================
 // TYPE DEFINITIONS
 // ============================================================================
 
@@ -161,6 +180,7 @@ export interface ElementProps {
   defaultTemp: number
   heatConductivity: number
   hidden?: boolean
+  ui?: { category: string; displayName: string; description: string; sort: number; hidden?: boolean }
 }
 
 export const ELEMENT_DATA: ElementProps[] = [
@@ -175,6 +195,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 5, hidden: true,
+    ui: { category: "utility", displayName: "Empty", description: "", sort: 0, hidden: true },
   },
   {
     id: EL_STONE,
@@ -187,6 +208,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
+    ui: { category: "solids", displayName: "Stone", description: "Heavy solid, melts at high temperature", sort: 0 },
   },
   {
     id: EL_SAND,
@@ -199,6 +221,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 15,
+    ui: { category: "solids", displayName: "Sand", description: "Falls and piles up, melts into glass", sort: 1 },
   },
   {
     id: EL_WOOD,
@@ -211,6 +234,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 5,
+    ui: { category: "solids", displayName: "Wood", description: "Flammable solid", sort: 2 },
   },
   {
     id: EL_METAL,
@@ -223,6 +247,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 90,
+    ui: { category: "solids", displayName: "Metal", description: "Conducts heat and electricity", sort: 3 },
   },
   {
     id: EL_ICE,
@@ -235,6 +260,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: -10,
     heatConductivity: 20,
+    ui: { category: "solids", displayName: "Ice", description: "Melts from fire/lava, floats on water", sort: 4 },
   },
   {
     id: EL_WATER,
@@ -247,6 +273,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 40,
+    ui: { category: "liquids", displayName: "Water", description: "Flows, evaporates, extinguishes fire", sort: 0 },
   },
   {
     id: EL_OIL,
@@ -259,6 +286,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 15,
+    ui: { category: "liquids", displayName: "Oil", description: "Flammable liquid, floats on water", sort: 1 },
   },
   {
     id: EL_LAVA,
@@ -271,6 +299,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 1000,
     heatConductivity: 30,
+    ui: { category: "liquids", displayName: "Lava", description: "Hot liquid, ignites flammables", sort: 2 },
   },
   {
     id: EL_ACID,
@@ -283,6 +312,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 35,
+    ui: { category: "liquids", displayName: "Acid", description: "Dissolves stone, metal, wood (1:1)", sort: 3 },
   },
   {
     id: EL_STEAM,
@@ -295,18 +325,20 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 100,
     heatConductivity: 10,
+    ui: { category: "gases", displayName: "Steam", description: "Rises up, condenses into water", sort: 0 },
   },
   {
     id: EL_SMOKE,
     name: 'smoke',
     category: CAT_GAS,
     flags: 8,
-    color: 0xC83F3F3F,
+    color: 0xC82F2F2F,
     density: 1.1,
     dispersion: 4,
     lifetime: 0,
     defaultTemp: 50,
     heatConductivity: 5,
+    ui: { category: "gases", displayName: "Smoke", description: "Rises and dissipates", sort: 1 },
   },
   {
     id: EL_FIRE,
@@ -319,6 +351,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 60,
     defaultTemp: 800,
     heatConductivity: 50,
+    ui: { category: "energy", displayName: "Fire", description: "Burns flammables, extinguished by water", sort: 0 },
   },
   {
     id: EL_SPARK,
@@ -331,6 +364,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 10,
     defaultTemp: 500,
     heatConductivity: 50,
+    ui: { category: "energy", displayName: "Spark", description: "Brief ignition source", sort: 1 },
   },
   {
     id: EL_ELECTRICITY,
@@ -343,6 +377,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 3,
     defaultTemp: 200,
     heatConductivity: 80,
+    ui: { category: "energy", displayName: "Electric", description: "Flows through conductors", sort: 2 },
   },
   {
     id: EL_GUNPOWDER,
@@ -355,6 +390,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
+    ui: { category: "solids", displayName: "Gunpowder", description: "Explosive! Ignites instantly from fire", sort: 5 },
   },
   {
     id: EL_CLONE,
@@ -367,6 +403,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 0,
+    ui: { category: "utility", displayName: "Clone", description: "Duplicates touching particles", sort: 0 },
   },
   {
     id: EL_VOID,
@@ -379,6 +416,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 0,
+    ui: { category: "utility", displayName: "Void", description: "Destroys all particles", sort: 1 },
   },
   {
     id: EL_DIRT,
@@ -391,6 +429,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
+    ui: { category: "bio", displayName: "Dirt", description: "Fertile soil for plants", sort: 0 },
   },
   {
     id: EL_SEED,
@@ -403,6 +442,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 5,
+    ui: { category: "bio", displayName: "Seed", description: "Plant on wet dirt to grow!", sort: 1 },
   },
   {
     id: EL_PLANT,
@@ -415,6 +455,7 @@ export const ELEMENT_DATA: ElementProps[] = [
     lifetime: 0,
     defaultTemp: 20,
     heatConductivity: 10,
+    ui: { category: "bio", displayName: "Plant", description: "Grows with water, burns easily", sort: 2 },
   },
 ]
 

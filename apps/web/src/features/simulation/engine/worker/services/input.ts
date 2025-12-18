@@ -1,4 +1,4 @@
-import type { ElementType, ToolType } from '../../api/types'
+import type { ToolType } from '../../api/types'
 import type { SharedInputBuffer } from '@/core/canvas/input/InputBuffer'
 
 import { postEndStroke, sendFillToWorker, sendInputToWorker } from '../bridge'
@@ -8,7 +8,7 @@ export function sendBrushInput(args: {
   useSharedInput: boolean
   inputBuffer: SharedInputBuffer | null
   tool: ToolType
-  element: ElementType
+  elementId: number
   radius: number
   brushShape: 'circle' | 'square' | 'line'
   screenX: number
@@ -21,7 +21,7 @@ export function sendBrushInput(args: {
     useSharedInput: args.useSharedInput,
     inputBuffer: args.inputBuffer,
     tool: args.tool,
-    element: args.element,
+    elementId: args.elementId,
     radius: args.radius,
     brushShape: args.brushShape,
     screenX: args.screenX,
@@ -31,8 +31,8 @@ export function sendBrushInput(args: {
   })
 }
 
-export function sendFill(args: { worker: Worker | null; worldX: number; worldY: number; element: ElementType }): void {
-  sendFillToWorker({ worker: args.worker, worldX: args.worldX, worldY: args.worldY, element: args.element })
+export function sendFill(args: { worker: Worker | null; worldX: number; worldY: number; elementId: number }): void {
+  sendFillToWorker({ worker: args.worker, worldX: args.worldX, worldY: args.worldY, elementId: args.elementId })
 }
 
 export function endStroke(args: {

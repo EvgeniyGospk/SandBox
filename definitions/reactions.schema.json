@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "./reactions.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "description", "reactions"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "string" },
+    "description": { "type": "string" },
+    "reactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "aggressor",
+          "victim",
+          "result_aggressor",
+          "result_victim",
+          "chance",
+          "spawn"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "aggressor": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "victim": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "result_aggressor": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+              { "type": "null" }
+            ]
+          },
+          "result_victim": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+              { "type": "null" }
+            ]
+          },
+          "chance": { "type": "number", "minimum": 0, "maximum": 1 },
+          "spawn": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+              { "type": "null" }
+            ]
+          },
+          "comment": { "type": "string" }
+        }
+      }
+    }
+  }
+}

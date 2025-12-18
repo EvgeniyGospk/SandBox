@@ -1,9 +1,8 @@
-import type { ElementType } from '@/features/simulation/engine/api/types'
-import { state, ELEMENT_MAP } from '../state'
+import type { WorkerContext } from '../context'
 import { floodFill } from '../tools'
 
-export function handleFill(msg: { type: 'FILL'; x: number; y: number; element: ElementType }): void {
-  if (!state.engine || !state.memoryManager) return
-  const elementId = ELEMENT_MAP[msg.element] ?? 0
-  floodFill(msg.x, msg.y, elementId)
+export function handleFill(ctx: WorkerContext, msg: { type: 'FILL'; x: number; y: number; elementId: number }): void {
+  const state = ctx.state
+  if (!state.wasm.engine || !state.memory.manager) return
+  floodFill(ctx, msg.x, msg.y, Math.max(0, Math.min(255, Math.floor(msg.elementId))))
 }

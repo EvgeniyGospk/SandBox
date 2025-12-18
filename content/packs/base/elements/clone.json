@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 16,
+  "key": "clone",
+  "category": "utility",
+  "color": "0xFF00FF00",
+  "density": "Infinity",
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 0,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": true,
+    "rigid": false
+  },
+  "behavior": "utility_clone",
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "utility",
+    "displayName": "Clone",
+    "description": "Duplicates touching particles",
+    "sort": 0
+  }
+}

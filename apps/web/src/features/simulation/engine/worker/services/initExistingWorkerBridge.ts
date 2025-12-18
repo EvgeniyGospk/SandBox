@@ -1,6 +1,7 @@
 import type { SharedInputBuffer } from '@/core/canvas/input/InputBuffer'
 
 import type { WorkerToMainMessage } from '../../protocol'
+import type { SimulationStats } from '../bridgeTypes'
 import {
   handlePipetteResult,
   handleSnapshotResult,
@@ -9,6 +10,9 @@ import {
   setupSharedInputBuffer,
   terminateWorker,
   transferCanvasToOffscreen,
+  type CrashBehavior,
+  type ErrorBehavior,
+  type UnknownMessageMode,
   type RequestState,
 } from '../bridge'
 
@@ -28,9 +32,15 @@ export async function initExistingWorkerBridge(args: {
 
   onUnknownMessage: (data: unknown) => void
   onReady: (width: number, height: number) => void
-  onStats: (fps: number, particleCount: number) => void
+  onStats: (stats: SimulationStats) => void
   onError: (message: string) => void
   onCrash: (message: string, canRecover: boolean | undefined) => void
+  onContentManifest: (json: string) => void
+  onContentBundleStatus: (args: { phase: 'init' | 'reload'; status: 'loading' | 'loaded' | 'error'; message?: string }) => void
+
+  unknownMessageMode?: UnknownMessageMode
+  errorBehavior?: ErrorBehavior
+  crashBehavior?: CrashBehavior
 
   resolveAllPendingRequests: () => void
   destroy: () => void
@@ -54,6 +64,11 @@ export async function initExistingWorkerBridge(args: {
     onStats,
     onError,
     onCrash,
+    onContentManifest,
+    onContentBundleStatus,
+    unknownMessageMode,
+    errorBehavior,
+    crashBehavior,
     resolveAllPendingRequests,
     destroy,
     setHasTransferred,
@@ -86,6 +101,9 @@ export async function initExistingWorkerBridge(args: {
     worker,
     expectedProtocolVersion,
     parseMessage,
+    unknownMessageMode,
+    errorBehavior,
+    crashBehavior,
     onUnknownMessage,
     onReady: (w, h) => {
       onReady(w, h)
@@ -93,8 +111,10 @@ export async function initExistingWorkerBridge(args: {
     onStats,
     onError,
     onCrash,
-    onPipetteResult: (id, element) => {
-      handlePipetteResult(requests, id, element)
+    onContentManifest,
+    onContentBundleStatus,
+    onPipetteResult: (id, elementId) => {
+      handlePipetteResult(requests, id, elementId)
     },
     onSnapshotResult: (id, buffer) => {
       handleSnapshotResult(requests, id, buffer)

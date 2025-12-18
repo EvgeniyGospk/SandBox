@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 11,
+  "key": "smoke",
+  "category": "gas",
+  "color": "0xC82F2F2F",
+  "density": 1.1,
+  "dispersion": 4,
+  "lifetime": 0,
+  "defaultTemp": 50,
+  "heatConductivity": 5,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "gases",
+    "displayName": "Smoke",
+    "description": "Rises and dissipates",
+    "sort": 1
+  }
+}

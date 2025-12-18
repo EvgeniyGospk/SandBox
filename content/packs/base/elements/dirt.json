@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 18,
+  "key": "dirt",
+  "category": "powder",
+  "color": "0xFF5C4033",
+  "density": 1200,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 10,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "bio",
+    "displayName": "Dirt",
+    "description": "Fertile soil for plants",
+    "sort": 0
+  }
+}

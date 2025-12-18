@@ -1,0 +1,35 @@
+{
+  "kind": "element",
+  "id": 8,
+  "key": "lava",
+  "category": "liquid",
+  "color": "0xFFFF4500",
+  "density": 2500,
+  "dispersion": 2,
+  "lifetime": 0,
+  "defaultTemp": 1000,
+  "heatConductivity": 30,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": true,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": {
+    "low": {
+      "temp": 700,
+      "to": "stone"
+    }
+  },
+  "hidden": false,
+  "ui": {
+    "category": "liquids",
+    "displayName": "Lava",
+    "description": "Hot liquid, ignites flammables",
+    "sort": 2
+  }
+}

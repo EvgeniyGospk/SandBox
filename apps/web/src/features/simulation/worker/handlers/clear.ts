@@ -1,8 +1,9 @@
-import { state } from '../state'
+import type { WorkerContext } from '../context'
 
-export function handleClear(): void {
-  if (!state.engine) return
-  state.engine.clear()
-  state.isPlaying = false
-  state.stepAccumulator = 0
+export function handleClear(ctx: WorkerContext): void {
+  const state = ctx.state
+  if (!state.wasm.engine) return
+  state.wasm.engine.clear()
+  state.sim.isPlaying = false
+  state.sim.stepAccumulator = 0
 }

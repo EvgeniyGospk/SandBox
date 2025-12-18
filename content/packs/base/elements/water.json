@@ -1,0 +1,39 @@
+{
+  "kind": "element",
+  "id": 6,
+  "key": "water",
+  "category": "liquid",
+  "color": "0xFF4169E1",
+  "density": 1000,
+  "dispersion": 4,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 40,
+  "flags": {
+    "flammable": false,
+    "conductive": true,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": {
+    "high": {
+      "temp": 100,
+      "to": "steam"
+    },
+    "low": {
+      "temp": 0,
+      "to": "ice"
+    }
+  },
+  "hidden": false,
+  "ui": {
+    "category": "liquids",
+    "displayName": "Water",
+    "description": "Flows, evaporates, extinguishes fire",
+    "sort": 0
+  }
+}

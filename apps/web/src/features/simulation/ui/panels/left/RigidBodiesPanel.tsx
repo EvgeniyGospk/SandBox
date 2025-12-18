@@ -1,4 +1,4 @@
-import type { ElementType } from '@/features/simulation/engine'
+import type { ElementId } from '@/features/simulation/engine/api/types'
 import type { ComponentType } from 'react'
 
 import { RigidBodyInstructions } from './RigidBodyInstructions'
@@ -10,7 +10,7 @@ type RigidBodyShape = 'box' | 'circle'
 
 type ShapeDef = { id: RigidBodyShape; name: string; icon: ComponentType<{ size?: number }>; description: string }
 
-type MaterialDef = { id: ElementType; name: string; color: string }
+type MaterialDef = { id: ElementId; name: string; color: string }
 
 export function RigidBodiesPanel(args: {
   shapes: ReadonlyArray<ShapeDef>
@@ -18,13 +18,13 @@ export function RigidBodiesPanel(args: {
 
   rigidBodyShape: RigidBodyShape
   rigidBodySize: number
-  rigidBodyElement: ElementType
+  rigidBodyElement: ElementId
 
   selectedTool: string
 
   onSelectShape: (shape: RigidBodyShape) => void
   onChangeSize: (size: number) => void
-  onSelectMaterial: (id: ElementType) => void
+  onSelectMaterial: (id: ElementId) => void
 }) {
   const {
     shapes,

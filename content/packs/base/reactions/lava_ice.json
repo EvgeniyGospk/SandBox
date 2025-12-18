@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "lava_ice",
+  "aggressor": "lava",
+  "victim": "ice",
+  "resultAggressor": "stone",
+  "resultVictim": "steam",
+  "chance": 0.3,
+  "spawn": null,
+  "comment": "Lava melts ice completely"
+}

@@ -1,5 +1,3 @@
-import type { ElementType } from '../../api/types'
-
 import { postLoadSnapshot, requestPipette, requestSnapshot, type RequestState } from '../bridge'
 
 export function pipette(args: {
@@ -7,7 +5,7 @@ export function pipette(args: {
   worker: Worker | null
   screenX: number
   screenY: number
-}): Promise<ElementType | null> {
+}): Promise<number | null> {
   if (!args.worker) return Promise.resolve(null)
   return requestPipette(args.requests, args.worker, args.screenX, args.screenY)
 }

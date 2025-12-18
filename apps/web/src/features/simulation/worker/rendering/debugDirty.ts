@@ -2,16 +2,16 @@ import { debugLog } from '@/platform/logging/log'
 import type { SimulationWorkerState } from '../state'
 
 export function maybeLogDirtyDebug(state: SimulationWorkerState): void {
-  if (!state.debugDirty) return
-  if (!state.engine) return
+  if (!state.debug.dirty) return
+  if (!state.wasm.engine) return
 
-  state.debugLogInterval++
-  if (state.debugLogInterval < state.debugLogEvery) return
-  state.debugLogInterval = 0
+  state.debug.logInterval++
+  if (state.debug.logInterval < state.debug.logEvery) return
+  state.debug.logInterval = 0
 
-  const dirtyCount = state.engine.count_dirty_chunks ? state.engine.count_dirty_chunks() : 0
-  const chunksX = state.engine.chunks_x()
-  const chunksY = state.engine.chunks_y()
+  const dirtyCount = state.wasm.engine.count_dirty_chunks ? state.wasm.engine.count_dirty_chunks() : 0
+  const chunksX = state.wasm.engine.chunks_x()
+  const chunksY = state.wasm.engine.chunks_y()
   const totalChunks = chunksX * chunksY
 
   let waterCount = 0
@@ -19,9 +19,9 @@ export function maybeLogDirtyDebug(state: SimulationWorkerState): void {
   let sampleTemp = 0
   let sampleCount = 0
 
-  if (state.memoryManager) {
-    const types = state.memoryManager.types
-    const temps = state.memoryManager.temperature
+  if (state.memory.manager) {
+    const types = state.memory.manager.types
+    const temps = state.memory.manager.temperature
     const len = types.length
     for (let i = 0; i < len; i++) {
       const type = types[i]
@@ -38,7 +38,7 @@ export function maybeLogDirtyDebug(state: SimulationWorkerState): void {
   }
 
   const avgTemp = sampleCount > 0 ? (sampleTemp / sampleCount).toFixed(1) : 'N/A'
-  const ambientTemp = state.engine.get_ambient_temperature ? state.engine.get_ambient_temperature() : 'N/A'
+  const ambientTemp = state.wasm.engine.get_ambient_temperature ? state.wasm.engine.get_ambient_temperature() : 'N/A'
 
   debugLog(
     `🔍 DEBUG [Frame]: dirty=${dirtyCount}/${totalChunks}, water=${waterCount}, ice=${iceCount}, avgTemp=${avgTemp}°C, ambient=${ambientTemp}°C`

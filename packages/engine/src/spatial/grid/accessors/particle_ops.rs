@@ -5,6 +5,7 @@ impl Grid {
     // Match TypeScript: new particles are NOT updated, so they can move this frame
     pub fn set_particle(&mut self, x: u32, y: u32, element: ElementId, color: u32, life: u16, temp: f32) {
         let idx = self.index(x, y);
+        let prev = self.types[idx];
         self.types[idx] = element;
         self.colors[idx] = color;
         self.life[idx] = life;
@@ -15,12 +16,17 @@ impl Grid {
         self.vy[idx] = 0.0;
 
         // Sparse bookkeeping
-        self.mark_cell_non_empty(x, y);
+        if prev == EL_EMPTY && element != EL_EMPTY {
+            self.mark_cell_non_empty(x, y);
+        } else if prev != EL_EMPTY && element == EL_EMPTY {
+            self.mark_cell_empty(x, y);
+        }
     }
 
     // === Clear single cell ===
     pub fn clear_cell(&mut self, x: u32, y: u32) {
         let idx = self.index(x, y);
+        let prev = self.types[idx];
         self.types[idx] = EL_EMPTY;
         self.colors[idx] = BG_COLOR;
         self.life[idx] = 0;
@@ -29,7 +35,9 @@ impl Grid {
         self.vx[idx] = 0.0;
         self.vy[idx] = 0.0;
 
-        self.mark_cell_empty(x, y);
+        if prev != EL_EMPTY {
+            self.mark_cell_empty(x, y);
+        }
     }
 
     // === Clear entire grid ===
@@ -44,7 +52,7 @@ impl Grid {
         self.vy.fill(0.0);
 
         // Reset sparse bookkeeping
-        self.non_empty_chunks.fill(0);
         self.row_has_data.fill(false);
+        self.row_non_empty.fill(0);
     }
 }

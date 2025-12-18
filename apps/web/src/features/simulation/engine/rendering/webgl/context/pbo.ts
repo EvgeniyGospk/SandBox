@@ -24,13 +24,13 @@ export function initPBO(args: {
       gl.bufferData(gl.PIXEL_UNPACK_BUFFER, pboSize, gl.STREAM_DRAW)
     }
 
-    // Unbind PBO
-    gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null)
-
     debugLog(`📦 PBO initialized: 2x ${(pboSize / 1024 / 1024).toFixed(2)}MB`)
     return { pbo: [pbo0, pbo1], usePBO: true }
   } catch (e) {
     debugWarn('PBO init failed:', e)
     return { pbo: [null, null], usePBO: false }
+  } finally {
+    // Don't leak PIXEL_UNPACK_BUFFER state into later CPU-backed uploads.
+    gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null)
   }
 }

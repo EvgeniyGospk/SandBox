@@ -1,6 +1,4 @@
-import type { ElementType, ToolType } from '../api/types'
-
-import { ELEMENT_NAME_TO_ID } from '../api/types'
+import type { ToolType } from '../api/types'
 import type { SharedInputBuffer } from '@/core/canvas/input/InputBuffer'
 
 export function sendInputToWorker(args: {
@@ -8,7 +6,7 @@ export function sendInputToWorker(args: {
   useSharedInput: boolean
   inputBuffer: SharedInputBuffer | null
   tool: ToolType
-  element: ElementType
+  elementId: number
   radius: number
   brushShape: 'circle' | 'square' | 'line'
   screenX: number
@@ -21,7 +19,7 @@ export function sendInputToWorker(args: {
     useSharedInput,
     inputBuffer,
     tool,
-    element,
+    elementId,
     radius,
     brushShape,
     screenX,
@@ -34,10 +32,8 @@ export function sendInputToWorker(args: {
     if (tool === 'eraser') {
       inputBuffer.pushErase(worldX, worldY, radius)
     } else if (tool === 'brush') {
-      const elementId = ELEMENT_NAME_TO_ID[element] ?? 0
-      if (elementId !== 0) {
-        inputBuffer.pushBrush(worldX, worldY, radius, elementId)
-      }
+      const clamped = Math.max(0, Math.min(255, Math.floor(elementId)))
+      if (clamped !== 0) inputBuffer.pushBrush(worldX, worldY, radius, clamped)
     }
     return
   }
@@ -47,7 +43,7 @@ export function sendInputToWorker(args: {
     x: screenX,
     y: screenY,
     radius,
-    element,
+    elementId,
     brushShape,
     tool,
   })
@@ -57,12 +53,12 @@ export function sendFillToWorker(args: {
   worker: Worker | null
   worldX: number
   worldY: number
-  element: ElementType
+  elementId: number
 }): void {
   args.worker?.postMessage({
     type: 'FILL',
     x: args.worldX,
     y: args.worldY,
-    element: args.element,
+    elementId: args.elementId,
   })
 }

@@ -8,8 +8,7 @@
 
 use super::{Behavior, UpdateContext};
 use crate::elements::{
-    ELEMENT_DATA, ElementId, EL_EMPTY, EL_CLONE, EL_VOID, CAT_UTILITY,
-    get_color_with_variation
+    BehaviorKind, ElementId, EL_EMPTY, CAT_UTILITY,
 };
 
 /// Neighbor directions
@@ -40,9 +39,15 @@ impl UtilityBehavior {
             if !ctx.grid.in_bounds(nx, ny) { continue; }
             
             let neighbor_type = ctx.grid.get_type(nx, ny);
-            
+
             // Don't destroy empty, void, or clone
-            if neighbor_type != EL_EMPTY && neighbor_type != EL_VOID && neighbor_type != EL_CLONE {
+            if neighbor_type == EL_EMPTY {
+                continue;
+            }
+
+            let nk = ctx.content.behavior_kind(neighbor_type);
+
+            if nk != BehaviorKind::UtilityVoid && nk != BehaviorKind::UtilityClone {
                 ctx.clear_cell_dirty(nx as u32, ny as u32);
             }
         }
@@ -67,10 +72,11 @@ impl UtilityBehavior {
             let neighbor_type = ctx.grid.get_type(nx, ny);
             
             if neighbor_type != EL_EMPTY {
-                // Bounds check
-                if (neighbor_type as usize) >= ELEMENT_DATA.len() { continue; }
-                
-                let cat = ELEMENT_DATA[neighbor_type as usize].category;
+                let Some(neighbor_props) = ctx.content.props(neighbor_type) else {
+                    continue;
+                };
+
+                let cat = neighbor_props.category;
                 if cat != CAT_UTILITY {
                     source_type = neighbor_type;
                     break;
@@ -95,12 +101,19 @@ impl UtilityBehavior {
             
             // Create cloned particle (mirrors TypeScript exactly)
             let seed = ((nx as u32 * 7 + ny as u32 * 13 + frame as u32) & 31) as u8;
-            let props = &ELEMENT_DATA[source_type as usize];
+
+            let Some(props) = ctx.content.props(source_type) else {
+                return;
+            };
+            let color = ctx
+                .content
+                .color_with_variation(source_type, seed)
+                .unwrap_or(props.color);
             
             ctx.set_particle_dirty(
                 nx as u32, ny as u32,
                 source_type,
-                get_color_with_variation(source_type, seed),
+                color,
                 props.lifetime,
                 props.default_temp
             );
@@ -117,10 +130,12 @@ impl Behavior for UtilityBehavior {
         
         let element = ctx.grid.get_type(xi, yi);
         if element == EL_EMPTY { return; }
+
+        let kind = ctx.content.behavior_kind(element);
         
-        if element == EL_VOID {
+        if kind == BehaviorKind::UtilityVoid {
             self.process_void(ctx);
-        } else if element == EL_CLONE {
+        } else if kind == BehaviorKind::UtilityClone {
             self.process_clone(ctx);
         }
     }

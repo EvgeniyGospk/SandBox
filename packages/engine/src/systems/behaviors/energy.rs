@@ -6,7 +6,7 @@
 //! Fire rises erratically, spark/electricity move through conductors
 
 use super::{Behavior, UpdateContext, xorshift32, gravity_dir, perp_dirs};
-use crate::elements::{EL_EMPTY, EL_FIRE, EL_SPARK, EL_ELECTRICITY};
+use crate::elements::{BehaviorKind, EL_EMPTY};
 
 pub struct EnergyBehavior;
 
@@ -81,11 +81,13 @@ impl Behavior for EnergyBehavior {
         // SAFETY: x,y come from update_particle_chunked which guarantees valid coords
         let element = unsafe { ctx.grid.get_type_unchecked(ctx.x, ctx.y) };
         if element == EL_EMPTY { return; }
+
+        let kind = ctx.content.behavior_kind(element);
         
-        match element {
-            EL_FIRE => self.update_fire(ctx),
-            EL_SPARK => self.update_spark(ctx),
-            EL_ELECTRICITY => self.update_electricity(ctx),
+        match kind {
+            BehaviorKind::EnergyFire => self.update_fire(ctx),
+            BehaviorKind::EnergySpark => self.update_spark(ctx),
+            BehaviorKind::EnergyElectricity => self.update_electricity(ctx),
             _ => {}
         }
     }

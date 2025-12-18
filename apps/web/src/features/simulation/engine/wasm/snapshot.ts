@@ -10,6 +10,12 @@ export function recreateWorldFromSnapshot(args: {
   const { wasm, width, height, types } = args
 
   const world = new wasm.World(width, height)
+  {
+    const raw = import.meta.env.VITE_CHUNK_SLEEPING
+    const str = raw === undefined ? '' : String(raw).toLowerCase().trim()
+    const enabled = str === '' || (str !== '0' && str !== 'false' && str !== 'off')
+    ;(world as unknown as { set_chunk_sleeping_enabled?: (enabled: boolean) => void }).set_chunk_sleeping_enabled?.(enabled)
+  }
 
   for (let i = 0; i < types.length; i++) {
     const id = types[i]

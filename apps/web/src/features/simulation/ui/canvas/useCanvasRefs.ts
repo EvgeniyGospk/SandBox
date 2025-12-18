@@ -35,6 +35,9 @@ export type CanvasOverlayState = {
 
   error: string | null
   setError: (v: string | null) => void
+
+  warning: string | null
+  setWarning: (v: string | null) => void
 }
 
 export function useCanvasRefs(): { refs: CanvasRefs; overlay: CanvasOverlayState } {
@@ -58,6 +61,7 @@ export function useCanvasRefs(): { refs: CanvasRefs; overlay: CanvasOverlayState
   const [isLoading, setIsLoading] = useState(true)
   const [useWorker, setUseWorker] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [warning, setWarning] = useState<string | null>(null)
 
   return {
     refs: {
@@ -81,6 +85,8 @@ export function useCanvasRefs(): { refs: CanvasRefs; overlay: CanvasOverlayState
       setUseWorker,
       error,
       setError,
+      warning,
+      setWarning,
     },
   }
 }

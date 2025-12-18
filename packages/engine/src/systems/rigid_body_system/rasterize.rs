@@ -1,5 +1,5 @@
 use crate::chunks::ChunkGrid;
-use crate::elements::{get_color_with_variation, ELEMENT_DATA};
+use crate::domain::content::ContentRegistry;
 use crate::grid::Grid;
 use crate::rigid_body::RigidBody;
 
@@ -17,7 +17,12 @@ pub(super) fn clear_body(body: &mut RigidBody, grid: &mut Grid, chunks: &mut Chu
     body.prev_world_coords.clear();
 }
 
-pub(super) fn rasterize_body(body: &mut RigidBody, grid: &mut Grid, chunks: &mut ChunkGrid) {
+pub(super) fn rasterize_body(
+    content: &ContentRegistry,
+    body: &mut RigidBody,
+    grid: &mut Grid,
+    chunks: &mut ChunkGrid,
+) {
     body.prev_world_coords.clear();
     body.prev_world_coords.reserve(body.pixels.len());
 
@@ -48,8 +53,12 @@ pub(super) fn rasterize_body(body: &mut RigidBody, grid: &mut Grid, chunks: &mut
         }
 
         let element = p.element;
-        let props = &ELEMENT_DATA[element as usize];
-        let color = get_color_with_variation(element, p.color_seed);
+        let Some(props) = content.props(element) else {
+            continue;
+        };
+        let color = content
+            .color_with_variation(element, p.color_seed)
+            .unwrap_or(props.color);
 
         grid.set_particle(x, y, element, color, props.lifetime, props.default_temp);
         chunks.add_particle(x, y);
@@ -57,3 +66,4 @@ pub(super) fn rasterize_body(body: &mut RigidBody, grid: &mut Grid, chunks: &mut
         body.prev_world_coords.push((wx, wy));
     }
 }
+    

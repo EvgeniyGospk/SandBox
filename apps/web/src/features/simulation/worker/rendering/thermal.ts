@@ -1,21 +1,34 @@
 import type { SimulationWorkerState } from '../state'
 
 export function renderThermal(state: SimulationWorkerState): void {
-  if (!state.pixels || !state.memoryManager) return
+  if (!state.render.pixels || !state.memory.manager) return
 
-  const temperatureView = state.memoryManager.temperature
-  const len = Math.min(temperatureView.length, state.pixels.length / 4)
+  const ambient = state.settings.ambientTemperature ?? 20
+  const temperatureView = state.memory.manager.temperature
+  const typesView = state.memory.manager.types
+  const len = Math.min(temperatureView.length, state.render.pixels.length / 4)
 
   for (let i = 0; i < len; i++) {
-    const temp = temperatureView[i]
+    let temp = temperatureView[i]
+
+    // "Sleeping chunks" don't update per-cell air temperature in the simulation for performance.
+    // For thermal visualization (and for a sane UX when changing ambient temp), keep air cells
+    // smoothly tracking the ambient temperature here.
+    if (typesView[i] === 0) {
+      const diff = ambient - temp
+      if (Math.abs(diff) > 0.5) {
+        temp = temp + diff * 0.02
+        temperatureView[i] = temp
+      }
+    }
     const base = i << 2
 
     const [r, g, b] = getThermalColor(temp)
 
-    state.pixels[base] = r
-    state.pixels[base + 1] = g
-    state.pixels[base + 2] = b
-    state.pixels[base + 3] = 255
+    state.render.pixels[base] = r
+    state.render.pixels[base + 1] = g
+    state.render.pixels[base + 2] = b
+    state.render.pixels[base + 3] = 255
   }
 }
 

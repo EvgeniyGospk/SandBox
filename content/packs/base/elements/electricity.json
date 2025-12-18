@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 14,
+  "key": "electricity",
+  "category": "energy",
+  "color": "0xFF00FFFF",
+  "density": 0,
+  "dispersion": 0,
+  "lifetime": 3,
+  "defaultTemp": 200,
+  "heatConductivity": 80,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": "energy_electricity",
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "energy",
+    "displayName": "Electric",
+    "description": "Flows through conductors",
+    "sort": 2
+  }
+}

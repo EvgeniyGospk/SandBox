@@ -34,30 +34,12 @@
 macro_rules! fast {
     // Read pattern: fast!(slice, [index])
     ($slice:expr, [$index:expr]) => {{
-        #[cfg(debug_assertions)]
-        {
-            // Debug: Normal access with bounds check
-            &$slice[$index]
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            // Release: Unsafe unchecked access
-            unsafe { $slice.get_unchecked($index) }
-        }
+        &$slice[$index]
     }};
     
     // Write pattern: fast!(slice, [index] = value)
     ($slice:expr, [$index:expr] = $val:expr) => {{
-        #[cfg(debug_assertions)]
-        {
-            // Debug: Normal access with bounds check
-            $slice[$index] = $val;
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            // Release: Unsafe unchecked access
-            unsafe { *$slice.get_unchecked_mut($index) = $val; }
-        }
+        $slice[$index] = $val;
     }};
 }
 

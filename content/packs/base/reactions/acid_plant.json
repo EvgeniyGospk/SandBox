@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "acid_plant",
+  "aggressor": "acid",
+  "victim": "plant",
+  "resultAggressor": "empty",
+  "resultVictim": "empty",
+  "chance": 0.15,
+  "spawn": null,
+  "comment": "Acid dissolves plants"
+}

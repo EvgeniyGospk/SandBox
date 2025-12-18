@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "lava_gunpowder",
+  "aggressor": "lava",
+  "victim": "gunpowder",
+  "resultAggressor": null,
+  "resultVictim": "fire",
+  "chance": 1,
+  "spawn": "smoke",
+  "comment": "Gunpowder explodes from lava heat"
+}

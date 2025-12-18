@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 19,
+  "key": "seed",
+  "category": "bio",
+  "color": "0xFFE2C489",
+  "density": 1100,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 5,
+  "flags": {
+    "flammable": true,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": "bio_seed",
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "bio",
+    "displayName": "Seed",
+    "description": "Plant on wet dirt to grow!",
+    "sort": 1
+  }
+}

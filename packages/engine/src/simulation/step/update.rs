@@ -1,19 +1,27 @@
 use crate::behaviors::UpdateContext;
 use crate::elements::{
-    CAT_BIO, CAT_ENERGY, CAT_GAS, CAT_LIQUID, CAT_POWDER, CAT_SOLID, CAT_UTILITY, ELEMENT_COUNT,
-    ELEMENT_DATA, EL_EMPTY,
+    CAT_BIO, CAT_ENERGY, CAT_GAS, CAT_LIQUID, CAT_POWDER, CAT_SOLID, CAT_UTILITY, EL_EMPTY,
 };
 
 use super::{PerfTimer, WorldCore};
 
 pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> bool {
+    debug_assert!(
+        x < world.grid.width() && y < world.grid.height(),
+        "update_particle_chunked: out of bounds ({}, {}) for {}x{} grid",
+        x,
+        y,
+        world.grid.width(),
+        world.grid.height()
+    );
+
     unsafe {
         let element = world.grid.get_type_unchecked(x, y);
         if element == EL_EMPTY {
             return false;
         }
 
-        if (element as usize) >= ELEMENT_COUNT {
+        if !world.content.is_valid_element_id(element) {
             world.grid.clear_cell_unchecked(x, y);
             return false;
         }
@@ -39,7 +47,13 @@ pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> 
             }
         }
 
-        let category = ELEMENT_DATA[element as usize].category;
+        let category = match world.content.props(element) {
+            Some(p) => p.category,
+            None => {
+                world.grid.clear_cell_unchecked(x, y);
+                return false;
+            }
+        };
 
         if category == CAT_SOLID {
             return false;
@@ -48,6 +62,7 @@ pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> 
         let old_type = element;
 
         let mut ctx = UpdateContext {
+            content: &world.content,
             grid: &mut world.grid,
             chunks: &mut world.chunks,
             world_particle_count: &mut world.particle_count,

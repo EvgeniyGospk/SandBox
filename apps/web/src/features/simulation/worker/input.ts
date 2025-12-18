@@ -1,17 +1,15 @@
-import type { ElementType, ToolType } from '@/features/simulation/engine/api/types'
+import type { ToolType } from '@/features/simulation/engine/api/types'
 
-import {
-  INPUT_TYPE_BRUSH_OFFSET,
-  INPUT_TYPE_END_STROKE,
-  INPUT_TYPE_ERASE,
-} from '@/core/canvas/input/InputBuffer'
 import { screenToWorld as invertTransform } from '@/features/simulation/engine/transform'
 import { debugWarn } from '@/platform/logging/log'
 import { ELEMENT_ID_TO_NAME } from '@/features/simulation/engine/api/types'
 
-import { state, ELEMENT_MAP } from './state'
+import type { WorkerContext } from './context'
+
+import { decodeSharedInputEvent, shouldResetTrackingOnDecodedEvent, shouldResetTrackingOnOverflow } from './sharedInputDecoding'
 
 function drawLine(
+  ctx: WorkerContext,
   x0: number,
   y0: number,
   x1: number,
@@ -20,9 +18,10 @@ function drawLine(
   elementType: number,
   isErase: boolean
 ): void {
-  if (!state.engine) return
-  const width = state.engine.width as number
-  const height = state.engine.height as number
+  const state = ctx.state
+  if (!state.wasm.engine) return
+  const width = state.wasm.engine.width as number
+  const height = state.wasm.engine.height as number
 
   const dx = Math.abs(x1 - x0)
   const dy = Math.abs(y1 - y0)
@@ -33,9 +32,9 @@ function drawLine(
   while (true) {
     if (x0 >= 0 && y0 >= 0 && x0 < width && y0 < height) {
       if (isErase) {
-        state.engine.remove_particles_in_radius(x0, y0, radius)
+        state.wasm.engine.remove_particles_in_radius(x0, y0, radius)
       } else {
-        state.engine.add_particles_in_radius(x0, y0, radius, elementType)
+        state.wasm.engine.add_particles_in_radius(x0, y0, radius, elementType)
       }
     }
 
@@ -54,93 +53,120 @@ function drawLine(
 }
 
 export function handleInput(
+  ctx: WorkerContext,
   x: number,
   y: number,
   radius: number,
-  element: ElementType,
+  elementId: number,
   tool: ToolType,
   brushShape: 'circle' | 'square' | 'line' = 'circle'
 ): void {
-  const wasmWorld = state.engine
+  const state = ctx.state
+  const wasmWorld = state.wasm.engine
   if (!wasmWorld) return
 
   const worldWidth = wasmWorld.width as number
   const worldHeight = wasmWorld.height as number
   const safeRadius = Math.max(0, Math.min(256, Math.floor(radius)))
 
-  const viewport = { width: state.viewportWidth, height: state.viewportHeight }
+  const viewport = { width: state.view.viewportWidth, height: state.view.viewportHeight }
   const worldSize = { width: wasmWorld.width, height: wasmWorld.height }
-  const world = invertTransform(x, y, { zoom: state.zoom, panX: state.panX, panY: state.panY }, viewport, worldSize)
+  const transform = state.view.transform
+  const world = invertTransform(x, y, transform, viewport, worldSize)
   const worldX = Math.floor(world.x)
   const worldY = Math.floor(world.y)
 
-  const wasmElement = (ELEMENT_MAP[element as unknown as string] ?? 0) as number
+  const wasmElement = Math.max(0, Math.min(255, Math.floor(elementId)))
 
-  const applyBrush = (wx: number, wy: number) => {
-    if (wx < 0 || wy < 0 || wx >= worldWidth || wy >= worldHeight) return
-    if (tool === 'eraser') {
-      wasmWorld.remove_particles_in_radius(wx, wy, safeRadius)
-    } else if (tool === 'brush') {
-      if (wasmElement !== 0) {
-        wasmWorld.add_particles_in_radius(wx, wy, safeRadius, wasmElement)
-      }
-    }
-  }
+  const shouldErase = tool === 'eraser'
+  const shouldAdd = tool === 'brush' && wasmElement !== 0
 
   if (brushShape === 'square') {
     const half = safeRadius
     if (half === 0) {
-      applyBrush(worldX, worldY)
+      if (worldX < 0 || worldY < 0 || worldX >= worldWidth || worldY >= worldHeight) return
+      if (shouldErase) {
+        wasmWorld.remove_particles_in_radius(worldX, worldY, safeRadius)
+      } else if (shouldAdd) {
+        wasmWorld.add_particles_in_radius(worldX, worldY, safeRadius, wasmElement)
+      }
       return
     }
-    for (let dy = -half; dy <= half; dy++) {
-      for (let dx = -half; dx <= half; dx++) {
-        applyBrush(worldX + dx, worldY + dy)
+
+    const startX = Math.max(0, worldX - half)
+    const endX = Math.min(worldWidth - 1, worldX + half)
+    const startY = Math.max(0, worldY - half)
+    const endY = Math.min(worldHeight - 1, worldY + half)
+    if (startX > endX || startY > endY) return
+
+    if (shouldErase) {
+      for (let wy = startY; wy <= endY; wy++) {
+        for (let wx = startX; wx <= endX; wx++) {
+          wasmWorld.remove_particles_in_radius(wx, wy, safeRadius)
+        }
+      }
+      return
+    }
+
+    if (shouldAdd) {
+      for (let wy = startY; wy <= endY; wy++) {
+        for (let wx = startX; wx <= endX; wx++) {
+          wasmWorld.add_particles_in_radius(wx, wy, safeRadius, wasmElement)
+        }
       }
     }
   } else if (brushShape === 'line') {
-    drawLine(worldX - safeRadius, worldY, worldX + safeRadius, worldY, safeRadius, wasmElement, tool === 'eraser')
+    drawLine(ctx, worldX - safeRadius, worldY, worldX + safeRadius, worldY, safeRadius, wasmElement, tool === 'eraser')
   } else {
-    applyBrush(worldX, worldY)
+    if (worldX < 0 || worldY < 0 || worldX >= worldWidth || worldY >= worldHeight) return
+    if (shouldErase) {
+      wasmWorld.remove_particles_in_radius(worldX, worldY, safeRadius)
+    } else if (shouldAdd) {
+      wasmWorld.add_particles_in_radius(worldX, worldY, safeRadius, wasmElement)
+    }
   }
 }
 
-export function processSharedInput(): void {
-  const input = state.sharedInputBuffer
-  const world = state.engine
+export function processSharedInput(ctx: WorkerContext): void {
+  const state = ctx.state
+  const input = state.input.sharedBuffer
+  const world = state.wasm.engine
   if (!input || !world) return
 
   const width = world.width as number
   const height = world.height as number
   const maxElementId = ELEMENT_ID_TO_NAME.length - 1
 
-  if (input.checkAndClearOverflow()) {
-    debugWarn('🔒 Input buffer overflow detected - resetting Bresenham state')
-    state.lastInputX = null
-    state.lastInputY = null
+  const overflowed = input.checkAndClearOverflow()
+  if (shouldResetTrackingOnOverflow(overflowed)) {
+    if (overflowed) {
+      ctx.metrics.inputOverflowCountTotal += 1
+      ctx.metrics.inputOverflowCountSinceLastStats += 1
+      debugWarn('🔒 Input buffer overflow detected - resetting Bresenham state')
+    }
+    state.input.lastX = null
+    state.input.lastY = null
   }
 
   input.processAll((x: number, y: number, type: number, val: number) => {
-    if (type === INPUT_TYPE_END_STROKE) {
-      state.lastInputX = null
-      state.lastInputY = null
+    const ev = decodeSharedInputEvent({ x, y, type, val, maxElementId })
+    if (shouldResetTrackingOnDecodedEvent(ev)) {
+      state.input.lastX = null
+      state.input.lastY = null
       return
     }
+    if (ev.kind !== 'stroke') return
 
-    const currentX = Math.floor(x)
-    const currentY = Math.floor(y)
-    const safeRadius = Math.max(0, Math.min(256, Math.floor(val)))
+    const currentX = ev.x
+    const currentY = ev.y
+    const safeRadius = ev.radius
 
-    const isErase = type === INPUT_TYPE_ERASE
-    const elementType = isErase ? 0 : type - INPUT_TYPE_BRUSH_OFFSET
+    const isErase = ev.isErase
+    const elementType = isErase ? 0 : ev.elementType
 
-    if (!isErase && (elementType <= 0 || elementType > maxElementId)) {
-      return
-    }
-
-    if (state.lastInputX === null || state.lastInputY === null) {
-      state.lastInputX = currentX
-      state.lastInputY = currentY
+    if (state.input.lastX === null || state.input.lastY === null) {
+      state.input.lastX = currentX
+      state.input.lastY = currentY
       if (currentX >= 0 && currentY >= 0 && currentX < width && currentY < height) {
         if (isErase) {
           world.remove_particles_in_radius(currentX, currentY, safeRadius)
@@ -152,15 +178,16 @@ export function processSharedInput(): void {
     }
 
     if (elementType !== 0 || isErase) {
-      drawLine(state.lastInputX, state.lastInputY, currentX, currentY, safeRadius, elementType, isErase)
+      drawLine(ctx, state.input.lastX, state.input.lastY, currentX, currentY, safeRadius, elementType, isErase)
     }
 
-    state.lastInputX = currentX
-    state.lastInputY = currentY
+    state.input.lastX = currentX
+    state.input.lastY = currentY
   })
 }
 
-export function resetInputTracking(): void {
-  state.lastInputX = null
-  state.lastInputY = null
+export function resetInputTracking(ctx: WorkerContext): void {
+  const state = ctx.state
+  state.input.lastX = null
+  state.input.lastY = null
 }

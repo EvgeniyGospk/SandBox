@@ -11,8 +11,9 @@ export function useCanvasWheelZoom(args: {
   cameraRef: MutableRefObject<CameraState>
   bridgeRef: MutableRefObject<WorkerBridge | null>
   engineRef: MutableRefObject<WasmParticleEngine | null>
+  canvasMountToken?: number
 }): void {
-  const { canvasRef, viewportSizeRef, cameraRef, bridgeRef, engineRef } = args
+  const { canvasRef, viewportSizeRef, cameraRef, bridgeRef, engineRef, canvasMountToken } = args
 
   const handleWheel = useCallback(
     (e: WheelEvent) => {
@@ -59,5 +60,5 @@ export function useCanvasWheelZoom(args: {
 
     canvas.addEventListener('wheel', handleWheel, { passive: false })
     return () => canvas.removeEventListener('wheel', handleWheel)
-  }, [canvasRef, handleWheel])
+  }, [canvasRef, handleWheel, canvasMountToken])
 }

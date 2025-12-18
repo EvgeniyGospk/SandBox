@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "acid_wood",
+  "aggressor": "acid",
+  "victim": "wood",
+  "resultAggressor": "empty",
+  "resultVictim": "empty",
+  "chance": 0.2,
+  "spawn": null,
+  "comment": "Acid dissolves wood"
+}

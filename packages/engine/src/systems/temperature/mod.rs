@@ -9,7 +9,6 @@
 
 mod perf;
 mod rng;
-mod phase_changes;
 mod transform;
 mod scalar;
 mod legacy_air;
@@ -17,7 +16,7 @@ mod chunked;
 mod simd;
 
 pub use perf::{reset_phase_change_counter, take_phase_change_counter, PERF_PHASE_CHANGES};
-pub use phase_changes::check_phase_change;
+pub use crate::elements::check_phase_change;
 pub use scalar::process_temperature_grid;
 pub use chunked::process_temperature_grid_chunked;
 pub use simd::{diffuse_horizontal_simd, update_air_temperature_simd};

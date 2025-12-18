@@ -1,0 +1,35 @@
+{
+  "kind": "element",
+  "id": 2,
+  "key": "sand",
+  "category": "powder",
+  "color": "0xFFC2B280",
+  "density": 1600,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 15,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": {
+    "high": {
+      "temp": 1700,
+      "to": "lava"
+    }
+  },
+  "hidden": false,
+  "ui": {
+    "category": "solids",
+    "displayName": "Sand",
+    "description": "Falls and piles up, melts into glass",
+    "sort": 1
+  }
+}

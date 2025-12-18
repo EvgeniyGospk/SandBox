@@ -6,7 +6,7 @@
 //! Vertical falling is now done by velocity-based physics.
 
 use super::{Behavior, UpdateContext, get_random_dir};
-use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_LIQUID};
+use crate::elements::{EL_EMPTY, CAT_LIQUID, CAT_SOLID};
 
 pub struct PowderBehavior;
 
@@ -24,16 +24,18 @@ impl PowderBehavior {
         
         // Empty = can move
         if target_type == EL_EMPTY { return true; }
-        
-        if (target_type as usize) >= ELEMENT_DATA.len() { return false; }
-        
-        let target_cat = ELEMENT_DATA[target_type as usize].category;
+
+        let Some(target_props) = ctx.content.props(target_type) else {
+            return false;
+        };
+
+        let target_cat = target_props.category;
         
         // Can only displace liquids, not solids
         if target_cat != CAT_LIQUID { return false; }
         
         // Heavier sinks into lighter
-        my_density > ELEMENT_DATA[target_type as usize].density
+        my_density > target_props.density
     }
     
     /// Check if blocked in gravity direction (for dispersion trigger)
@@ -46,6 +48,42 @@ impl PowderBehavior {
         let t = unsafe { ctx.grid.get_type_unchecked(tx as u32, ty as u32) };
         t != EL_EMPTY
     }
+
+    /// "Corner cutting" guard for diagonal moves.
+    ///
+    /// In a pixel grid, a 1px-thick diagonal/staircase wall is not watertight unless we prevent
+    /// particles from slipping through a corner formed by 2 solids touching diagonally.
+    ///
+    /// For a diagonal move (dx,dy), disallow it when BOTH orthogonal side-cells are solid:
+    /// - (x+dx, y)
+    /// - (x, y+dy)
+    #[inline]
+    fn is_corner_blocked_by_solids(&self, ctx: &UpdateContext, xi: i32, yi: i32, dx: i32, dy: i32) -> bool {
+        debug_assert!(dx != 0 && dy != 0);
+
+        let a_x = xi + dx;
+        let a_y = yi;
+        let b_x = xi;
+        let b_y = yi + dy;
+
+        self.is_solid_cell(ctx, a_x, a_y) && self.is_solid_cell(ctx, b_x, b_y)
+    }
+
+    #[inline]
+    fn is_solid_cell(&self, ctx: &UpdateContext, x: i32, y: i32) -> bool {
+        if !ctx.grid.in_bounds(x, y) {
+            // Treat OOB as a hard boundary.
+            return true;
+        }
+        let t = unsafe { ctx.grid.get_type_unchecked(x as u32, y as u32) };
+        if t == EL_EMPTY {
+            return false;
+        }
+        let Some(props) = ctx.content.props(t) else {
+            return true;
+        };
+        props.category == CAT_SOLID
+    }
 }
 
 impl Behavior for PowderBehavior {
@@ -57,9 +95,12 @@ impl Behavior for PowderBehavior {
         
         let element = unsafe { ctx.grid.get_type_unchecked(x, y) };
         if element == EL_EMPTY { return; }
-        if (element as usize) >= ELEMENT_DATA.len() { return; }
-        
-        let my_density = ELEMENT_DATA[element as usize].density;
+
+        let Some(my_props) = ctx.content.props(element) else {
+            return;
+        };
+
+        let my_density = my_props.density;
         
         // Get discrete gravity direction (defaults to down if zero)
         let (gx, gy) = super::gravity_dir(ctx.gravity_x, ctx.gravity_y);
@@ -91,14 +132,14 @@ impl Behavior for PowderBehavior {
 
             let tx1 = xi + dx1;
             let ty1 = yi + dy1;
-            if self.can_displace(ctx, tx1, ty1, my_density) {
+            if !self.is_corner_blocked_by_solids(ctx, xi, yi, dx1, dy1) && self.can_displace(ctx, tx1, ty1, my_density) {
                 unsafe { ctx.grid.swap_unchecked(x, y, tx1 as u32, ty1 as u32); }
                 return;
             }
 
             let tx2 = xi + dx2;
             let ty2 = yi + dy2;
-            if self.can_displace(ctx, tx2, ty2, my_density) {
+            if !self.is_corner_blocked_by_solids(ctx, xi, yi, dx2, dy2) && self.can_displace(ctx, tx2, ty2, my_density) {
                 unsafe { ctx.grid.swap_unchecked(x, y, tx2 as u32, ty2 as u32); }
             }
         } else {

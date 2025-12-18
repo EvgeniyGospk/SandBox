@@ -1,9 +1,9 @@
-import type { ElementType } from '@/features/simulation/engine'
+import type { ElementId } from '@/features/simulation/engine/api/types'
 
 export function RigidBodyMaterialSelector(args: {
-  materials: ReadonlyArray<{ id: ElementType; name: string; color: string }>
-  rigidBodyElement: ElementType
-  onSelectMaterial: (id: ElementType) => void
+  materials: ReadonlyArray<{ id: ElementId; name: string; color: string }>
+  rigidBodyElement: ElementId
+  onSelectMaterial: (id: ElementId) => void
 }) {
   const { materials, rigidBodyElement, onSelectMaterial } = args
 

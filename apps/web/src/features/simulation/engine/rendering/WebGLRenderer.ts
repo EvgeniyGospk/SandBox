@@ -44,6 +44,7 @@ type WasmWorld = import('@particula/engine-wasm/particula_engine').World
 export class WebGLRenderer {
   private gl: WebGL2RenderingContext;
   private forceFullUpload: boolean = false;
+  private hasDoneFullUpload: boolean = false;
   
   // Phase 5: Context loss handling
   private contextLost: boolean = false;
@@ -64,9 +65,6 @@ export class WebGLRenderer {
   private uLineWorldSize: WebGLUniformLocation | null = null;
   private uLineViewportSize: WebGLUniformLocation | null = null;
   private uLineColor: WebGLUniformLocation | null = null;
-  
-  // Memory view (reused)
-  private memoryView: Uint8Array | null = null;
   
   // === PHASE 2: PBO Double-Buffering ===
   private pbo: [WebGLBuffer | null, WebGLBuffer | null] = [null, null];
@@ -211,10 +209,6 @@ export class WebGLRenderer {
         return;
       }
     }
-    
-    if (!this.memoryView || this.memoryView.buffer !== memory.buffer) {
-      this.memoryView = new Uint8Array(memory.buffer);
-    }
 
     // 1. Clear
     this.gl.viewport(0, 0, this.viewportWidth, this.viewportHeight);
@@ -235,12 +229,19 @@ export class WebGLRenderer {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
 
-    if (!this.memoryView) return
-
-    // CRITICAL: Check forceFullUpload BEFORE collecting dirty rects
-    // This ensures paused input (clicks) get uploaded immediately
-    if (this.forceFullUpload) {
-      this.uploadFull(engine, true);  // immediate=true to skip PBO latency
+    // Ensure the GPU texture is fully initialized at least once.
+    // If we only ever upload dirty rects, untouched areas remain undefined (often all-zero),
+    // which looks like "shaders render only where particles moved".
+    // Also keep the existing `forceFullUpload` path for mode switches/resizes/paused input.
+    if (!this.hasDoneFullUpload || this.forceFullUpload) {
+      this.uploadFull(engine, memory, true); // immediate=true to skip PBO latency
+      const err = gl.getError();
+      if (err !== gl.NO_ERROR) {
+        debugWarn(`WebGL texture upload failed (gl error=${err}); will retry next frame`)
+        this.hasDoneFullUpload = false;
+      } else {
+        this.hasDoneFullUpload = true;
+      }
       this.forceFullUpload = false;
       return;
     }
@@ -254,7 +255,6 @@ export class WebGLRenderer {
     // Fallback: Original per-chunk upload
     const res = uploadDirtyChunksImpl({
       gl,
-      memoryView: this.memoryView,
       engine,
       memory,
       worldWidth: this.worldWidth,
@@ -278,19 +278,17 @@ export class WebGLRenderer {
    * and upload fewer, larger rectangles.
    */
   private uploadWithMergedRects(engine: WasmWorld, _memory: WebAssembly.Memory): void {
-    if (!this.memoryView) return
-
     // DEBUG WORKAROUND: can be enabled via env flag for diagnostics
     const DEBUG_FORCE_FULL = import.meta.env.VITE_FORCE_FULL_UPLOAD === 'true'
     if (DEBUG_FORCE_FULL) {
-      this.uploadFull(engine);
+      this.uploadFull(engine, _memory);
       return;
     }
 
     const res = uploadWithMergedRectsImpl({
       gl: this.gl,
-      memoryView: this.memoryView,
       engine,
+      memory: _memory,
       worldWidth: this.worldWidth,
       worldHeight: this.worldHeight,
       forceFullUpload: false,
@@ -309,13 +307,11 @@ export class WebGLRenderer {
    * 
    * @param immediate - Skip PBO double-buffering for instant display (used when paused)
    */
-  private uploadFull(engine: WasmWorld, immediate: boolean = false): void {
-    if (!this.memoryView) return
-
+  private uploadFull(engine: WasmWorld, memory: WebAssembly.Memory, immediate: boolean = false): void {
     const res = uploadFullImpl({
       gl: this.gl,
-      memoryView: this.memoryView,
       engine,
+      memory,
       worldWidth: this.worldWidth,
       worldHeight: this.worldHeight,
       pboSize: this.pboSize,
@@ -336,6 +332,12 @@ export class WebGLRenderer {
   }
 
   private drawTexturePass(transform: { zoom: number; panX: number; panY: number }): void {
+    // Texture pass must be fully opaque. If blending is enabled and the texture contains
+    // any uninitialized/transparent pixels (alpha=0), the clear color shows through and
+    // creates visible "chunk lighting" seams as chunks get uploaded.
+    //
+    // We still use blending for the border/glow pass.
+    this.gl.disable(this.gl.BLEND)
     drawTexturePassImpl({
       gl: this.gl,
       texProgram: this.texProgram,
@@ -352,6 +354,9 @@ export class WebGLRenderer {
   }
 
   private drawBorderPass(transform: { zoom: number; panX: number; panY: number }): void {
+    // Border pass relies on alpha blending for glow.
+    this.gl.enable(this.gl.BLEND)
+    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA)
     prepareBorderPass({
       gl: this.gl,
       lineProgram: this.lineProgram,
@@ -389,6 +394,7 @@ export class WebGLRenderer {
    */
   resizeWorld(width: number, height: number): void {
     this.forceFullUpload = true;
+    this.hasDoneFullUpload = false;
 
     const resized = resizeWorldResources({
       gl: this.gl,
@@ -532,6 +538,7 @@ export class WebGLRenderer {
     if (USE_PBO) this.initPBO();
 
     this.forceFullUpload = true;
+    this.hasDoneFullUpload = false;
     this.needsReinit = false;
   }
 }

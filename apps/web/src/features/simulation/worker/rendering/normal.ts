@@ -1,17 +1,17 @@
 import type { SimulationWorkerState } from '../state'
 
 export function renderNormal(state: SimulationWorkerState, BG_COLOR_32: number, EL_EMPTY: number): void {
-  if (!state.pixels32 || !state.memoryManager) return
+  if (!state.render.pixels32 || !state.memory.manager) return
 
-  const typesView = state.memoryManager.types
-  const colorsView = state.memoryManager.colors
-  const len = Math.min(typesView.length, state.pixels32.length)
+  const typesView = state.memory.manager.types
+  const colorsView = state.memory.manager.colors
+  const len = Math.min(typesView.length, state.render.pixels32.length)
 
-  state.pixels32.set(colorsView.subarray(0, len))
+  state.render.pixels32.set(colorsView.subarray(0, len))
 
   for (let i = 0; i < len; i++) {
     if (typesView[i] === EL_EMPTY) {
-      state.pixels32[i] = BG_COLOR_32
+      state.render.pixels32[i] = BG_COLOR_32
     }
   }
 }

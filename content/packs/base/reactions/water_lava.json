@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "water_lava",
+  "aggressor": "water",
+  "victim": "lava",
+  "resultAggressor": "steam",
+  "resultVictim": "stone",
+  "chance": 0.15,
+  "spawn": "steam",
+  "comment": "Water cools lava to stone"
+}

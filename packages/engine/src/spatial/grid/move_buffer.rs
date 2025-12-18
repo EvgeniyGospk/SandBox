@@ -22,19 +22,45 @@ impl MoveBuffer {
         }
     }
 
+    #[inline(always)]
+    fn try_grow(&mut self) -> bool {
+        let old_capacity = self.capacity;
+        let new_capacity = old_capacity.saturating_mul(2).max(old_capacity.saturating_add(1));
+        if new_capacity == old_capacity {
+            return false;
+        }
+        self.data.resize(new_capacity, (0, 0, 0, 0));
+        self.capacity = new_capacity;
+        true
+    }
+
     /// Push move - drops silently if buffer full (1 frame desync is invisible)
     #[inline(always)]
     pub fn push(&mut self, m: ParticleMove) {
-        if self.count < self.capacity {
-            // SAFETY: We just checked bounds above
-            unsafe {
-                *self.data.get_unchecked_mut(self.count) = m;
-            }
-            self.count += 1;
-        } else {
+        let _ = self.try_push(m);
+    }
+
+    #[inline(always)]
+    pub fn try_push(&mut self, m: ParticleMove) -> bool {
+        if self.count >= self.capacity {
             self.overflow_count += 1;
+            let _ = self.try_grow();
         }
-        // If full, silently drop. Better than GC stutter!
+
+        if self.count < self.capacity {
+            debug_assert_eq!(self.data.len(), self.capacity);
+            if let Some(slot) = self.data.get_mut(self.count) {
+                *slot = m;
+                self.count += 1;
+                true
+            } else {
+                debug_assert!(false, "MoveBuffer invariant violated: count < capacity but slot is missing");
+                self.overflow_count += 1;
+                false
+            }
+        } else {
+            false
+        }
     }
 
     /// Reset counter - memory stays allocated
@@ -48,6 +74,12 @@ impl MoveBuffer {
     #[inline(always)]
     pub fn as_ptr(&self) -> *const ParticleMove {
         self.data.as_ptr()
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[ParticleMove] {
+        debug_assert!(self.count <= self.capacity);
+        &self.data[..self.count]
     }
 
     #[inline(always)]

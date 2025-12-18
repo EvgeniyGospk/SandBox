@@ -1,11 +1,11 @@
-use crate::elements::{EL_EMPTY};
+use crate::elements::{EL_EMPTY, MAX_VELOCITY};
 use crate::grid::Grid;
 
 use super::perf::{PERF_RAYCAST_COLLISIONS, PERF_RAYCAST_STEPS};
 use super::types::PhysicsResult;
 
 /// Cap for DDA steps to avoid extremely long raycasts on high velocities
-const MAX_RAYCAST_STEPS: i32 = 64;
+const MAX_RAYCAST_STEPS: u32 = (MAX_VELOCITY as u32) * 2 + 16;
 
 /// DDA Raycast - move particle along velocity vector, stopping at first collision
 /// 
@@ -61,7 +61,7 @@ pub fn raycast_move(
     let t_delta_y = if step_y != 0 { inv_dy } else { f32::INFINITY };
 
     let mut steps_taken: u32 = 0;
-    let max_steps = ((vx.abs() + vy.abs()).ceil() as i32).clamp(1, MAX_RAYCAST_STEPS) as u32;
+    let max_steps = ((vx.abs() + vy.abs()).ceil() as u32).clamp(1, MAX_RAYCAST_STEPS);
 
     let mut hit_x: i32 = cx;
     let mut hit_y: i32 = cy;
@@ -71,7 +71,75 @@ pub fn raycast_move(
     let mut normal_y: i32 = 0;
 
     while steps_taken < max_steps {
-        if t_max_x < t_max_y {
+        // Supercover corner handling:
+        // If we cross an exact grid corner (t_max_x == t_max_y), naive DDA stepping on only one
+        // axis can "cut corners" and miss thin diagonal/staircase obstacles.
+        let corner = (t_max_x - t_max_y).abs() < 1e-6;
+        if corner && step_x != 0 && step_y != 0 {
+            let next_x = cx + step_x;
+            let next_y = cy + step_y;
+
+            // We conservatively treat either adjacent cell as a blocker when crossing a corner.
+            let (block_x, hit_x_elem) = if !grid.in_bounds(next_x, cy) {
+                (true, EL_EMPTY)
+            } else {
+                let e = grid.get_type(next_x, cy);
+                (e != EL_EMPTY, e)
+            };
+
+            let (block_y, hit_y_elem) = if !grid.in_bounds(cx, next_y) {
+                (true, EL_EMPTY)
+            } else {
+                let e = grid.get_type(cx, next_y);
+                (e != EL_EMPTY, e)
+            };
+
+            if block_x || block_y {
+                let hit_element;
+                if block_x {
+                    hit_x = next_x;
+                    hit_y = cy;
+                    hit_element = hit_x_elem;
+                } else {
+                    hit_x = cx;
+                    hit_y = next_y;
+                    hit_element = hit_y_elem;
+                }
+
+                normal_x = if block_x { -step_x } else { 0 };
+                normal_y = if block_y { -step_y } else { 0 };
+
+                PERF_RAYCAST_STEPS.with(|c| {
+                    let mut v = c.borrow_mut();
+                    *v = v.saturating_add((steps_taken + 1) as u64);
+                });
+                PERF_RAYCAST_COLLISIONS.with(|c| {
+                    let mut v = c.borrow_mut();
+                    *v = v.saturating_add(1);
+                });
+
+                return PhysicsResult {
+                    new_x: last_valid_x,
+                    new_y: last_valid_y,
+                    collided: true,
+                    hit_element,
+                    hit_x,
+                    hit_y,
+                    normal_x,
+                    normal_y,
+                    steps: steps_taken + 1,
+                    speed,
+                };
+            }
+
+            // Both adjacent cells are empty: advance diagonally.
+            cx = next_x;
+            cy = next_y;
+            t_max_x += t_delta_x;
+            t_max_y += t_delta_y;
+            normal_x = -step_x;
+            normal_y = -step_y;
+        } else if t_max_x < t_max_y {
             cx += step_x;
             t_max_x += t_delta_x;
             normal_x = -step_x;

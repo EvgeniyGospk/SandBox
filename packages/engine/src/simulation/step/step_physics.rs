@@ -35,6 +35,11 @@ pub(super) fn process_physics_chunk(
     gravity_y: f32,
     top_to_bottom: bool,
 ) {
+    let chunk_idx = world.chunks.chunk_idx_from_coords(cx, cy);
+    if world.chunks.particle_counts()[chunk_idx] == 0 {
+        return;
+    }
+
     if world.chunks.is_sleeping(cx, cy) {
         return;
     }
@@ -44,17 +49,12 @@ pub(super) fn process_physics_chunk(
     let end_x = (start_x + CHUNK_SIZE).min(world.grid.width());
     let end_y = (start_y + CHUNK_SIZE).min(world.grid.height());
 
-    // Sparse skip: if chunk has no non-empty rows, return early
-    let mut chunk_has_rows = false;
-    for ry in start_y..end_y {
-        if world.grid.row_has_data[ry as usize] {
-            chunk_has_rows = true;
-            break;
-        }
-    }
-    if !chunk_has_rows {
-        return;
-    }
+    debug_assert!(
+        (end_y as usize) <= world.grid.row_has_data.len(),
+        "process_physics_chunk: row_has_data too small (end_y={}, len={})",
+        end_y,
+        world.grid.row_has_data.len()
+    );
 
     if top_to_bottom {
         // For negative gravity: process top-to-bottom
@@ -72,6 +72,7 @@ pub(super) fn process_physics_chunk(
                     }
                     world.grid.set_updated(x, y, true);
                     let res = update_particle_physics(
+                        &world.content,
                         &mut world.grid,
                         &mut world.chunks,
                         x,
@@ -110,6 +111,7 @@ pub(super) fn process_physics_chunk(
                     }
                     world.grid.set_updated(x, y, true);
                     let res = update_particle_physics(
+                        &world.content,
                         &mut world.grid,
                         &mut world.chunks,
                         x,

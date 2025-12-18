@@ -1,4 +1,4 @@
-import type { ElementType, RenderMode } from '../api/types'
+import type { RenderMode } from '../api/types'
 
 export function postInit(
   worker: Worker,
@@ -93,6 +93,10 @@ export function postLoadSnapshot(worker: Worker | null, buffer: ArrayBuffer): vo
   worker?.postMessage({ type: 'LOAD_SNAPSHOT', buffer }, [buffer])
 }
 
+export function postLoadContentBundle(worker: Worker | null, json: string): void {
+  worker?.postMessage({ type: 'LOAD_CONTENT_BUNDLE', json })
+}
+
 export function postSpawnRigidBody(
   worker: Worker | null,
   args: {
@@ -100,7 +104,7 @@ export function postSpawnRigidBody(
     y: number
     size: number
     shape: 'box' | 'circle'
-    element: ElementType
+    elementId: number
   }
 ): void {
   worker?.postMessage({
@@ -109,6 +113,6 @@ export function postSpawnRigidBody(
     y: args.y,
     size: args.size,
     shape: args.shape,
-    element: args.element,
+    elementId: args.elementId,
   })
 }

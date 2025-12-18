@@ -62,5 +62,5 @@ export function useWorldSizePresetResize(args: {
     if (engine.width === worldWidth && engine.height === worldHeight) return
     setParticleCount(0)
     engine.resize(worldWidth, worldHeight)
-  }, [worldSizePreset, setParticleCount])
+  }, [worldSizePreset, setParticleCount, bridgeRef, engineRef, initialWorldSizeRef, pendingWorldResizeRef, containerRef])
 }

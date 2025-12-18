@@ -1,5 +1,6 @@
 use crate::chunks::ChunkGrid;
-use crate::elements::{ELEMENT_DATA, GRAVITY, CAT_SOLID};
+use crate::domain::content::ContentRegistry;
+use crate::elements::{GRAVITY, CAT_SOLID};
 use crate::grid::Grid;
 use crate::rigid_body::{RigidBody, Vec2};
 
@@ -28,15 +29,22 @@ impl RigidBodySystem {
     /// Add a new rigid body.
     ///
     /// Returns `None` if the body cannot be placed.
-    pub fn add_body(&mut self, mut body: RigidBody, grid: &mut Grid, chunks: &mut ChunkGrid) -> Option<SpawnResult> {
+    pub fn add_body(
+        &mut self,
+        content: &ContentRegistry,
+        mut body: RigidBody,
+        grid: &mut Grid,
+        chunks: &mut ChunkGrid,
+    ) -> Option<SpawnResult> {
         // Enforce SOLID pixels for now to prevent the particle solver from trying to move the body.
         if body.pixels.is_empty() {
             return None;
         }
-        if (body.pixels[0].element as usize) >= ELEMENT_DATA.len() {
+
+        let Some(p0) = content.props(body.pixels[0].element) else {
             return None;
-        }
-        if ELEMENT_DATA[body.pixels[0].element as usize].category != CAT_SOLID {
+        };
+        if p0.category != CAT_SOLID {
             return None;
         }
 
@@ -50,7 +58,7 @@ impl RigidBodySystem {
             return None;
         }
 
-        rasterize_body(&mut body, grid, chunks);
+        rasterize_body(content, &mut body, grid, chunks);
         let pixels = body.prev_world_coords.len() as u32;
         self.bodies.push(body);
         Some(SpawnResult { id, pixels })
@@ -81,7 +89,14 @@ impl RigidBodySystem {
     }
 
     /// Main update loop (runs before particle physics).
-    pub fn update(&mut self, grid: &mut Grid, chunks: &mut ChunkGrid, gravity_x: f32, gravity_y: f32) {
+    pub fn update(
+        &mut self,
+        content: &ContentRegistry,
+        grid: &mut Grid,
+        chunks: &mut ChunkGrid,
+        gravity_x: f32,
+        gravity_y: f32,
+    ) {
         for body in self.bodies.iter_mut() {
             if !body.active {
                 continue;
@@ -120,7 +135,7 @@ impl RigidBodySystem {
             body.pos = next;
 
             // Rasterize back into the particle grid.
-            rasterize_body(body, grid, chunks);
+            rasterize_body(content, body, grid, chunks);
         }
     }
 }

@@ -3,7 +3,14 @@ import { recreateWorldFromSnapshot } from './snapshot'
 
 export function createWorld(args: { wasm: WasmModule; width: number; height: number }): WasmWorld {
   const { wasm, width, height } = args
-  return new wasm.World(width, height)
+  const world = new wasm.World(width, height)
+
+  const raw = import.meta.env.VITE_CHUNK_SLEEPING
+  const str = raw === undefined ? '' : String(raw).toLowerCase().trim()
+  const enabled = str === '' || (str !== '0' && str !== 'false' && str !== 'off')
+  ;(world as unknown as { set_chunk_sleeping_enabled?: (enabled: boolean) => void }).set_chunk_sleeping_enabled?.(enabled)
+
+  return world
 }
 
 export function recreateWorld(args: {

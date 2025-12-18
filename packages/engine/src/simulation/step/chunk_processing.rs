@@ -26,6 +26,13 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
     let end_x = (start_x + CHUNK_SIZE).min(world.grid.width());
     let end_y = (start_y + CHUNK_SIZE).min(world.grid.height());
 
+    debug_assert!(
+        (end_y as usize) <= world.grid.row_has_data.len(),
+        "process_chunk: row_has_data too small (end_y={}, len={})",
+        end_y,
+        world.grid.row_has_data.len()
+    );
+
     let mut had_movement = false;
 
     // Process rows within chunk (bottom to top for gravity)

@@ -7,12 +7,21 @@
  * Main thread never touches WASM directly.
  */
 
-import type { ElementType, RenderMode, ToolType } from '../api/types'
+import type { ElementId, RenderMode, ToolType } from '../api/types'
 import { debugWarn, logError } from '@/platform/logging/log'
 import { parseWorkerToMainMessage, SIMULATION_PROTOCOL_VERSION } from '../protocol/index'
 import type { SharedInputBuffer } from '@/core/canvas/input/InputBuffer'
 
-import { createRequestState, resolveAllPendingRequests } from './bridge'
+import {
+  createRequestState,
+  resolveAllPendingRequests,
+  postLoadContentBundle,
+  type CrashBehavior,
+  type ErrorBehavior,
+  type UnknownMessageMode,
+  type RequestTimeoutKind,
+  type RequestTimeouts,
+} from './bridge'
 import { createSimulationWorker } from './services/createSimulationWorker'
 import { initExistingWorkerBridge } from './services/initExistingWorkerBridge'
 import * as playback from './services/playback'
@@ -23,13 +32,30 @@ import * as settings from './services/settings'
 import * as rigidBody from './services/rigidBody'
 import { setTransform as postTransform } from './services/transform'
 import { destroyBridge, resizeWorld, setViewportSize } from './services/lifecycle'
-import type { CrashCallback, ErrorCallback, ReadyCallback, StatsCallback } from './bridgeTypes'
+import type {
+  ContentManifestCallback,
+  ContentBundleStatusCallback,
+  CrashCallback,
+  ErrorCallback,
+  ReadyCallback,
+  SimulationStats,
+  StatsCallback,
+} from './bridgeTypes'
 import {
+  isCrossOriginIsolated as isCrossOriginIsolatedImpl,
   isSharedMemorySupported as isSharedMemorySupportedImpl,
   isWorkerSupported as isWorkerSupportedImpl,
 } from './capabilities'
 
 export type { StatsCallback, ReadyCallback, ErrorCallback, CrashCallback } from './bridgeTypes'
+
+export type WorkerBridgeLifecycle = 'INIT' | 'READY' | 'RUNNING' | 'CRASHED' | 'DEAD'
+
+export type WorkerBridgeOptions = {
+  unknownMessageMode?: UnknownMessageMode
+  errorBehavior?: ErrorBehavior
+  crashBehavior?: CrashBehavior
+}
 
 /**
  * Bridge between Main Thread and Simulation Worker
@@ -51,25 +77,55 @@ export class WorkerBridge {
   private _viewportHeight: number = 0  // Viewport size
   private _isReady: boolean = false
   private _hasTransferred: boolean = false
+  private _everTransferred: boolean = false
+
+  private _lifecycle: WorkerBridgeLifecycle = 'INIT'
   
   // Phase 5: Shared input buffer for zero-latency input
   private inputBuffer: SharedInputBuffer | null = null
   private useSharedInput: boolean = false
-  private requests = createRequestState()
+  private requests = createRequestState({
+    onTimeout: ({ kind, id, timeoutMs }) => {
+      this.onRequestTimeout?.({ kind, id, timeoutMs })
+    },
+  })
   
   // Callbacks
   public onStats: StatsCallback | null = null
   public onReady: ReadyCallback | null = null
   public onError: ErrorCallback | null = null
   public onCrash: CrashCallback | null = null  // Phase 5: Crash recovery
+  public onContentManifest: ContentManifestCallback | null = null
+  public onContentBundleStatus: ContentBundleStatusCallback | null = null
+
+  public onRequestTimeout:
+    | ((args: { kind: RequestTimeoutKind; id: number; timeoutMs: number }) => void)
+    | null = null
   
   // Camera state (stored on main thread for coordinate conversion)
   private zoom: number = 1
   private panX: number = 0
   private panY: number = 0
   
-  constructor() {
-    // Worker will be created on init
+  private options: Required<WorkerBridgeOptions>
+
+  constructor(options?: WorkerBridgeOptions) {
+    this.options = {
+      unknownMessageMode: options?.unknownMessageMode ?? 'strict',
+      errorBehavior: options?.errorBehavior ?? 'terminate',
+      crashBehavior: options?.crashBehavior ?? 'terminateIfUnrecoverable',
+    }
+  }
+
+  get lifecycle(): WorkerBridgeLifecycle {
+    return this._lifecycle
+  }
+
+  setRequestTimeouts(timeouts: Partial<RequestTimeouts>): void {
+    this.requests.timeouts = {
+      ...this.requests.timeouts,
+      ...timeouts,
+    }
   }
   
   /**
@@ -91,8 +147,17 @@ export class WorkerBridge {
     this.destroy()
     this._isReady = false
     this._hasTransferred = false
+    this._everTransferred = false
     this.useSharedInput = false
     this.inputBuffer = null
+
+    this._lifecycle = 'INIT'
+    this.requests = createRequestState({
+      timeouts: this.requests.timeouts,
+      onTimeout: ({ kind, id, timeoutMs }) => {
+        this.onRequestTimeout?.({ kind, id, timeoutMs })
+      },
+    })
 
     // Create worker
     const worker = createSimulationWorker()
@@ -118,21 +183,29 @@ export class WorkerBridge {
         requests: this.requests,
 
         onUnknownMessage: (data) => {
-          debugWarn('WorkerBridge: Ignoring unknown worker message', data)
+          debugWarn('WorkerBridge: Unknown worker message', data)
         },
         onReady: (width, height) => {
           this._isReady = true
+          this._lifecycle = 'READY'
           this._width = width
           this._height = height
           this.onReady?.(width, height)
         },
-        onStats: (fps, particleCount) => {
-          this.onStats?.({ fps, particleCount })
+        onStats: (stats: SimulationStats) => {
+          this.onStats?.(stats)
+        },
+        onContentManifest: (json: string) => {
+          this.onContentManifest?.(json)
+        },
+        onContentBundleStatus: (args) => {
+          this.onContentBundleStatus?.(args)
         },
         onError: (message) => {
           this.onError?.(message)
         },
         onCrash: (message, canRecover) => {
+          this._lifecycle = 'CRASHED'
           logError('💥 WASM Crash:', message)
           this.onCrash?.(message, canRecover ?? true)
         },
@@ -142,6 +215,7 @@ export class WorkerBridge {
 
         setHasTransferred: (v) => {
           this._hasTransferred = v
+          if (v) this._everTransferred = true
         },
         setInputBuffer: (buf) => {
           this.inputBuffer = buf
@@ -149,6 +223,10 @@ export class WorkerBridge {
         setUseSharedInput: (v) => {
           this.useSharedInput = v
         },
+
+        unknownMessageMode: this.options.unknownMessageMode,
+        errorBehavior: this.options.errorBehavior,
+        crashBehavior: this.options.crashBehavior,
       })
     } catch (err) {
       if (this.worker === worker) this.worker = null
@@ -162,14 +240,22 @@ export class WorkerBridge {
   get height(): number { return this._height }
   get isReady(): boolean { return this._isReady }
   get hasTransferred(): boolean { return this._hasTransferred }
+  get everTransferred(): boolean { return this._everTransferred }
   
   // === Playback Control ===
   
   play(): void {
+    if (!this.worker) return
+    if (this._lifecycle === 'CRASHED' || this._lifecycle === 'DEAD') return
+    if (!this._isReady) return
+    this._lifecycle = 'RUNNING'
     playback.play(this.worker)
   }
 
   pause(): void {
+    if (!this.worker) return
+    if (this._lifecycle === 'CRASHED' || this._lifecycle === 'DEAD') return
+    if (this._lifecycle === 'RUNNING') this._lifecycle = 'READY'
     playback.pause(this.worker)
   }
 
@@ -191,7 +277,7 @@ export class WorkerBridge {
     screenX: number,
     screenY: number,
     radius: number,
-    element: ElementType,
+    elementId: number,
     tool: ToolType,
     brushShape: 'circle' | 'square' | 'line' = 'circle'
   ): void {
@@ -212,7 +298,7 @@ export class WorkerBridge {
       useSharedInput: this.useSharedInput,
       inputBuffer: this.inputBuffer,
       tool,
-      element,
+      elementId,
       radius,
       brushShape,
       screenX,
@@ -225,21 +311,21 @@ export class WorkerBridge {
   /**
    * Shorthand for brush tool
    */
-  addParticles(screenX: number, screenY: number, radius: number, element: ElementType): void {
-    this.handleInput(screenX, screenY, radius, element, 'brush')
+  addParticles(screenX: number, screenY: number, radius: number, elementId: number): void {
+    this.handleInput(screenX, screenY, radius, elementId, 'brush')
   }
   
   /**
    * Shorthand for eraser tool
    */
   removeParticles(screenX: number, screenY: number, radius: number): void {
-    this.handleInput(screenX, screenY, radius, 'empty', 'eraser')
+    this.handleInput(screenX, screenY, radius, 0, 'eraser')
   }
 
   /**
    * Flood fill tool (worker only)
    */
-  fill(screenX: number, screenY: number, element: ElementType): void {
+  fill(screenX: number, screenY: number, elementId: number): void {
     const { worldX, worldY } = screenToWorld({
       screenX,
       screenY,
@@ -252,7 +338,7 @@ export class WorkerBridge {
       worldHeight: this._height,
     })
 
-    input.sendFill({ worker: this.worker, worldX, worldY, element })
+    input.sendFill({ worker: this.worker, worldX, worldY, elementId })
   }
   
   /**
@@ -263,7 +349,7 @@ export class WorkerBridge {
     worldY: number, 
     size: number, 
     shape: 'box' | 'circle', 
-    element: ElementType
+    elementId: number
   ): void {
     rigidBody.spawnRigidBody({
       worker: this.worker,
@@ -271,14 +357,14 @@ export class WorkerBridge {
       y: Math.floor(worldY),
       size: Math.floor(size),
       shape,
-      element,
+      elementId,
     })
   }
 
   /**
    * Pipette tool - returns element under cursor
    */
-  pipette(screenX: number, screenY: number): Promise<ElementType | null> {
+  pipette(screenX: number, screenY: number): Promise<ElementId | null> {
     return requests.pipette({ requests: this.requests, worker: this.worker, screenX, screenY })
   }
 
@@ -294,6 +380,13 @@ export class WorkerBridge {
    */
   loadSnapshot(buffer: ArrayBuffer): void {
     requests.loadSnapshot({ worker: this.worker, buffer })
+  }
+
+  loadContentBundle(json: string): void {
+    if (!this.worker) return
+    if (this._lifecycle === 'CRASHED' || this._lifecycle === 'DEAD') return
+    if (!this._isReady) return
+    postLoadContentBundle(this.worker, json)
   }
   
   /**
@@ -373,6 +466,7 @@ export class WorkerBridge {
     this._hasTransferred = false
     this.useSharedInput = false
     this.inputBuffer = null
+    if (this._lifecycle !== 'CRASHED') this._lifecycle = 'DEAD'
   }
 }
 
@@ -388,4 +482,11 @@ export function isWorkerSupported(): boolean {
  */
 export function isSharedMemorySupported(): boolean {
   return isSharedMemorySupportedImpl()
+}
+
+/**
+ * Check whether the page is cross-origin isolated (COOP/COEP configured).
+ */
+export function isCrossOriginIsolated(): boolean {
+  return isCrossOriginIsolatedImpl()
 }

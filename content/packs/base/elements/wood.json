@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 3,
+  "key": "wood",
+  "category": "solid",
+  "color": "0xFF8B4513",
+  "density": 600,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 5,
+  "flags": {
+    "flammable": true,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "solids",
+    "displayName": "Wood",
+    "description": "Flammable solid",
+    "sort": 2
+  }
+}

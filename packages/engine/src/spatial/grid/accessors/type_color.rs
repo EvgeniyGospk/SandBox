@@ -27,7 +27,14 @@ impl Grid {
     #[inline]
     pub fn set_type(&mut self, x: u32, y: u32, t: ElementId) {
         let idx = self.index(x, y);
+        let prev = self.types[idx];
         self.types[idx] = t;
+
+        if prev == EL_EMPTY && t != EL_EMPTY {
+            self.mark_cell_non_empty(x, y);
+        } else if prev != EL_EMPTY && t == EL_EMPTY {
+            self.mark_cell_empty(x, y);
+        }
     }
 
     // === Color access ===

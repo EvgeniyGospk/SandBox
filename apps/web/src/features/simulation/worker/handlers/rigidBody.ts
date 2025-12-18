@@ -1,16 +1,14 @@
-import type { ElementType } from '@/features/simulation/engine/api/types'
-import { state, ELEMENT_MAP } from '../state'
+import type { WorkerContext } from '../context'
 import { spawnRigidBody } from '../tools'
 
-export function handleSpawnRigidBody(msg: {
+export function handleSpawnRigidBody(ctx: WorkerContext, msg: {
   type: 'SPAWN_RIGID_BODY'
   x: number
   y: number
   size: number
   shape: 'box' | 'circle'
-  element: ElementType
+  elementId: number
 }): void {
-  if (!state.engine) return
-  const elementId = ELEMENT_MAP[msg.element] ?? 1
-  spawnRigidBody(msg.x, msg.y, msg.size, msg.shape, elementId)
+  if (!ctx.state.wasm.engine) return
+  spawnRigidBody(ctx, msg.x, msg.y, msg.size, msg.shape, Math.max(0, Math.min(255, Math.floor(msg.elementId))))
 }

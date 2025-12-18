@@ -95,7 +95,7 @@ impl ChunkGrid {
     #[inline]
     pub fn is_sleeping(&self, cx: u32, cy: u32) -> bool {
         let idx = self.chunk_idx_from_coords(cx, cy);
-        self.state[idx] == ChunkState::Sleeping
+        self.sleep_enabled && self.state[idx] == ChunkState::Sleeping
     }
 
     /// Should we process this chunk? (BitSet version)

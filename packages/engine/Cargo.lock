@@ -197,6 +197,8 @@ dependencies = [
  "console_error_panic_hook",
  "js-sys",
  "rayon",
+ "serde",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-rayon",
  "wasm-bindgen-test",

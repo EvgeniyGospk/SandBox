@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 12,
+  "key": "fire",
+  "category": "energy",
+  "color": "0xFFFF6600",
+  "density": 0.3,
+  "dispersion": 0,
+  "lifetime": 60,
+  "defaultTemp": 800,
+  "heatConductivity": 50,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": true,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": "energy_fire",
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "energy",
+    "displayName": "Fire",
+    "description": "Burns flammables, extinguished by water",
+    "sort": 0
+  }
+}

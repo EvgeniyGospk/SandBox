@@ -1,6 +1,6 @@
 use super::super::{UpdateContext, gravity_dir, get_random_dir};
 use crate::elements::{
-    ELEMENT_DATA, EL_EMPTY, EL_DIRT, EL_SAND,
+    EL_EMPTY, EL_DIRT, EL_SAND,
     CAT_LIQUID,
 };
 
@@ -15,12 +15,13 @@ pub(super) fn can_seed_displace(ctx: &UpdateContext, x: i32, y: i32) -> bool {
     let target_type = ctx.grid.get_type(x, y);
     if target_type == EL_EMPTY { return true; }
 
-    // Bounds check
-    if (target_type as usize) >= ELEMENT_DATA.len() { return false; }
+    let Some(target_props) = ctx.content.props(target_type) else {
+        return false;
+    };
 
-    let target_cat = ELEMENT_DATA[target_type as usize].category;
+    let target_cat = target_props.category;
     if target_cat == CAT_LIQUID {
-        return SEED_DENSITY > ELEMENT_DATA[target_type as usize].density;
+        return SEED_DENSITY > target_props.density;
     }
 
     false

@@ -1,0 +1,30 @@
+{
+  "kind": "element",
+  "id": 15,
+  "key": "gunpowder",
+  "category": "powder",
+  "color": "0xFF404040",
+  "density": 1400,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 10,
+  "flags": {
+    "flammable": true,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "solids",
+    "displayName": "Gunpowder",
+    "description": "Explosive! Ignites instantly from fire",
+    "sort": 5
+  }
+}

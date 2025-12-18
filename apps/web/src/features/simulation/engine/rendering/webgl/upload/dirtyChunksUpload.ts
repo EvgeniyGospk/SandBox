@@ -1,14 +1,19 @@
 export function uploadDirtyChunk(args: {
   gl: WebGL2RenderingContext
   memoryView: Uint8Array
-  engine: { extract_chunk_pixels: (chunkIdx: number) => number }
-  chunkIdx: number
+  colorsPtr: number
+  worldWidth: number
+  worldHeight: number
   xOffset: number
   yOffset: number
   uploadW: number
   uploadH: number
 }): void {
-  const pixelsPtr = args.engine.extract_chunk_pixels(args.chunkIdx)
+  // Upload directly from the full world color buffer using UNPACK_ROW_LENGTH stride.
+  const bytesPerPixel = 4
+  const colorsEnd = args.colorsPtr + args.worldWidth * args.worldHeight * bytesPerPixel
+  const base = args.colorsPtr + (args.yOffset * args.worldWidth + args.xOffset) * bytesPerPixel
+  const pixels = args.memoryView.subarray(base, colorsEnd)
 
   args.gl.texSubImage2D(
     args.gl.TEXTURE_2D,
@@ -19,7 +24,6 @@ export function uploadDirtyChunk(args: {
     args.uploadH,
     args.gl.RGBA,
     args.gl.UNSIGNED_BYTE,
-    args.memoryView,
-    pixelsPtr
+    pixels
   )
 }

@@ -1,5 +1,9 @@
 import type { WorkerMessage } from './types'
 
+import { createWorkerContext } from './context'
+import { postWorkerError } from './errors'
+import { parseWorkerMessage } from './validation'
+
 import { handleInit } from './handlers/init'
 import { handlePause, handlePlay } from './handlers/playback'
 import { handleStep } from './handlers/step'
@@ -15,85 +19,107 @@ import { handleSnapshot } from './handlers/snapshot'
 import { handleLoadSnapshot } from './handlers/loadSnapshot'
 import { handleResize } from './handlers/resize'
 import { handleSetViewport } from './handlers/viewport'
+import { handleLoadContentBundle } from './handlers/loadContentBundle'
 
-self.onmessage = (e: MessageEvent<WorkerMessage>) => {
-  const msg = e.data
+const ctx = createWorkerContext()
 
-  switch (msg.type) {
-    case 'INIT':
-      handleInit(msg)
-      break
+self.onmessage = (e: MessageEvent<unknown>) => {
+  const parsed = parseWorkerMessage(e.data)
+  if (!parsed.ok) {
+    postWorkerError({ message: parsed.error, extra: { receivedType: parsed.receivedType } })
+    return
+  }
 
-    case 'PLAY':
-      handlePlay()
-      break
+  const msg: WorkerMessage = parsed.msg
 
-    case 'PAUSE':
-      handlePause()
-      break
+  try {
+    switch (msg.type) {
+      case 'INIT':
+        handleInit(ctx, msg)
+        break
 
-    case 'STEP':
-      handleStep()
-      break
+      case 'PLAY':
+        handlePlay(ctx)
+        break
 
-    case 'FILL': {
-      handleFill(msg)
-      break
+      case 'PAUSE':
+        handlePause(ctx)
+        break
+
+      case 'STEP':
+        handleStep(ctx)
+        break
+
+      case 'FILL': {
+        handleFill(ctx, msg)
+        break
+      }
+
+      case 'SPAWN_RIGID_BODY': {
+        handleSpawnRigidBody(ctx, msg)
+        break
+      }
+
+      case 'PIPETTE': {
+        handlePipette(ctx, msg)
+        break
+      }
+
+      case 'SNAPSHOT': {
+        handleSnapshot(ctx, msg)
+        break
+      }
+
+      case 'LOAD_SNAPSHOT': {
+        handleLoadSnapshot(ctx, msg)
+        break
+      }
+
+      case 'INPUT':
+        handleInputMessage(ctx, msg)
+        break
+
+      case 'INPUT_END':
+        handleInputEnd(ctx)
+        break
+
+      case 'TRANSFORM':
+        handleTransform(ctx, msg)
+        break
+
+      case 'SETTINGS':
+        handleSettings(ctx, msg)
+        break
+
+      case 'SET_RENDER_MODE':
+        handleRenderMode(ctx, msg)
+        break
+
+      case 'CLEAR':
+        handleClear(ctx)
+        break
+
+      case 'LOAD_CONTENT_BUNDLE': {
+        handleLoadContentBundle(ctx, msg)
+        break
+      }
+
+      case 'RESIZE': {
+        handleResize(ctx, msg)
+        break
+      }
+
+      case 'SET_VIEWPORT': {
+        handleSetViewport(ctx, msg)
+        break
+      }
     }
-
-    case 'SPAWN_RIGID_BODY': {
-      handleSpawnRigidBody(msg)
-      break
-    }
-
-    case 'PIPETTE': {
-      handlePipette(msg)
-      break
-    }
-
-    case 'SNAPSHOT': {
-      handleSnapshot(msg)
-      break
-    }
-
-    case 'LOAD_SNAPSHOT': {
-      handleLoadSnapshot(msg)
-      break
-    }
-
-    case 'INPUT':
-      handleInputMessage(msg)
-      break
-
-    case 'INPUT_END':
-      handleInputEnd()
-      break
-
-    case 'TRANSFORM':
-      handleTransform(msg)
-      break
-
-    case 'SETTINGS':
-      handleSettings(msg)
-      break
-
-    case 'SET_RENDER_MODE':
-      handleRenderMode(msg)
-      break
-
-    case 'CLEAR':
-      handleClear()
-      break
-
-    case 'RESIZE': {
-      handleResize(msg)
-      break
-    }
-
-    case 'SET_VIEWPORT': {
-      handleSetViewport(msg)
-      break
-    }
+  } catch (err) {
+    postWorkerError({
+      message: 'Worker handler error',
+      error: err,
+      extra: { messageType: msg.type },
+    })
   }
 }
 

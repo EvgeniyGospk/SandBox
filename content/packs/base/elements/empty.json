@@ -1,0 +1,31 @@
+{
+  "kind": "element",
+  "id": 0,
+  "key": "empty",
+  "category": "solid",
+  "color": "0xFF0A0A0A",
+  "density": 0,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 5,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": null,
+  "hidden": true,
+  "ui": {
+    "category": "utility",
+    "displayName": "Empty",
+    "description": "",
+    "sort": 0,
+    "hidden": true
+  }
+}

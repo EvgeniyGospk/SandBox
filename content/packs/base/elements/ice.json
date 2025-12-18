@@ -1,0 +1,35 @@
+{
+  "kind": "element",
+  "id": 5,
+  "key": "ice",
+  "category": "solid",
+  "color": "0xFFA5F2F3",
+  "density": 916,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": -10,
+  "heatConductivity": 20,
+  "flags": {
+    "flammable": false,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": true,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": {
+    "high": {
+      "temp": 0,
+      "to": "water"
+    }
+  },
+  "hidden": false,
+  "ui": {
+    "category": "solids",
+    "displayName": "Ice",
+    "description": "Melts from fire/lava, floats on water",
+    "sort": 4
+  }
+}

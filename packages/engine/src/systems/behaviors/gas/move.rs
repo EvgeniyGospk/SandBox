@@ -1,4 +1,4 @@
-use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_SOLID};
+use crate::elements::{EL_EMPTY, CAT_SOLID};
 
 use super::super::UpdateContext;
 
@@ -24,14 +24,15 @@ pub(super) fn try_rise(
         return true;
     }
 
-    // Bounds check
-    if (target_type as usize) >= ELEMENT_DATA.len() { return false; }
+    let Some(target_props) = ctx.content.props(target_type) else {
+        return false;
+    };
 
     // Can we bubble through? (target must be heavier and not solid)
-    let t_cat = ELEMENT_DATA[target_type as usize].category;
+    let t_cat = target_props.category;
 
     if t_cat != CAT_SOLID {
-        let t_density = ELEMENT_DATA[target_type as usize].density;
+        let t_density = target_props.density;
         if t_density > my_density {
             unsafe { ctx.grid.swap_unchecked(from_x, from_y, to_x as u32, to_y as u32); }
             return true;

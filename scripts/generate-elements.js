@@ -5,7 +5,7 @@
  * Reads definitions/elements.json and definitions/reactions.json
  * Generates:
  * - packages/engine/src/domain/generated_elements.rs (Elements + Flags + Reactions LUT)
- * - apps/web/src/lib/engine/generated_elements.ts (TypeScript)
+ * - apps/web/src/core/engine/generated_elements.ts (TypeScript)
  * 
  * Usage:
  *   node scripts/generate-elements.js
@@ -19,8 +19,41 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const ELEMENTS_PATH = path.join(ROOT, 'definitions', 'elements.json');
 const REACTIONS_PATH = path.join(ROOT, 'definitions', 'reactions.json');
+const ELEMENTS_SCHEMA_PATH = path.join(ROOT, 'definitions', 'elements.schema.json');
+const REACTIONS_SCHEMA_PATH = path.join(ROOT, 'definitions', 'reactions.schema.json');
 const RUST_OUTPUT = path.join(ROOT, 'packages', 'engine', 'src', 'domain', 'generated_elements.rs');
-const TS_OUTPUT = path.join(ROOT, 'apps', 'web', 'src', 'lib', 'engine', 'generated_elements.ts');
+const TS_OUTPUT = path.join(ROOT, 'apps', 'web', 'src', 'core', 'engine', 'generated_elements.ts');
+
+const Ajv = require('ajv');
+
+function fail(message) {
+  console.error(`\n❌ ${message}`);
+  process.exit(1);
+}
+
+function assert(condition, message) {
+  if (!condition) fail(message);
+}
+
+function validateWithSchema(data, schemaPath, label) {
+  if (!fs.existsSync(schemaPath)) {
+    fail(`${label}: schema file not found: ${schemaPath}`);
+  }
+
+  const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+  const ajv = new Ajv({ allErrors: true, jsonPointers: true });
+  const validate = ajv.compile(schema);
+
+  const ok = validate(data);
+  if (!ok) {
+    console.error(`\n❌ ${label}: schema validation failed`);
+    for (const err of validate.errors || []) {
+      const path = err.dataPath || '(root)';
+      console.error(`   - ${path}: ${err.message}`);
+    }
+    process.exit(1);
+  }
+}
 
 // Load definitions
 console.log('📖 Reading elements from:', ELEMENTS_PATH);
@@ -29,13 +62,139 @@ const elementsData = JSON.parse(fs.readFileSync(ELEMENTS_PATH, 'utf8'));
 console.log('📖 Reading reactions from:', REACTIONS_PATH);
 const reactionsData = JSON.parse(fs.readFileSync(REACTIONS_PATH, 'utf8'));
 
-const { categories, elements, flags: flagDefs, physics: physicsConfig } = elementsData;
+validateWithSchema(elementsData, ELEMENTS_SCHEMA_PATH, 'definitions/elements.json');
+validateWithSchema(reactionsData, REACTIONS_SCHEMA_PATH, 'definitions/reactions.json');
+
+const {
+  categories,
+  elements,
+  flags: flagDefs,
+  physics: physicsConfig,
+  uiCategories = [],
+} = elementsData;
 const { reactions } = reactionsData;
+
+// Guardrails
+assert(Array.isArray(elements), `definitions/elements.json: 'elements' must be an array`);
+assert(elements.length <= 256, `definitions/elements.json: element count ${elements.length} exceeds 256 (ElementId is u8)`);
+
+const requiredFlagKeys = [
+  'FLAG_SOLID',
+  'FLAG_POWDER',
+  'FLAG_LIQUID',
+  'FLAG_GAS',
+  'FLAG_ENERGY',
+  'FLAG_UTILITY',
+  'FLAG_BIO',
+  'FLAG_FLAMMABLE',
+  'FLAG_CONDUCTIVE',
+  'FLAG_IGNORE_GRAVITY',
+  'FLAG_CORROSIVE',
+  'FLAG_HOT',
+  'FLAG_COLD',
+  'FLAG_RIGID',
+];
+for (const k of requiredFlagKeys) {
+  assert(typeof flagDefs?.[k] === 'number', `definitions/elements.json: flags.${k} must be a number`);
+}
+
+const categoryNames = new Set(categories.map((c) => c.name));
+const uiCategoryKeys = new Set(uiCategories.map((c) => c.key));
+assert(uiCategoryKeys.size === uiCategories.length, `definitions/elements.json: uiCategories[].key must be unique`);
+
+const elementNameSet = new Set();
+const elementRustNameSet = new Set();
+const elementIdSet = new Set();
+
+for (let i = 0; i < elements.length; i++) {
+  const el = elements[i];
+
+  assert(Number.isInteger(el.id), `definitions/elements.json: elements[${i}].id must be an integer`);
+  assert(el.id >= 0 && el.id <= 255, `definitions/elements.json: elements[${i}].id must be in [0..255]`);
+  assert(el.id === i, `definitions/elements.json: elements must be sorted and contiguous by id (expected id ${i} at index ${i}, got ${el.id})`);
+  assert(!elementIdSet.has(el.id), `definitions/elements.json: duplicate element id ${el.id}`);
+  elementIdSet.add(el.id);
+
+  assert(typeof el.name === 'string' && el.name.length > 0, `definitions/elements.json: elements[${i}].name must be a string`);
+  assert(!elementNameSet.has(el.name), `definitions/elements.json: duplicate element name '${el.name}'`);
+  elementNameSet.add(el.name);
+
+  assert(typeof el.rustName === 'string' && el.rustName.length > 0, `definitions/elements.json: elements[${i}].rustName must be a string`);
+  assert(!elementRustNameSet.has(el.rustName), `definitions/elements.json: duplicate element rustName '${el.rustName}'`);
+  elementRustNameSet.add(el.rustName);
+
+  assert(categoryNames.has(el.category), `definitions/elements.json: elements[${i}].category '${el.category}' is not in categories[]`);
+
+  if (el.ui) {
+    assert(uiCategoryKeys.has(el.ui.category), `definitions/elements.json: elements[${i}].ui.category '${el.ui.category}' is not in uiCategories[]`);
+  }
+
+  if (el.category === 'utility') {
+    assert(el.ignoreGravity === true, `definitions/elements.json: elements[${i}] '${el.name}' is category=utility and must set ignoreGravity=true`);
+  }
+  if (el.density === 'Infinity') {
+    assert(el.ignoreGravity === true, `definitions/elements.json: elements[${i}] '${el.name}' has density='Infinity' and must set ignoreGravity=true`);
+  }
+}
+
+assert(elements[0]?.name === 'empty', `definitions/elements.json: elements[0] must be 'empty'`);
+assert(elements[0]?.rustName === 'EL_EMPTY', `definitions/elements.json: elements[0].rustName must be 'EL_EMPTY'`);
+
+// Strict reference validation for phase changes
+for (let i = 0; i < elements.length; i++) {
+  const el = elements[i];
+  const pc = el.phaseChange;
+
+  if (pc?.high?.to !== undefined) {
+    assert(typeof pc.high.to === 'string', `definitions/elements.json: elements[${i}].phaseChange.high.to must be a string`);
+    assert(typeof pc.high.temp === 'number' && Number.isFinite(pc.high.temp), `definitions/elements.json: elements[${i}].phaseChange.high.temp must be a number`);
+    assert(elementNameSet.has(pc.high.to), `definitions/elements.json: elements[${i}] '${el.name}' phaseChange.high.to refers to unknown element '${pc.high.to}'`);
+  }
+
+  if (pc?.low?.to !== undefined) {
+    assert(typeof pc.low.to === 'string', `definitions/elements.json: elements[${i}].phaseChange.low.to must be a string`);
+    assert(typeof pc.low.temp === 'number' && Number.isFinite(pc.low.temp), `definitions/elements.json: elements[${i}].phaseChange.low.temp must be a number`);
+    assert(elementNameSet.has(pc.low.to), `definitions/elements.json: elements[${i}] '${el.name}' phaseChange.low.to refers to unknown element '${pc.low.to}'`);
+  }
+}
+
+// Strict reference validation for reactions
+assert(Array.isArray(reactions), `definitions/reactions.json: 'reactions' must be an array`);
+const reactionIdSet = new Set();
+const reactionPairSet = new Set();
+for (let i = 0; i < reactions.length; i++) {
+  const r = reactions[i];
+  assert(typeof r.id === 'string' && r.id.length > 0, `definitions/reactions.json: reactions[${i}].id must be a string`);
+  assert(!reactionIdSet.has(r.id), `definitions/reactions.json: duplicate reaction id '${r.id}'`);
+  reactionIdSet.add(r.id);
+
+  assert(elementNameSet.has(r.aggressor), `definitions/reactions.json: reactions[${i}] '${r.id}' aggressor '${r.aggressor}' not found in elements`);
+  assert(elementNameSet.has(r.victim), `definitions/reactions.json: reactions[${i}] '${r.id}' victim '${r.victim}' not found in elements`);
+
+  const pairKey = `${r.aggressor}::${r.victim}`;
+  assert(!reactionPairSet.has(pairKey), `definitions/reactions.json: duplicate reaction pair ${pairKey}`);
+  reactionPairSet.add(pairKey);
+
+  if (r.result_aggressor !== null) {
+    assert(elementNameSet.has(r.result_aggressor), `definitions/reactions.json: reactions[${i}] '${r.id}' result_aggressor '${r.result_aggressor}' not found in elements`);
+  }
+  if (r.result_victim !== null) {
+    assert(elementNameSet.has(r.result_victim), `definitions/reactions.json: reactions[${i}] '${r.id}' result_victim '${r.result_victim}' not found in elements`);
+  }
+  if (r.spawn !== null) {
+    assert(elementNameSet.has(r.spawn), `definitions/reactions.json: reactions[${i}] '${r.id}' spawn '${r.spawn}' not found in elements`);
+  }
+
+  assert(typeof r.chance === 'number' && Number.isFinite(r.chance), `definitions/reactions.json: reactions[${i}] '${r.id}' chance must be a number`);
+  assert(r.chance >= 0 && r.chance <= 1, `definitions/reactions.json: reactions[${i}] '${r.id}' chance must be in [0..1]`);
+}
 
 // Build name->id map for reactions
 const nameToId = {};
+const nameToRustName = {};
 for (const el of elements) {
   nameToId[el.name] = el.id;
+  nameToRustName[el.name] = el.rustName;
 }
 
 // Phase 2: Default physics properties by category
@@ -84,12 +243,11 @@ function computeFlags(el) {
   // Property flags
   if (el.flammable) flags |= flagDefs.FLAG_FLAMMABLE;
   if (el.conductive) flags |= flagDefs.FLAG_CONDUCTIVE;
-  if (el.name === 'acid') flags |= flagDefs.FLAG_CORROSIVE;
-  if (el.defaultTemp > 500) flags |= flagDefs.FLAG_HOT;
-  if (el.defaultTemp < 0) flags |= flagDefs.FLAG_COLD;
-  if (el.density === 'Infinity' || el.category === 'utility') {
-    flags |= flagDefs.FLAG_IGNORE_GRAVITY;
-  }
+  if (el.corrosive) flags |= flagDefs.FLAG_CORROSIVE;
+  if (el.hot) flags |= flagDefs.FLAG_HOT;
+  if (el.cold) flags |= flagDefs.FLAG_COLD;
+  if (el.ignoreGravity) flags |= flagDefs.FLAG_IGNORE_GRAVITY;
+  if (el.rigid) flags |= flagDefs.FLAG_RIGID;
   
   return flags;
 }
@@ -107,6 +265,22 @@ function reactionIndex(aggId, vicId) {
 
 function generateRust() {
   const lines = [];
+
+  const behaviorKindSet = new Set(
+    elements
+      .map((e) => e.behaviorKind)
+      .filter((v) => typeof v === 'string' && v.length > 0)
+  );
+
+  const behaviorKinds = ['none', ...Array.from(behaviorKindSet).sort()];
+
+  function toRustEnumVariant(name) {
+    return name
+      .split(/[_\-\s]+/)
+      .filter(Boolean)
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .join('');
+  }
   
   lines.push(`//! Generated Element Definitions - DO NOT EDIT MANUALLY!`);
   lines.push(`//!`);
@@ -156,6 +330,31 @@ function generateRust() {
   for (const [name, value] of Object.entries(flagDefs)) {
     lines.push(`pub const ${name}: ElementFlags = ${value};`);
   }
+  lines.push(``);
+
+  // Behavior kind mapping (element-level dispatch)
+  lines.push(`// ============================================================================`);
+  lines.push(`// BEHAVIOR KIND (Element-level dispatch)`);
+  lines.push(`// ============================================================================`);
+  lines.push(``);
+  lines.push(`#[repr(u8)]`);
+  lines.push(`#[derive(Clone, Copy, Debug, PartialEq, Eq)]`);
+  lines.push(`pub enum BehaviorKind {`);
+  for (let i = 0; i < behaviorKinds.length; i++) {
+    const k = behaviorKinds[i];
+    const variant = k === 'none' ? 'None' : toRustEnumVariant(k);
+    lines.push(`    ${variant} = ${i},`);
+  }
+  lines.push(`}`);
+  lines.push(``);
+
+  lines.push(`pub const BEHAVIOR_KIND_BY_ID: [BehaviorKind; ELEMENT_COUNT] = [`);
+  for (const el of elements) {
+    const k = el.behaviorKind;
+    const variant = k ? toRustEnumVariant(k) : 'None';
+    lines.push(`    BehaviorKind::${variant}, // ${el.id}: ${el.name}`);
+  }
+  lines.push(`];`);
   lines.push(``);
   
   // Phase 2: Physics constants
@@ -249,6 +448,66 @@ function generateRust() {
   
   lines.push(`];`);
   lines.push(``);
+
+  // Phase changes (generated from definitions)
+  lines.push(`// ============================================================================`);
+  lines.push(`// PHASE CHANGES - Data-driven`);
+  lines.push(`// ============================================================================`);
+  lines.push(``);
+  lines.push(`#[derive(Clone, Copy)]`);
+  lines.push(`pub struct PhaseChange {`);
+  lines.push(`    pub high: Option<(f32, ElementId)>,`);
+  lines.push(`    pub low: Option<(f32, ElementId)>,`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`pub const PHASE_CHANGES: [PhaseChange; ELEMENT_COUNT] = [`);
+  for (const el of elements) {
+    const pc = el.phaseChange;
+
+    let high = 'None';
+    if (pc?.high?.to) {
+      const toRust = nameToRustName[pc.high.to];
+      if (!toRust) {
+        console.warn(`⚠️ Unknown phaseChange.high.to element: ${pc.high.to} (from ${el.name})`);
+      } else {
+        high = `Some((${toRustFloat(pc.high.temp)}, ${toRust}))`;
+      }
+    }
+
+    let low = 'None';
+    if (pc?.low?.to) {
+      const toRust = nameToRustName[pc.low.to];
+      if (!toRust) {
+        console.warn(`⚠️ Unknown phaseChange.low.to element: ${pc.low.to} (from ${el.name})`);
+      } else {
+        low = `Some((${toRustFloat(pc.low.temp)}, ${toRust}))`;
+      }
+    }
+
+    lines.push(`    // ${el.id}: ${el.name}`);
+    lines.push(`    PhaseChange { high: ${high}, low: ${low} },`);
+  }
+  lines.push(`];`);
+  lines.push(``);
+
+  lines.push(`/// Get phase change for element at given temperature`);
+  lines.push(`/// Returns new element if phase change occurs, None otherwise`);
+  lines.push(`#[inline]`);
+  lines.push(`pub fn check_phase_change(element: ElementId, temp: f32) -> Option<ElementId> {`);
+  lines.push(`    let idx = element as usize;`);
+  lines.push(`    if idx >= ELEMENT_COUNT { return None; }`);
+  lines.push(`    let pc = PHASE_CHANGES[idx];`);
+  lines.push(`    // Check high temp (melting/boiling)`);
+  lines.push(`    if let Some((threshold, new_el)) = pc.high {`);
+  lines.push(`        if temp > threshold { return Some(new_el); }`);
+  lines.push(`    }`);
+  lines.push(`    // Check low temp (freezing/condensing)`);
+  lines.push(`    if let Some((threshold, new_el)) = pc.low {`);
+  lines.push(`        if temp < threshold { return Some(new_el); }`);
+  lines.push(`    }`);
+  lines.push(`    None`);
+  lines.push(`}`);
+  lines.push(``);
   
   // Reaction LUT
   lines.push(`// ============================================================================`);
@@ -339,12 +598,6 @@ function generateRust() {
   lines.push(`        unsafe { self.lut.get_unchecked(idx).as_ref() }`);
   lines.push(`        #[cfg(debug_assertions)]`);
   lines.push(`        self.lut[idx].as_ref()`);
-  lines.push(`    }`);
-  lines.push(`}`);
-  lines.push(``);
-  lines.push(`impl Default for ReactionSystem {`);
-  lines.push(`    fn default() -> Self {`);
-  lines.push(`        Self::new()`);
   lines.push(`    }`);
   lines.push(`}`);
   lines.push(``);
@@ -444,6 +697,24 @@ function generateTypeScript() {
     lines.push(`export const ${cat.rustName} = ${cat.id}`);
   }
   lines.push(``);
+
+  // UI category definitions (palette grouping)
+  lines.push(`// ============================================================================`);
+  lines.push(`// UI CATEGORY DEFINITIONS`);
+  lines.push(`// ============================================================================`);
+  lines.push(``);
+  lines.push(`export interface UiCategoryDef {`);
+  lines.push(`  key: string`);
+  lines.push(`  label: string`);
+  lines.push(`  sort: number`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`export const UI_CATEGORIES: UiCategoryDef[] = [`);
+  for (const c of uiCategories) {
+    lines.push(`  { key: ${JSON.stringify(c.key)}, label: ${JSON.stringify(c.label)}, sort: ${c.sort} },`);
+  }
+  lines.push(`]`);
+  lines.push(``);
   
   // Type definitions
   lines.push(`// ============================================================================`);
@@ -525,6 +796,7 @@ function generateTypeScript() {
   lines.push(`  defaultTemp: number`);
   lines.push(`  heatConductivity: number`);
   lines.push(`  hidden?: boolean`);
+  lines.push(`  ui?: { category: string; displayName: string; description: string; sort: number; hidden?: boolean }`);
   lines.push(`}`);
   lines.push(``);
   
@@ -536,6 +808,15 @@ function generateTypeScript() {
     const density = el.density === 'Infinity' ? 'Infinity' : el.density;
     const flags = computeFlags(el);
     const hiddenStr = el.hidden ? `, hidden: true` : '';
+
+    let uiLines = [];
+    if (el.ui) {
+      const ui = el.ui;
+      const uiHiddenStr = ui.hidden ? `, hidden: true` : '';
+      uiLines = [
+        `    ui: { category: ${JSON.stringify(ui.category)}, displayName: ${JSON.stringify(ui.displayName)}, description: ${JSON.stringify(ui.description)}, sort: ${ui.sort}${uiHiddenStr} },`,
+      ];
+    }
     
     lines.push(`  {`);
     lines.push(`    id: ${el.rustName},`);
@@ -548,6 +829,7 @@ function generateTypeScript() {
     lines.push(`    lifetime: ${el.lifetime},`);
     lines.push(`    defaultTemp: ${el.defaultTemp},`);
     lines.push(`    heatConductivity: ${el.heatConductivity}${hiddenStr},`);
+    for (const l of uiLines) lines.push(l);
     lines.push(`  },`);
   }
   
@@ -612,12 +894,14 @@ function main() {
   // Generate Rust
   console.log('🦀 Generating Rust code (elements + flags + reactions LUT)...');
   const rustCode = generateRust();
+  fs.mkdirSync(path.dirname(RUST_OUTPUT), { recursive: true });
   fs.writeFileSync(RUST_OUTPUT, rustCode);
   console.log(`   → ${RUST_OUTPUT}`);
   
   // Generate TypeScript
   console.log('📘 Generating TypeScript code...');
   const tsCode = generateTypeScript();
+  fs.mkdirSync(path.dirname(TS_OUTPUT), { recursive: true });
   fs.writeFileSync(TS_OUTPUT, tsCode);
   console.log(`   → ${TS_OUTPUT}`);
   

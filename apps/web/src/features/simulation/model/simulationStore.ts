@@ -9,6 +9,42 @@ export type { WorldSizePreset }
 
 export type GameState = 'menu' | 'playing'
 
+type ContentManifest = {
+  formatVersion: number
+  elements: Array<{
+    id: number
+    key: string
+    pack?: string
+    name?: string
+    color: number
+    hidden: boolean
+    ui?: {
+      category: string
+      displayName: string
+      description: string
+      sort: number
+      hidden?: boolean
+    }
+  }>
+}
+
+export type ContentBundleStatus = {
+  phase: 'init' | 'reload'
+  status: 'loading' | 'loaded' | 'error'
+  message?: string
+}
+
+function parseContentManifestJson(json: string | null): ContentManifest | null {
+  if (!json) return null
+  try {
+    const parsed = JSON.parse(json) as unknown
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed as ContentManifest
+  } catch {
+    return null
+  }
+}
+
 interface SimulationState {
   // State
   gameState: GameState
@@ -26,6 +62,14 @@ interface SimulationState {
   // Runtime backend (worker or main-thread fallback)
   backend: ISimulationBackend | null
   setBackend: (backend: ISimulationBackend | null) => void
+
+  // Runtime content manifest (from worker)
+  contentManifestJson: string | null
+  contentManifest: ContentManifest | null
+  setContentManifestJson: (json: string | null) => void
+
+  contentBundleStatus: ContentBundleStatus | null
+  setContentBundleStatus: (status: ContentBundleStatus | null) => void
   
   // Actions
   startGame: () => void
@@ -65,6 +109,17 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       // Non-UI state
       backend: null,
       setBackend: (backend: ISimulationBackend | null) => historyController.setBackend(backend),
+
+      contentManifestJson: null,
+      contentManifest: null,
+      setContentManifestJson: (contentManifestJson: string | null) =>
+        set({
+          contentManifestJson,
+          contentManifest: parseContentManifestJson(contentManifestJson),
+        }),
+
+      contentBundleStatus: null,
+      setContentBundleStatus: (contentBundleStatus: ContentBundleStatus | null) => set({ contentBundleStatus }),
 
       // Initial state
       gameState: 'menu' as GameState,

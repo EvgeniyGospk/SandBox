@@ -1,4 +1,4 @@
-use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_GAS, CAT_LIQUID};
+use crate::elements::{EL_EMPTY, CAT_GAS, CAT_LIQUID};
 
 use super::perf::inc_liquid_scans;
 use super::super::UpdateContext;
@@ -61,14 +61,15 @@ pub(super) fn scan_line(
             continue;
         }
 
-        // Bounds check
-        if (target_type as usize) >= ELEMENT_DATA.len() { break; }
-
         // CASE 2: Occupied cell - check if we can displace
-        let t_cat = ELEMENT_DATA[target_type as usize].category;
+        let Some(target_props) = ctx.content.props(target_type) else {
+            break;
+        };
+
+        let t_cat = target_props.category;
 
         if t_cat == CAT_LIQUID || t_cat == CAT_GAS {
-            let t_density = ELEMENT_DATA[target_type as usize].density;
+            let t_density = target_props.density;
 
             if my_density > t_density {
                 best_x = tx;

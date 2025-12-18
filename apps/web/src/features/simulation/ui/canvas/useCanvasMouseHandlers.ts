@@ -2,7 +2,6 @@ import { useCallback } from 'react'
 import type { MutableRefObject, MouseEvent as ReactMouseEvent } from 'react'
 import type { WorkerBridge } from '@/features/simulation/engine/worker'
 import type { WasmParticleEngine } from '@/features/simulation/engine'
-import { ELEMENT_ID_TO_NAME } from '@/features/simulation/engine/api/types'
 import { useToolStore } from '@/features/tools/model/toolStore'
 import type { CameraState } from './useCanvasRefs'
 
@@ -56,14 +55,13 @@ export function useCanvasMouseHandlers(args: {
 
       if (selectedTool === 'pipette') {
         if (bridgeRef.current) {
-          bridgeRef.current.pipette(pos.x, pos.y).then((el) => {
-            if (el) useToolStore.getState().setElement(el)
+          bridgeRef.current.pipette(pos.x, pos.y).then((elementId) => {
+            if (elementId !== null) useToolStore.getState().setElementId(elementId)
           })
         } else if (engineRef.current) {
           const world = screenToWorld(pos.x, pos.y)
           const elId = engineRef.current.getElementAt(world.x, world.y)
-          const el = ELEMENT_ID_TO_NAME[elId] ?? null
-          if (el) useToolStore.getState().setElement(el)
+          useToolStore.getState().setElementId(elId)
         }
         return
       }

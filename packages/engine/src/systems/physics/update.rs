@@ -1,5 +1,6 @@
 use crate::chunks::ChunkGrid;
-use crate::elements::{EL_EMPTY, ELEMENT_DATA, GRAVITY, AIR_FRICTION, MAX_VELOCITY, CAT_GAS, CAT_SOLID, CAT_ENERGY, CAT_BIO};
+use crate::domain::content::ContentRegistry;
+use crate::elements::{EL_EMPTY, GRAVITY, AIR_FRICTION, MAX_VELOCITY, CAT_GAS, CAT_SOLID, CAT_ENERGY, CAT_BIO};
 use crate::grid::Grid;
 
 use super::collision::handle_collision;
@@ -15,6 +16,7 @@ use super::types::PhysicsResult;
 /// 
 /// GASES are skipped - they use inverted gravity and are handled by gas.rs behavior
 pub fn update_particle_physics(
+    content: &ContentRegistry,
     grid: &mut Grid,
     chunks: &mut ChunkGrid,
     x: u32,
@@ -29,7 +31,9 @@ pub fn update_particle_physics(
         return PhysicsResult::no_move(x, y);
     }
 
-    let props = &ELEMENT_DATA[element as usize];
+    let Some(props) = content.props(element) else {
+        return PhysicsResult::no_move(x, y);
+    };
 
     // Static solids should not be accelerated by physics
     if props.category == CAT_SOLID {
@@ -97,7 +101,7 @@ pub fn update_particle_physics(
 
     // 6. Handle collision (apply bounce)
     if result.collided {
-        handle_collision(grid, x, y, &result);
+        handle_collision(grid, x, y, &result, props.bounce);
     }
 
     // 7. Move particle if position changed

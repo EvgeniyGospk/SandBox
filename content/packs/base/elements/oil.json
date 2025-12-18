@@ -1,0 +1,31 @@
+{
+  "kind": "element",
+  "id": 7,
+  "key": "oil",
+  "category": "liquid",
+  "color": "0xFF4A4A2A",
+  "density": 800,
+  "dispersion": 5,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 15,
+  "flags": {
+    "flammable": true,
+    "conductive": false,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": null,
+  "hidden": false,
+  "ui": {
+    "category": "liquids",
+    "displayName": "Oil",
+    "description": "Flammable liquid, floats on water",
+    "sort": 1
+  }
+}
+  

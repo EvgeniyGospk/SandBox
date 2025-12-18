@@ -1,0 +1,11 @@
+{
+  "kind": "reaction",
+  "id": "fire_seed",
+  "aggressor": "fire",
+  "victim": "seed",
+  "resultAggressor": "smoke",
+  "resultVictim": "fire",
+  "chance": 0.2,
+  "spawn": null,
+  "comment": "Seeds burn quickly"
+}

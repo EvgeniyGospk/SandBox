@@ -3,6 +3,7 @@ import { createWorkerBackend } from '@/features/simulation/engine/backends/backe
 import type { ISimulationBackend } from '@/features/simulation/engine/api/ISimulationBackend'
 import { debugLog, debugWarn, logError } from '@/platform/logging/log'
 import type { MutableRefObject } from 'react'
+import { useSimulationStore } from '@/features/simulation/model/simulationStore'
 
 export function initWorkerBackend(args: {
   canvas: HTMLCanvasElement
@@ -27,6 +28,7 @@ export function initWorkerBackend(args: {
   setUseWorker: (v: boolean) => void
   setIsLoading: (v: boolean) => void
   setError: (v: string | null) => void
+  setWarning: (v: string | null) => void
   setFps: (fps: number) => void
   setParticleCount: (count: number) => void
 
@@ -51,6 +53,7 @@ export function initWorkerBackend(args: {
     setUseWorker,
     setIsLoading,
     setError,
+    setWarning,
     setFps,
     setParticleCount,
     initFallback,
@@ -59,6 +62,9 @@ export function initWorkerBackend(args: {
   const bridge = new WorkerBridge()
   bridgeRef.current = bridge
   setBackend(createWorkerBackend(bridge))
+
+  useSimulationStore.getState().setContentManifestJson(null)
+  useSimulationStore.getState().setContentBundleStatus({ phase: 'init', status: 'loading' })
 
   bridge.onStats = (stats) => {
     if (isCanceled()) return
@@ -69,6 +75,7 @@ export function initWorkerBackend(args: {
   bridge.onReady = () => {
     if (isCanceled()) return
     debugLog('🚀 Worker ready! Physics runs in separate thread.')
+    setWarning(null)
     bridge.setSettings({ gravity, ambientTemperature, speed })
     bridge.setRenderMode(renderMode)
     if (isPlaying) bridge.play()
@@ -82,11 +89,21 @@ export function initWorkerBackend(args: {
     setIsLoading(false)
   }
 
+  bridge.onContentManifest = (json) => {
+    if (isCanceled()) return
+    useSimulationStore.getState().setContentManifestJson(json)
+  }
+
+  bridge.onContentBundleStatus = (status) => {
+    if (isCanceled()) return
+    useSimulationStore.getState().setContentBundleStatus(status)
+  }
+
   bridge.onError = (msg) => {
     if (isCanceled()) return
     logError('Worker error:', msg)
     canvasTransferredRef.current = bridge.hasTransferred
-    setError(`Simulation error: ${msg}. Please refresh the page.`)
+    setError(`Simulation error: ${msg}. You can try restarting the simulation.`)
     setIsLoading(false)
   }
 
@@ -94,7 +111,7 @@ export function initWorkerBackend(args: {
     if (isCanceled()) return
     logError('Worker crash:', msg)
     canvasTransferredRef.current = bridge.hasTransferred
-    setError(`Simulation crashed: ${msg}. Please refresh the page.`)
+    setError(`Simulation crashed: ${msg}. You can try restarting the simulation.`)
     setIsLoading(false)
   }
 
@@ -118,7 +135,7 @@ export function initWorkerBackend(args: {
         return
       }
 
-      setError(`Failed to initialize: ${err instanceof Error ? err.message : String(err)}. Please refresh.`)
+      setError(`Failed to initialize: ${err instanceof Error ? err.message : String(err)}. You can try restarting the simulation.`)
       setIsLoading(false)
     })
 

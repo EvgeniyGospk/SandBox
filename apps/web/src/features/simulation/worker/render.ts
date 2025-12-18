@@ -1,22 +1,25 @@
-import { state, BG_COLOR_32, EL_EMPTY } from './state'
+import type { WorkerContext } from './context'
+
+import { BG_COLOR_32, EL_EMPTY } from './state'
 import { renderNormal } from './rendering/normal'
 import { renderThermal } from './rendering/thermal'
 import { renderCanvas2DToScreen } from './rendering/canvas2d'
 import { maybeLogDirtyDebug } from './rendering/debugDirty'
 
-export function renderFrame(): void {
-  if (state.isCrashed || !state.engine || !state.canvas) return
+export function renderFrame(ctx: WorkerContext): void {
+  const state = ctx.state
+  if (state.sim.isCrashed || !state.wasm.engine || !state.render.canvas) return
 
-  const transform = { zoom: state.zoom, panX: state.panX, panY: state.panY }
+  const transform = state.view.transform
 
-  if (state.renderMode === 'thermal') {
-    if (!state.ctx || !state.pixels || !state.imageData || !state.memoryManager) return
+  if (state.render.mode === 'thermal') {
+    if (!state.render.ctx || !state.render.pixels || !state.render.imageData || !state.memory.manager) return
 
     renderThermal(state)
-    state.ctx.putImageData(state.imageData, 0, 0)
+    state.render.ctx.putImageData(state.render.imageData, 0, 0)
 
-    if (state.useWebGL && state.renderer) {
-      state.renderer.renderThermal(state.imageData, transform)
+    if (state.render.useWebGL && state.render.renderer) {
+      state.render.renderer.renderThermal(state.render.imageData, transform)
       return
     }
 
@@ -24,16 +27,16 @@ export function renderFrame(): void {
     return
   }
 
-  if (state.useWebGL && state.renderer && state.wasmMemory) {
+  if (state.render.useWebGL && state.render.renderer && state.wasm.memory) {
     maybeLogDirtyDebug(state)
 
-    state.renderer.renderWithDirtyRects(state.engine, state.wasmMemory, transform)
+    state.render.renderer.renderWithDirtyRects(state.wasm.engine, state.wasm.memory, transform)
     return
   }
 
-  if (!state.ctx || !state.pixels32 || !state.imageData || !state.memoryManager) return
+  if (!state.render.ctx || !state.render.pixels32 || !state.render.imageData || !state.memory.manager) return
 
   renderNormal(state, BG_COLOR_32, EL_EMPTY)
-  state.ctx.putImageData(state.imageData, 0, 0)
+  state.render.ctx.putImageData(state.render.imageData, 0, 0)
   renderCanvas2DToScreen(state, transform)
 }

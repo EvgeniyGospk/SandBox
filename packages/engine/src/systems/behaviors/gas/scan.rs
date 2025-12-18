@@ -1,4 +1,4 @@
-use crate::elements::{ELEMENT_DATA, EL_EMPTY, CAT_SOLID};
+use crate::elements::{EL_EMPTY, CAT_SOLID};
 
 use super::super::UpdateContext;
 
@@ -53,8 +53,8 @@ pub(super) fn scan_ceiling(
                     has_chimney = true;
                     break;
                 }
-                if (ahead_type as usize) < ELEMENT_DATA.len() {
-                    if ELEMENT_DATA[ahead_type as usize].density > my_density {
+                if let Some(ahead_props) = ctx.content.props(ahead_type) {
+                    if ahead_props.density > my_density {
                         has_chimney = true;
                         break;
                     }
@@ -63,14 +63,15 @@ pub(super) fn scan_ceiling(
             continue;
         }
 
-        // Bounds check
-        if (target_type as usize) >= ELEMENT_DATA.len() { break; }
-
         // CASE 2: Occupied - can we displace it?
-        let t_cat = ELEMENT_DATA[target_type as usize].category;
+        let Some(target_props) = ctx.content.props(target_type) else {
+            break;
+        };
+
+        let t_cat = target_props.category;
 
         if t_cat != CAT_SOLID {
-            let t_density = ELEMENT_DATA[target_type as usize].density;
+            let t_density = target_props.density;
             if t_density > my_density {
                 best_x = tx;
                 best_y = ty;

@@ -12,7 +12,7 @@ mod transform;
 mod grow;
 
 use super::{Behavior, UpdateContext};
-use crate::elements::{EL_EMPTY, EL_PLANT, EL_SEED};
+use crate::elements::{BehaviorKind, EL_EMPTY};
 
 const SEED_DENSITY: f32 = 1100.0;
 
@@ -75,10 +75,12 @@ impl Behavior for PlantBehavior {
         
         let element = ctx.grid.get_type(xi, yi);
         if element == EL_EMPTY { return; }
+
+        let kind = ctx.content.behavior_kind(element);
         
-        if element == EL_SEED {
+        if kind == BehaviorKind::BioSeed {
             self.process_seed(ctx);
-        } else if element == EL_PLANT {
+        } else if kind == BehaviorKind::BioPlant {
             self.process_plant(ctx);
         }
     }

@@ -6,6 +6,10 @@ export function isWorkerSupported(): boolean {
   )
 }
 
+export function isCrossOriginIsolated(): boolean {
+  return typeof crossOriginIsolated === 'boolean' ? crossOriginIsolated : false
+}
+
 export function isSharedMemorySupported(): boolean {
-  return typeof SharedArrayBuffer !== 'undefined'
+  return typeof SharedArrayBuffer !== 'undefined' && isCrossOriginIsolated()
 }

@@ -21,3 +21,7 @@ pub(super) fn set_ambient_temperature(world: &mut WorldCore, temp: f32) {
 pub(super) fn get_ambient_temperature(world: &WorldCore) -> f32 {
     world.ambient_temperature
 }
+
+pub(super) fn set_chunk_sleeping_enabled(world: &mut WorldCore, enabled: bool) {
+    world.chunks.set_sleeping_enabled(enabled);
+}

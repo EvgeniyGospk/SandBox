@@ -9,17 +9,25 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const wasmPath = resolve(__dirname, '../../packages/engine-wasm/particula_engine.js');
 const wasmBytesPath = resolve(__dirname, '../../packages/engine-wasm/particula_engine_bg.wasm');
 
-// Element IDs from apps/web/src/lib/engine/generated_elements.ts
-const EL = {
-  EMPTY: 0,
-  SAND: 2,
-  WATER: 6,
-  LAVA: 8,
-};
+const WORLD_WIDTH = Number.parseInt(process.env.WORLD_WIDTH ?? '2048', 10); // 2,097,152 cells total (default)
+const WORLD_HEIGHT = Number.parseInt(process.env.WORLD_HEIGHT ?? '1024', 10);
 
-const WORLD_WIDTH = 2048;   // 2,097,152 cells total
-const WORLD_HEIGHT = 1024;
+function resolveSleepingMode() {
+  const raw = (process.env.CHUNK_SLEEPING ?? '1').toLowerCase().trim();
+  if (raw === '0' || raw === 'false' || raw === 'off') return false;
+  return true;
+}
+
+const COMPARE_SLEEPING = (process.env.COMPARE_SLEEPING ?? '0').toLowerCase().trim() === '1';
+const SLEEPING_ENABLED = resolveSleepingMode();
+const SCENARIO_FILTER = (process.env.SCENARIO_FILTER ?? '').trim();
+const OVERRIDE_WARMUP_STEPS = process.env.WARMUP_STEPS ? Number.parseInt(process.env.WARMUP_STEPS, 10) : null;
+const OVERRIDE_MEASURE_STEPS = process.env.MEASURE_STEPS ? Number.parseInt(process.env.MEASURE_STEPS, 10) : null;
+const ENGINE_PERF = (process.env.ENGINE_PERF ?? '0').toLowerCase().trim() === '1';
+
+let EL;
 const METRIC_KEYS = [
+  'outer_step_ms',
   'step_ms',
   'hydrate_ms',
   'rigid_ms',
@@ -69,6 +77,16 @@ async function loadWasm() {
   const wasmBytes = await readFile(wasmBytesPath);
   await wasmModule.default({ module_or_path: wasmBytes });
   return wasmModule;
+}
+
+function getElementIds(wasm) {
+  return {
+    EMPTY: wasm.el_empty(),
+    SAND: wasm.el_sand(),
+    WATER: wasm.el_water(),
+    LAVA: wasm.el_lava(),
+    ICE: wasm.el_ice(),
+  };
 }
 
 function randInt(max) {
@@ -133,33 +151,76 @@ function summarizeCounts(samples) {
   };
 }
 
+function perfStatsToPojo(stats) {
+  const o = {};
+  for (const key of METRIC_KEYS) {
+    if (key === 'outer_step_ms') continue;
+    const v = stats?.[key];
+    if (typeof v === 'number') o[key] = v;
+  }
+  return o;
+}
+
 async function runScenario(wasm, config) {
   const world = new wasm.World(WORLD_WIDTH, WORLD_HEIGHT);
-  world.enable_perf_metrics(true);
+  world.enable_perf_metrics(ENGINE_PERF);
+
+  if (typeof world.set_chunk_sleeping_enabled === 'function') {
+    world.set_chunk_sleeping_enabled(config.sleepingEnabled);
+  }
 
   const spawnRes = [];
   for (const spawn of config.spawns) {
     spawnRes.push(spawn(world));
   }
 
+  const warmupSteps =
+    OVERRIDE_WARMUP_STEPS !== null && Number.isFinite(OVERRIDE_WARMUP_STEPS)
+      ? OVERRIDE_WARMUP_STEPS
+      : (config.warmup_steps ?? 0);
+  const measureSteps =
+    OVERRIDE_MEASURE_STEPS !== null && Number.isFinite(OVERRIDE_MEASURE_STEPS)
+      ? OVERRIDE_MEASURE_STEPS
+      : config.measure_steps;
+
   // Warmup
-  for (let i = 0; i < (config.warmup_steps ?? 0); i++) {
+  for (let i = 0; i < warmupSteps; i++) {
     if (config.perStep) config.perStep(world, i, true);
     world.step();
   }
 
   const samples = [];
-  for (let step = 0; step < config.measure_steps; step++) {
+  for (let step = 0; step < measureSteps; step++) {
     if (config.perStep) config.perStep(world, step, false);
+
+    const t0 = performance.now();
     world.step();
-    samples.push(world.get_perf_stats());
+    const outerStepMs = performance.now() - t0;
+
+    if (ENGINE_PERF) {
+      const stats = world.get_perf_stats();
+      samples.push({
+        outer_step_ms: outerStepMs,
+        ...perfStatsToPojo(stats),
+      });
+    } else {
+      samples.push({
+        outer_step_ms: outerStepMs,
+      });
+    }
   }
+
+  const endState = {
+    particle_count: world.particle_count ?? 0,
+    active_chunks: typeof world.active_chunks === 'function' ? world.active_chunks() : 0,
+    total_chunks: typeof world.total_chunks === 'function' ? world.total_chunks() : 0,
+  };
 
   return {
     label: config.label,
     spawn: spawnRes,
     metrics: aggregateMetrics(samples),
-    counts: summarizeCounts(samples),
+    counts: ENGINE_PERF ? summarizeCounts(samples) : endState,
   };
 }
 
@@ -176,54 +237,52 @@ function printScenarioResult(result) {
     `avg/p50/p95/p99/max=${q.avg.toFixed(2)}/${q.p50.toFixed(2)}/${q.p95.toFixed(
       2
     )}/${q.p99.toFixed(2)}/${q.max.toFixed(2)} ms`;
-  console.log(`Step: ${fmt(m.step_ms)}`);
-  console.log(`  hydrate: ${fmt(m.hydrate_ms)} | rigid: ${fmt(m.rigid_ms)}`);
-  console.log(`  physics: ${fmt(m.physics_ms)} | chunks: ${fmt(m.chunks_ms)}`);
-  console.log(`  apply_moves: ${fmt(m.apply_moves_ms)} | temperature: ${fmt(m.temperature_ms)}`);
-  console.log(
-    `Processed particles avg=${m.particles_processed.avg.toFixed(0)} ` +
-    `moved avg=${m.particles_moved.avg.toFixed(0)} ` +
-    `reactions checked avg=${m.reactions_checked.avg.toFixed(0)} applied avg=${m.reactions_applied.avg.toFixed(0)}`
-  );
-  console.log(
-    `Temp cells avg=${m.temp_cells.avg.toFixed(0)} | pending moves max=${c.max_pending_moves}`
-  );
-  console.log(
-    `Chunks active last=${c.last_active_chunks}/${c.max_active_chunks} ` +
-    `dirty last=${c.last_dirty_chunks}/${c.max_dirty_chunks} ` +
-    `particles last=${c.last_particle_count.toLocaleString()}` +
-    `${c.max_active_chunks === WORLD_WIDTH * WORLD_HEIGHT ? ' (all active)' : ''}`
-  );
-  console.log(
-    `Move buffer overflow max=${c.max_overflow} usage max=${(c.max_move_usage * 100).toFixed(1)}% | phase_changes max=${c.max_phase_changes} | liquid_scans max=${c.max_liquid_scans}`
-  );
-  console.log(
-    `Non-empty cells=${m.non_empty_cells?.avg?.toFixed?.(0) ?? 'n/a'} ` +
-    `Chunk particle sum=${m.chunk_particle_sum?.avg?.toFixed?.(0) ?? 'n/a'} ` +
-    `Chunk particle max=${m.chunk_particle_max?.avg?.toFixed?.(0) ?? 'n/a'} ` +
-    `Ray speed max=${m.raycast_speed_max?.max?.toFixed?.(2) ?? 'n/a'}`
-  );
-  const total_chunks = Math.ceil(WORLD_WIDTH / 32) * Math.ceil(WORLD_HEIGHT / 32);
-  const activeRatio = total_chunks ? c.last_active_chunks / total_chunks : 0;
-  if (activeRatio > 0.3) {
-    console.warn(`  ⚠️  High active chunk ratio ${(activeRatio * 100).toFixed(1)}% (sleep likely broken)`);
-  }
-  if (c.max_overflow > 0) {
-    console.warn(`  ⚠️  Move buffer overflowed ${c.max_overflow} times`);
+  console.log(`World.step() wall-time: ${fmt(m.outer_step_ms)}`);
+
+  if (ENGINE_PERF) {
+    console.log(`Engine step_ms:      ${fmt(m.step_ms)}`);
+    console.log(`  hydrate: ${fmt(m.hydrate_ms)} | rigid: ${fmt(m.rigid_ms)}`);
+    console.log(`  physics: ${fmt(m.physics_ms)} | chunks: ${fmt(m.chunks_ms)}`);
+    console.log(`  apply_moves: ${fmt(m.apply_moves_ms)} | temperature: ${fmt(m.temperature_ms)}`);
+    console.log(
+      `Processed particles avg=${m.particles_processed.avg.toFixed(0)} ` +
+      `moved avg=${m.particles_moved.avg.toFixed(0)} ` +
+      `reactions checked avg=${m.reactions_checked.avg.toFixed(0)} applied avg=${m.reactions_applied.avg.toFixed(0)}`
+    );
+    console.log(
+      `Temp cells avg=${m.temp_cells.avg.toFixed(0)} | pending moves max=${c.max_pending_moves}`
+    );
+    console.log(
+      `Chunks active last=${c.last_active_chunks}/${c.max_active_chunks} ` +
+      `dirty last=${c.last_dirty_chunks}/${c.max_dirty_chunks} ` +
+      `particles last=${c.last_particle_count.toLocaleString()}`
+    );
+    console.log(
+      `Move buffer overflow max=${c.max_overflow} usage max=${(c.max_move_usage * 100).toFixed(1)}% | phase_changes max=${c.max_phase_changes} | liquid_scans max=${c.max_liquid_scans}`
+    );
+    if (c.max_overflow > 0) {
+      console.warn(`  ⚠️  Move buffer overflowed ${c.max_overflow} times`);
+    }
+  } else {
+    const total = c.total_chunks ?? 0;
+    const active = c.active_chunks ?? 0;
+    const ratio = total > 0 ? (active / total) * 100 : 0;
+    console.log(`Chunks active=${active}/${total} (${ratio.toFixed(1)}%) | particles=${(c.particle_count ?? 0).toLocaleString()}`);
   }
 }
 
-function sandBlock(count) {
+function sandBlock(EL, count) {
   return (world) => spawnRandom(world, EL.SAND, count);
 }
 
-function sandRainPerStep(rate) {
+function sandRainPerStep(EL, rate) {
   return (world) => {
     spawnRandom(world, EL.SAND, rate, 64); // spawn near top rows
   };
 }
 
-function waterLavaStripe(world) {
+function waterLavaStripe(EL) {
+  return (world) => {
   // Lay a water stripe at mid height, lava above to trigger reactions/temperature
   const midY = Math.floor(WORLD_HEIGHT / 2);
   for (let x = 0; x < WORLD_WIDTH; x++) {
@@ -231,30 +290,83 @@ function waterLavaStripe(world) {
     world.add_particle(x, midY - 1, EL.LAVA);
   }
   return { placed: WORLD_WIDTH * 2, elapsedMs: 0 };
+  };
 }
 
 async function main() {
   const wasm = await loadWasm();
+  EL = getElementIds(wasm);
 
   const scenarios = [
+    // ---------------------------------------------------------------------
+    // Sleeping-chunks focused scenarios (use SCENARIO_FILTER=sleep_)
+    // ---------------------------------------------------------------------
+    {
+      label: 'sleep_empty_world',
+      spawns: [(_world) => ({ placed: 0, elapsedMs: 0 })],
+      // Ensure empty chunks have time to transition to Sleeping (threshold=60 frames).
+      warmup_steps: 80,
+      measure_steps: 120,
+    },
+    {
+      label: 'sleep_sparse_sand_10k',
+      spawns: [(world) => spawnRandom(world, EL.SAND, 10_000)],
+      warmup_steps: 80,
+      measure_steps: 120,
+    },
+    {
+      label: 'sleep_full_stone',
+      spawns: [
+        (world) => {
+          const t0 = performance.now();
+          let placed = 0;
+          for (let y = 0; y < WORLD_HEIGHT; y++) {
+            for (let x = 0; x < WORLD_WIDTH; x++) {
+              if (world.add_particle(x, y, wasm.el_stone())) placed++;
+            }
+          }
+          return { placed, elapsedMs: performance.now() - t0 };
+        },
+      ],
+      warmup_steps: 10,
+      measure_steps: 40,
+    },
+    {
+      label: 'sleep_full_sand',
+      spawns: [
+        (world) => {
+          const t0 = performance.now();
+          let placed = 0;
+          for (let y = 0; y < WORLD_HEIGHT; y++) {
+            for (let x = 0; x < WORLD_WIDTH; x++) {
+              if (world.add_particle(x, y, EL.SAND)) placed++;
+            }
+          }
+          return { placed, elapsedMs: performance.now() - t0 };
+        },
+      ],
+      warmup_steps: 10,
+      measure_steps: 40,
+    },
+
     {
       label: 'static_sand_500k',
-      spawns: [sandBlock(500_000)],
+      spawns: [sandBlock(EL, 500_000)],
       warmup_steps: 20,
       measure_steps: 100,
     },
     {
       label: 'static_sand_1M',
-      spawns: [sandBlock(1_000_000)],
+      spawns: [sandBlock(EL, 1_000_000)],
       warmup_steps: 20,
       measure_steps: 100,
     },
     {
       label: 'falling_rain_5k_per_frame',
-      spawns: [sandBlock(200_000)],
+      spawns: [sandBlock(EL, 200_000)],
       warmup_steps: 10,
       measure_steps: 100,
-      perStep: sandRainPerStep(5_000),
+      perStep: sandRainPerStep(EL, 5_000),
     },
     {
       label: 'liquid_pool_300k',
@@ -300,7 +412,7 @@ async function main() {
         (world) => spawnRandom(world, EL.WATER, 100_000),
         (world) => spawnRandom(world, EL.LAVA, 100_000),
         (world) => spawnRandom(world, EL.ICE, 100_000),
-        (world) => spawnRandom(world, EL.EMPTY, 0),
+        (_world) => ({ placed: 0, elapsedMs: 0 }),
       ],
       warmup_steps: 10,
       measure_steps: 80,
@@ -338,16 +450,36 @@ async function main() {
     },
     {
       label: 'water_lava_stripe',
-      spawns: [waterLavaStripe],
+      spawns: [waterLavaStripe(EL)],
       warmup_steps: 10,
       measure_steps: 60,
     },
   ];
 
   const results = [];
-  for (const scenario of scenarios) {
-    console.log(`\nRunning scenario: ${scenario.label}`);
-    results.push(await runScenario(wasm, scenario));
+  const selectedScenarios = SCENARIO_FILTER
+    ? scenarios.filter((s) => s.label.includes(SCENARIO_FILTER))
+    : scenarios;
+
+  const modes = COMPARE_SLEEPING
+    ? [
+        { labelSuffix: 'sleep=on', sleepingEnabled: true },
+        { labelSuffix: 'sleep=off', sleepingEnabled: false },
+      ]
+    : [{ labelSuffix: `sleep=${SLEEPING_ENABLED ? 'on' : 'off'}`, sleepingEnabled: SLEEPING_ENABLED }];
+
+  for (const mode of modes) {
+    for (const scenario of selectedScenarios) {
+      const label = `${scenario.label} (${mode.labelSuffix})`;
+      console.log(`\nRunning scenario: ${label}`);
+      results.push(
+        await runScenario(wasm, {
+          ...scenario,
+          label,
+          sleepingEnabled: mode.sleepingEnabled,
+        })
+      );
+    }
   }
 
   console.log('=== Particula WASM perf report ===');

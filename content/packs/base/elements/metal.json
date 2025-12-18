@@ -1,0 +1,35 @@
+{
+  "kind": "element",
+  "id": 4,
+  "key": "metal",
+  "category": "solid",
+  "color": "0xFFA9A9A9",
+  "density": 7800,
+  "dispersion": 0,
+  "lifetime": 0,
+  "defaultTemp": 20,
+  "heatConductivity": 90,
+  "flags": {
+    "flammable": false,
+    "conductive": true,
+    "corrosive": false,
+    "hot": false,
+    "cold": false,
+    "ignoreGravity": false,
+    "rigid": false
+  },
+  "behavior": null,
+  "phaseChange": {
+    "high": {
+      "temp": 1500,
+      "to": "lava"
+    }
+  },
+  "hidden": false,
+  "ui": {
+    "category": "solids",
+    "displayName": "Metal",
+    "description": "Conducts heat and electricity",
+    "sort": 3
+  }
+}

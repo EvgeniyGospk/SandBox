@@ -4,6 +4,73 @@ use super::perf_stats::PerfStats;
 use super::WorldCore;
 
 #[wasm_bindgen]
+pub struct AbiLayout {
+    types_ptr: u32,
+    types_len_elements: u32,
+    types_len_bytes: u32,
+    colors_ptr: u32,
+    colors_len_elements: u32,
+    colors_len_bytes: u32,
+    temperature_ptr: u32,
+    temperature_len_elements: u32,
+    temperature_len_bytes: u32,
+    chunk_transfer_ptr: u32,
+    chunk_transfer_len_elements: u32,
+    chunk_transfer_len_bytes: u32,
+    dirty_list_ptr: u32,
+    dirty_list_len_elements: u32,
+    dirty_list_len_bytes: u32,
+    rect_transfer_ptr: u32,
+    rect_transfer_len_elements: u32,
+    rect_transfer_len_bytes: u32,
+}
+
+#[wasm_bindgen]
+impl AbiLayout {
+    #[wasm_bindgen(getter)]
+    pub fn types_ptr(&self) -> u32 { self.types_ptr }
+    #[wasm_bindgen(getter)]
+    pub fn types_len_elements(&self) -> u32 { self.types_len_elements }
+    #[wasm_bindgen(getter)]
+    pub fn types_len_bytes(&self) -> u32 { self.types_len_bytes }
+
+    #[wasm_bindgen(getter)]
+    pub fn colors_ptr(&self) -> u32 { self.colors_ptr }
+    #[wasm_bindgen(getter)]
+    pub fn colors_len_elements(&self) -> u32 { self.colors_len_elements }
+    #[wasm_bindgen(getter)]
+    pub fn colors_len_bytes(&self) -> u32 { self.colors_len_bytes }
+
+    #[wasm_bindgen(getter)]
+    pub fn temperature_ptr(&self) -> u32 { self.temperature_ptr }
+    #[wasm_bindgen(getter)]
+    pub fn temperature_len_elements(&self) -> u32 { self.temperature_len_elements }
+    #[wasm_bindgen(getter)]
+    pub fn temperature_len_bytes(&self) -> u32 { self.temperature_len_bytes }
+
+    #[wasm_bindgen(getter)]
+    pub fn chunk_transfer_ptr(&self) -> u32 { self.chunk_transfer_ptr }
+    #[wasm_bindgen(getter)]
+    pub fn chunk_transfer_len_elements(&self) -> u32 { self.chunk_transfer_len_elements }
+    #[wasm_bindgen(getter)]
+    pub fn chunk_transfer_len_bytes(&self) -> u32 { self.chunk_transfer_len_bytes }
+
+    #[wasm_bindgen(getter)]
+    pub fn dirty_list_ptr(&self) -> u32 { self.dirty_list_ptr }
+    #[wasm_bindgen(getter)]
+    pub fn dirty_list_len_elements(&self) -> u32 { self.dirty_list_len_elements }
+    #[wasm_bindgen(getter)]
+    pub fn dirty_list_len_bytes(&self) -> u32 { self.dirty_list_len_bytes }
+
+    #[wasm_bindgen(getter)]
+    pub fn rect_transfer_ptr(&self) -> u32 { self.rect_transfer_ptr }
+    #[wasm_bindgen(getter)]
+    pub fn rect_transfer_len_elements(&self) -> u32 { self.rect_transfer_len_elements }
+    #[wasm_bindgen(getter)]
+    pub fn rect_transfer_len_bytes(&self) -> u32 { self.rect_transfer_len_bytes }
+}
+
+#[wasm_bindgen]
 pub struct World {
     core: WorldCore,
 }
@@ -15,6 +82,13 @@ impl World {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             core: WorldCore::new(width, height),
+        }
+    }
+
+    #[wasm_bindgen(js_name = newWithMoveBufferCapacity)]
+    pub fn new_with_move_buffer_capacity(width: u32, height: u32, move_buffer_capacity: usize) -> Self {
+        Self {
+            core: WorldCore::new_with_move_buffer_capacity(width, height, move_buffer_capacity),
         }
     }
 
@@ -53,6 +127,11 @@ impl World {
         self.core.get_ambient_temperature()
     }
 
+    /// Enable/disable empty-chunk sleeping (perf/debug toggle).
+    pub fn set_chunk_sleeping_enabled(&mut self, enabled: bool) {
+        self.core.set_chunk_sleeping_enabled(enabled);
+    }
+
     /// Add a particle at position
     pub fn add_particle(&mut self, x: u32, y: u32, element: u8) -> bool {
         self.core.add_particle(x, y, element)
@@ -76,6 +155,17 @@ impl World {
     /// Clear all particles
     pub fn clear(&mut self) {
         self.core.clear();
+    }
+
+    pub fn load_content_bundle(&mut self, json: String) -> Result<(), JsValue> {
+        self.core
+            .load_content_bundle_json(&json)
+            .map_err(|e| JsValue::from_str(&e))?;
+        Ok(())
+    }
+
+    pub fn get_content_manifest_json(&self) -> String {
+        self.core.get_content_manifest_json()
     }
 
     // === RIGID BODY API ===
@@ -134,9 +224,41 @@ impl World {
         self.core.types_len()
     }
 
+    pub fn types_len_elements(&self) -> usize {
+        self.core.types_len()
+    }
+
+    pub fn types_len_bytes(&self) -> usize {
+        self.core.types_byte_len()
+    }
+
     /// Get grid size for colors
     pub fn colors_len(&self) -> usize {
         self.core.colors_len()
+    }
+
+    pub fn colors_len_elements(&self) -> usize {
+        self.core.colors_len_elements()
+    }
+
+    pub fn colors_len_bytes(&self) -> usize {
+        self.core.colors_len_bytes()
+    }
+
+    pub fn colors_elements_len(&self) -> usize {
+        self.core.colors_elements_len()
+    }
+
+    pub fn types_byte_len(&self) -> usize {
+        self.core.types_byte_len()
+    }
+
+    pub fn colors_byte_len(&self) -> usize {
+        self.core.colors_byte_len()
+    }
+
+    pub fn temperature_byte_len(&self) -> usize {
+        self.core.temperature_byte_len()
     }
 
     /// Get pointer to temperature array (for JS thermal rendering)
@@ -147,6 +269,26 @@ impl World {
     /// Get temperature array length
     pub fn temperature_len(&self) -> usize {
         self.core.temperature_len()
+    }
+
+    pub fn temperature_len_elements(&self) -> usize {
+        self.core.temperature_len()
+    }
+
+    pub fn temperature_len_bytes(&self) -> usize {
+        self.core.temperature_byte_len()
+    }
+
+    pub fn move_buffer_capacity(&self) -> usize {
+        self.core.move_buffer_capacity()
+    }
+
+    pub fn move_buffer_count(&self) -> usize {
+        self.core.move_buffer_count()
+    }
+
+    pub fn move_buffer_overflow_count(&self) -> usize {
+        self.core.move_buffer_overflow_count()
     }
 
     // === PHASE 3: SMART RENDERING API ===
@@ -229,5 +371,29 @@ impl World {
     /// Get the size of the rect transfer buffer in bytes
     pub fn rect_buffer_size(&self) -> usize {
         self.core.rect_buffer_size()
+    }
+
+    pub fn abi_layout(&self) -> AbiLayout {
+        let data = self.core.abi_layout_data();
+        AbiLayout {
+            types_ptr: data.types_ptr as u32,
+            types_len_elements: data.types_len_elements as u32,
+            types_len_bytes: data.types_len_bytes as u32,
+            colors_ptr: data.colors_ptr as u32,
+            colors_len_elements: data.colors_len_elements as u32,
+            colors_len_bytes: data.colors_len_bytes as u32,
+            temperature_ptr: data.temperature_ptr as u32,
+            temperature_len_elements: data.temperature_len_elements as u32,
+            temperature_len_bytes: data.temperature_len_bytes as u32,
+            chunk_transfer_ptr: data.chunk_transfer_ptr as u32,
+            chunk_transfer_len_elements: data.chunk_transfer_len_elements as u32,
+            chunk_transfer_len_bytes: data.chunk_transfer_len_bytes as u32,
+            dirty_list_ptr: data.dirty_list_ptr as u32,
+            dirty_list_len_elements: data.dirty_list_len_elements as u32,
+            dirty_list_len_bytes: data.dirty_list_len_bytes as u32,
+            rect_transfer_ptr: data.rect_transfer_ptr as u32,
+            rect_transfer_len_elements: data.rect_transfer_len_elements as u32,
+            rect_transfer_len_bytes: data.rect_transfer_len_bytes as u32,
+        }
     }
 }

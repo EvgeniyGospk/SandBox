@@ -1,26 +1,28 @@
 import { MemoryManager } from '@/features/simulation/engine/MemoryManager'
 
-import { state } from './state'
+import type { WorkerContext } from './context'
 
-export function updateMemoryViews(): void {
-  if (!state.engine || !state.wasmMemory) return
+export function updateMemoryViews(ctx: WorkerContext): void {
+  const state = ctx.state
+  if (!state.wasm.engine || !state.wasm.memory) return
 
-  if (!state.memoryManager || state.memoryManagerEngine !== state.engine) {
-    state.memoryManager = new MemoryManager(state.wasmMemory, state.engine)
-    state.memoryManagerEngine = state.engine
+  if (!state.memory.manager || state.memory.engine !== state.wasm.engine) {
+    state.memory.manager = new MemoryManager(state.wasm.memory, state.wasm.engine)
+    state.memory.engine = state.wasm.engine
   } else {
-    state.memoryManager.refresh()
+    state.memory.manager.refresh()
   }
 }
 
-export function applyCurrentSettingsToEngine(): void {
-  const engine = state.engine
+export function applyCurrentSettingsToEngine(ctx: WorkerContext): void {
+  const state = ctx.state
+  const engine = state.wasm.engine
   if (!engine) return
 
-  if (state.currentGravity) {
-    engine.set_gravity(state.currentGravity.x, state.currentGravity.y)
+  if (state.settings.gravity) {
+    engine.set_gravity(state.settings.gravity.x, state.settings.gravity.y)
   }
-  if (state.currentAmbientTemperature !== null) {
-    engine.set_ambient_temperature(state.currentAmbientTemperature)
+  if (state.settings.ambientTemperature !== null) {
+    engine.set_ambient_temperature(state.settings.ambientTemperature)
   }
 }
