@@ -35,34 +35,14 @@ pub(super) fn process_physics_chunk(
     gravity_y: f32,
     top_to_bottom: bool,
 ) {
-    let chunk_idx = world.chunks.chunk_idx_from_coords(cx, cy);
-    if world.chunks.particle_counts()[chunk_idx] == 0 {
-        return;
-    }
-
-    if world.chunks.is_sleeping(cx, cy) {
-        return;
-    }
-
     let start_x = cx * CHUNK_SIZE;
     let start_y = cy * CHUNK_SIZE;
     let end_x = (start_x + CHUNK_SIZE).min(world.grid.width());
     let end_y = (start_y + CHUNK_SIZE).min(world.grid.height());
 
-    debug_assert!(
-        (end_y as usize) <= world.grid.row_has_data.len(),
-        "process_physics_chunk: row_has_data too small (end_y={}, len={})",
-        end_y,
-        world.grid.row_has_data.len()
-    );
-
     if top_to_bottom {
         // For negative gravity: process top-to-bottom
         for y in start_y..end_y {
-            // PERF: Use row_has_data instead of scanning row (O(1) vs O(32))
-            if world.sparse_row_skip_enabled && !world.grid.row_has_data[y as usize] {
-                continue;
-            }
             for x in start_x..end_x {
                 let element = world.grid.get_type(x as i32, y as i32);
                 if element != EL_EMPTY {
@@ -98,10 +78,6 @@ pub(super) fn process_physics_chunk(
     } else {
         // For positive gravity: process bottom-to-top
         for y in (start_y..end_y).rev() {
-            // PERF: Use row_has_data instead of scanning row (O(1) vs O(32))
-            if world.sparse_row_skip_enabled && !world.grid.row_has_data[y as usize] {
-                continue;
-            }
             for x in start_x..end_x {
                 let element = world.grid.get_type(x as i32, y as i32);
                 if element != EL_EMPTY {

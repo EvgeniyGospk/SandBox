@@ -40,25 +40,17 @@ impl Grid {
     #[inline(always)]
     pub unsafe fn set_particle_unchecked(&mut self, x: u32, y: u32, element: ElementId, color: u32, life: u16, temp: f32) {
         let idx = self.index_unchecked(x, y);
-        let prev = *self.types.get_unchecked(idx);
         *self.types.get_unchecked_mut(idx) = element;
         *self.colors.get_unchecked_mut(idx) = color;
         *self.life.get_unchecked_mut(idx) = life;
         *self.updated.get_unchecked_mut(idx) = 0;
         *self.temperature.get_unchecked_mut(idx) = temp;
-
-        if prev == EL_EMPTY && element != EL_EMPTY {
-            self.mark_cell_non_empty(x, y);
-        } else if prev != EL_EMPTY && element == EL_EMPTY {
-            self.mark_cell_empty(x, y);
-        }
     }
 
     /// Fast clear cell - UNSAFE: caller must ensure x,y are valid
     #[inline(always)]
     pub unsafe fn clear_cell_unchecked(&mut self, x: u32, y: u32) {
         let idx = self.index_unchecked(x, y);
-        let prev = *self.types.get_unchecked(idx);
         *self.types.get_unchecked_mut(idx) = EL_EMPTY;
         *self.colors.get_unchecked_mut(idx) = BG_COLOR;
         *self.life.get_unchecked_mut(idx) = 0;
@@ -68,9 +60,5 @@ impl Grid {
         // Keep velocity arrays consistent with safe clear_cell()
         *self.vx.get_unchecked_mut(idx) = 0.0;
         *self.vy.get_unchecked_mut(idx) = 0.0;
-
-        if prev != EL_EMPTY {
-            self.mark_cell_empty(x, y);
-        }
     }
 }

@@ -5,42 +5,7 @@ impl ChunkGrid {
 
     /// Called at start of each frame - prepare for processing
     pub fn begin_frame(&mut self) {
-        self.woke_this_frame = 0;
-        self.slept_this_frame = 0;
-
-        if !self.sleep_enabled {
-            return;
-        }
-
-        // Empty-chunk sleeping is based on time, not on whether the chunk happened
-        // to be processed this frame.
-        for idx in 0..self.chunk_count {
-            if self.particle_count[idx] > 0 {
-                self.idle_frames[idx] = 0;
-                self.state[idx] = ChunkState::Active;
-                continue;
-            }
-
-            // Keep empty-but-dirty chunks active (e.g. after a clear/remove), so we
-            // don't sleep them immediately and cause "popping" on re-wake.
-            if Self::check_bit(&self.dirty_bits, idx) {
-                self.idle_frames[idx] = 0;
-                if self.state[idx] == ChunkState::Sleeping {
-                    self.state[idx] = ChunkState::Active;
-                }
-                continue;
-            }
-
-            if self.state[idx] == ChunkState::Sleeping {
-                continue;
-            }
-
-            self.idle_frames[idx] = self.idle_frames[idx].saturating_add(1);
-            if self.idle_frames[idx] >= SLEEP_THRESHOLD {
-                self.state[idx] = ChunkState::Sleeping;
-                self.slept_this_frame = self.slept_this_frame.saturating_add(1);
-            }
-        }
+        // no-op: world is always live
     }
 
     /// Called after processing a chunk (BitSet version)
@@ -51,20 +16,8 @@ impl ChunkGrid {
         let idx = self.chunk_idx_from_coords(cx, cy);
 
         if had_movement {
-            self.idle_frames[idx] = 0;
-            self.state[idx] = ChunkState::Active;
             Self::set_bit(&mut self.visual_dirty_bits, idx);
             self.visual_dirty[idx] = true; // Legacy
-
-            // Wake chunk below ONLY if it has particles (to catch falling particles)
-            // Don't wake empty chunks - this prevents cascade wakeups
-            if cy + 1 < self.chunks_y {
-                let below_idx = self.chunk_idx_from_coords(cx, cy + 1);
-                if self.particle_count[below_idx] > 0 {
-                    // Only set dirty bit, don't force Active state
-                    Self::set_bit(&mut self.dirty_bits, below_idx);
-                }
-            }
         }
 
         // Clear physics dirty bit
@@ -82,32 +35,9 @@ impl ChunkGrid {
 
     /// Reset all chunks (BitSet version)
     pub fn reset(&mut self) {
-        self.state.fill(ChunkState::Active);
         self.dirty_bits.fill(!0u64);  // All dirty
         self.visual_dirty_bits.fill(!0u64);
         self.visual_dirty.fill(true);
-        self.idle_frames.fill(0);
-        self.particle_count.fill(0);
-        self.virtual_temp.fill(20.0);
-        self.just_woke_up.fill(false);
-    }
-
-    /// Enable/disable empty-chunk sleeping.
-    ///
-    /// This is primarily intended for performance experiments and debugging.
-    /// Disabling sleeping forces all chunks to `Active` and clears any pending wake flags.
-    pub fn set_sleeping_enabled(&mut self, enabled: bool) {
-        if self.sleep_enabled == enabled {
-            return;
-        }
-
-        self.sleep_enabled = enabled;
-
-        if !enabled {
-            self.state.fill(ChunkState::Active);
-            self.idle_frames.fill(0);
-            self.just_woke_up.fill(false);
-        }
     }
 
     /// Emergency recovery: force full simulation + full render upload next frame.

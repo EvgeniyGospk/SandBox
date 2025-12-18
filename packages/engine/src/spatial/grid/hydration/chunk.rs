@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::chunks::CHUNK_SIZE;
 
 pub(super) fn hydrate_chunk_impl(grid: &mut Grid, cx: u32, cy: u32, temp: f32) {
     let start_x = cx * CHUNK_SIZE;

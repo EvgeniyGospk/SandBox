@@ -1,0 +1,668 @@
+{
+  "meta": {
+    "startedAt": "2025-12-18T15:42:53.074Z",
+    "runs": 1,
+    "seed": 1337,
+    "enginePerf": true,
+    "warmupStepsOverride": null,
+    "measureStepsOverride": null,
+    "baselineConfig": {},
+    "optimizations": [],
+    "worlds": [
+      {
+        "width": 250,
+        "height": 250
+      },
+      {
+        "width": 500,
+        "height": 500
+      },
+      {
+        "width": 1000,
+        "height": 1000
+      },
+      {
+        "width": 2000,
+        "height": 2000
+      }
+    ],
+    "targetParticles": 200000,
+    "targetDensity": null,
+    "randomElementsN": 5,
+    "contentBundleLoaded": true
+  },
+  "worlds": [
+    {
+      "world": {
+        "width": 250,
+        "height": 250,
+        "cells": 62500
+      },
+      "scenarios": [
+        {
+          "id": "random5_elements_scatter",
+          "label": "Random scatter (5 elements, target=62500)",
+          "baseline": {
+            "config": {},
+            "outer": {
+              "n": 240,
+              "avg": 83.3648596291667,
+              "p50": 83.70975700000054,
+              "p95": 84.84957000000213,
+              "p99": 85.0502239999987,
+              "max": 86.74925799999983
+            },
+            "fps": {
+              "n": 240,
+              "avg": 11.995461930222358,
+              "p50": 11.94603873954614,
+              "p95": 11.785563556774358,
+              "p99": 11.757758568631344,
+              "min": 11.52747611973813
+            },
+            "perfStepMs": {
+              "n": 240,
+              "avg": 83.3625,
+              "p50": 84,
+              "p95": 85,
+              "p99": 85,
+              "max": 87
+            },
+            "perfBreakdown": {
+              "rigid_ms": {
+                "n": 240,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "physics_ms": {
+                "n": 240,
+                "avg": 1.2041666666666666,
+                "p50": 1,
+                "p95": 2,
+                "p99": 2,
+                "max": 2
+              },
+              "chunks_ms": {
+                "n": 240,
+                "avg": 81.34166666666667,
+                "p50": 82,
+                "p95": 83,
+                "p99": 83,
+                "max": 85
+              },
+              "temperature_ms": {
+                "n": 240,
+                "avg": 0.775,
+                "p50": 1,
+                "p95": 1,
+                "p99": 1,
+                "max": 1
+              },
+              "powder_ms": {
+                "n": 240,
+                "avg": 14.404166666666667,
+                "p50": 15,
+                "p95": 19,
+                "p99": 21,
+                "max": 22
+              },
+              "liquid_ms": {
+                "n": 240,
+                "avg": 12.470833333333333,
+                "p50": 13,
+                "p95": 17,
+                "p99": 20,
+                "max": 20
+              },
+              "gas_ms": {
+                "n": 240,
+                "avg": 13.704166666666667,
+                "p50": 14,
+                "p95": 18,
+                "p99": 20,
+                "max": 21
+              },
+              "energy_ms": {
+                "n": 240,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "utility_ms": {
+                "n": 240,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "bio_ms": {
+                "n": 240,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              }
+            },
+            "endState": {
+              "particleCount": 47491,
+              "activeChunks": 64,
+              "totalChunks": 64
+            },
+            "spawns": [
+              [
+                {
+                  "placed": 59395,
+                  "elapsedMs": 9.245543999999995,
+                  "elements": [
+                    {
+                      "id": 14,
+                      "key": "base:electricity"
+                    },
+                    {
+                      "id": 15,
+                      "key": "base:gunpowder"
+                    },
+                    {
+                      "id": 1,
+                      "key": "base:stone"
+                    },
+                    {
+                      "id": 10,
+                      "key": "base:steam"
+                    },
+                    {
+                      "id": 11,
+                      "key": "base:smoke"
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          "variants": []
+        }
+      ]
+    },
+    {
+      "world": {
+        "width": 500,
+        "height": 500,
+        "cells": 250000
+      },
+      "scenarios": [
+        {
+          "id": "random5_elements_scatter",
+          "label": "Random scatter (5 elements, target=200000)",
+          "baseline": {
+            "config": {},
+            "outer": {
+              "n": 240,
+              "avg": 295.644632979167,
+              "p50": 295.46443,
+              "p95": 300.0806719999964,
+              "p99": 303.0050049999991,
+              "max": 305.68237700000464
+            },
+            "fps": {
+              "n": 240,
+              "avg": 3.3824392140088886,
+              "p50": 3.3845021547940646,
+              "p95": 3.3324372187490034,
+              "p99": 3.300275518551263,
+              "min": 3.271369484280034
+            },
+            "perfStepMs": {
+              "n": 240,
+              "avg": 295.625,
+              "p50": 295,
+              "p95": 300,
+              "p99": 303,
+              "max": 306
+            },
+            "perfBreakdown": {
+              "rigid_ms": {
+                "n": 240,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "physics_ms": {
+                "n": 240,
+                "avg": 4.479166666666667,
+                "p50": 4,
+                "p95": 5,
+                "p99": 5,
+                "max": 5
+              },
+              "chunks_ms": {
+                "n": 240,
+                "avg": 287.7916666666667,
+                "p50": 288,
+                "p95": 292,
+                "p99": 295,
+                "max": 298
+              },
+              "temperature_ms": {
+                "n": 240,
+                "avg": 3.1083333333333334,
+                "p50": 3,
+                "p95": 4,
+                "p99": 4,
+                "max": 4
+              },
+              "powder_ms": {
+                "n": 240,
+                "avg": 48.34166666666667,
+                "p50": 49,
+                "p95": 56,
+                "p99": 59,
+                "max": 63
+              },
+              "liquid_ms": {
+                "n": 240,
+                "avg": 46.583333333333336,
+                "p50": 46,
+                "p95": 55,
+                "p99": 58,
+                "max": 62
+              },
+              "gas_ms": {
+                "n": 240,
+                "avg": 48.46666666666667,
+                "p50": 48,
+                "p95": 57,
+                "p99": 60,
+                "max": 61
+              },
+              "energy_ms": {
+                "n": 240,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "utility_ms": {
+                "n": 240,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "bio_ms": {
+                "n": 240,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              }
+            },
+            "endState": {
+              "particleCount": 160000,
+              "activeChunks": 256,
+              "totalChunks": 256
+            },
+            "spawns": [
+              [
+                {
+                  "placed": 200000,
+                  "elapsedMs": 16.966589999999997,
+                  "elements": [
+                    {
+                      "id": 14,
+                      "key": "base:electricity"
+                    },
+                    {
+                      "id": 15,
+                      "key": "base:gunpowder"
+                    },
+                    {
+                      "id": 1,
+                      "key": "base:stone"
+                    },
+                    {
+                      "id": 10,
+                      "key": "base:steam"
+                    },
+                    {
+                      "id": 11,
+                      "key": "base:smoke"
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          "variants": []
+        }
+      ]
+    },
+    {
+      "world": {
+        "width": 1000,
+        "height": 1000,
+        "cells": 1000000
+      },
+      "scenarios": [
+        {
+          "id": "random5_elements_scatter",
+          "label": "Random scatter (5 elements, target=200000)",
+          "baseline": {
+            "config": {},
+            "outer": {
+              "n": 180,
+              "avg": 324.4093179888884,
+              "p50": 324.04167599999346,
+              "p95": 330.60272399999667,
+              "p99": 335.30088900000555,
+              "max": 335.85417400000733
+            },
+            "fps": {
+              "n": 180,
+              "avg": 3.0825255149861377,
+              "p50": 3.086022799116803,
+              "p95": 3.0247784649227816,
+              "p99": 2.982395910080583,
+              "min": 2.9774827214146167
+            },
+            "perfStepMs": {
+              "n": 180,
+              "avg": 324.3722222222222,
+              "p50": 324,
+              "p95": 331,
+              "p99": 335,
+              "max": 336
+            },
+            "perfBreakdown": {
+              "rigid_ms": {
+                "n": 180,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "physics_ms": {
+                "n": 180,
+                "avg": 8.272222222222222,
+                "p50": 8,
+                "p95": 10,
+                "p99": 10,
+                "max": 11
+              },
+              "chunks_ms": {
+                "n": 180,
+                "avg": 303.6166666666667,
+                "p50": 303,
+                "p95": 309,
+                "p99": 312,
+                "max": 312
+              },
+              "temperature_ms": {
+                "n": 180,
+                "avg": 11.616666666666667,
+                "p50": 12,
+                "p95": 13,
+                "p99": 13,
+                "max": 14
+              },
+              "powder_ms": {
+                "n": 180,
+                "avg": 48.55555555555556,
+                "p50": 48,
+                "p95": 58,
+                "p99": 63,
+                "max": 64
+              },
+              "liquid_ms": {
+                "n": 180,
+                "avg": 50.138888888888886,
+                "p50": 51,
+                "p95": 59,
+                "p99": 61,
+                "max": 68
+              },
+              "gas_ms": {
+                "n": 180,
+                "avg": 50.71111111111111,
+                "p50": 50,
+                "p95": 60,
+                "p99": 63,
+                "max": 63
+              },
+              "energy_ms": {
+                "n": 180,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "utility_ms": {
+                "n": 180,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "bio_ms": {
+                "n": 180,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              }
+            },
+            "endState": {
+              "particleCount": 160000,
+              "activeChunks": 1024,
+              "totalChunks": 1024
+            },
+            "spawns": [
+              [
+                {
+                  "placed": 200000,
+                  "elapsedMs": 12.066581000006408,
+                  "elements": [
+                    {
+                      "id": 14,
+                      "key": "base:electricity"
+                    },
+                    {
+                      "id": 15,
+                      "key": "base:gunpowder"
+                    },
+                    {
+                      "id": 1,
+                      "key": "base:stone"
+                    },
+                    {
+                      "id": 10,
+                      "key": "base:steam"
+                    },
+                    {
+                      "id": 11,
+                      "key": "base:smoke"
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          "variants": []
+        }
+      ]
+    },
+    {
+      "world": {
+        "width": 2000,
+        "height": 2000,
+        "cells": 4000000
+      },
+      "scenarios": [
+        {
+          "id": "random5_elements_scatter",
+          "label": "Random scatter (5 elements, target=200000)",
+          "baseline": {
+            "config": {},
+            "outer": {
+              "n": 120,
+              "avg": 392.5025667999997,
+              "p50": 392.5515529999975,
+              "p95": 403.1553739999945,
+              "p99": 404.3403049999906,
+              "max": 405.3388289999857
+            },
+            "fps": {
+              "n": 120,
+              "avg": 2.5477540392991913,
+              "p50": 2.5474361070735756,
+              "p95": 2.4804332634296316,
+              "p99": 2.4731642817552486,
+              "min": 2.467071813640719
+            },
+            "perfStepMs": {
+              "n": 120,
+              "avg": 392.475,
+              "p50": 392,
+              "p95": 403,
+              "p99": 404,
+              "max": 405
+            },
+            "perfBreakdown": {
+              "rigid_ms": {
+                "n": 120,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "physics_ms": {
+                "n": 120,
+                "avg": 22.358333333333334,
+                "p50": 22,
+                "p95": 25,
+                "p99": 25,
+                "max": 26
+              },
+              "chunks_ms": {
+                "n": 120,
+                "avg": 321.4583333333333,
+                "p50": 321,
+                "p95": 327,
+                "p99": 329,
+                "max": 330
+              },
+              "temperature_ms": {
+                "n": 120,
+                "avg": 45.18333333333333,
+                "p50": 45,
+                "p95": 49,
+                "p99": 50,
+                "max": 51
+              },
+              "powder_ms": {
+                "n": 120,
+                "avg": 49.725,
+                "p50": 50,
+                "p95": 57,
+                "p99": 60,
+                "max": 62
+              },
+              "liquid_ms": {
+                "n": 120,
+                "avg": 51.25,
+                "p50": 51,
+                "p95": 60,
+                "p99": 63,
+                "max": 63
+              },
+              "gas_ms": {
+                "n": 120,
+                "avg": 52.575,
+                "p50": 52,
+                "p95": 61,
+                "p99": 65,
+                "max": 66
+              },
+              "energy_ms": {
+                "n": 120,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "utility_ms": {
+                "n": 120,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              },
+              "bio_ms": {
+                "n": 120,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0
+              }
+            },
+            "endState": {
+              "particleCount": 160000,
+              "activeChunks": 3969,
+              "totalChunks": 3969
+            },
+            "spawns": [
+              [
+                {
+                  "placed": 200000,
+                  "elapsedMs": 24.262579000002006,
+                  "elements": [
+                    {
+                      "id": 14,
+                      "key": "base:electricity"
+                    },
+                    {
+                      "id": 15,
+                      "key": "base:gunpowder"
+                    },
+                    {
+                      "id": 1,
+                      "key": "base:stone"
+                    },
+                    {
+                      "id": 10,
+                      "key": "base:steam"
+                    },
+                    {
+                      "id": 11,
+                      "key": "base:smoke"
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          "variants": []
+        }
+      ]
+    }
+  ]
+}

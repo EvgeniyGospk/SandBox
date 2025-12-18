@@ -66,18 +66,6 @@ impl ChunkGrid {
                 }
             }
         }
-
-        // Ensure chunk states are consistent with the rebuilt counts.
-        for idx in 0..self.chunk_count {
-            if self.particle_count[idx] > 0 {
-                if self.state[idx] == ChunkState::Sleeping {
-                    self.just_woke_up[idx] = true;
-                    self.woke_this_frame = self.woke_this_frame.saturating_add(1);
-                }
-                self.state[idx] = ChunkState::Active;
-                self.idle_frames[idx] = 0;
-            }
-        }
     }
 
     /// Expose particle counts for diagnostics

@@ -1,0 +1,316 @@
+{
+  "meta": {
+    "startedAt": "2025-12-18T15:42:21.168Z",
+    "runs": 1,
+    "seed": 1337,
+    "enginePerf": false,
+    "warmupStepsOverride": null,
+    "measureStepsOverride": null,
+    "baselineConfig": {},
+    "optimizations": [],
+    "worlds": [
+      {
+        "width": 250,
+        "height": 250
+      },
+      {
+        "width": 500,
+        "height": 500
+      },
+      {
+        "width": 1000,
+        "height": 1000
+      },
+      {
+        "width": 2000,
+        "height": 2000
+      }
+    ],
+    "targetParticles": 200000,
+    "targetDensity": null,
+    "randomElementsN": 5,
+    "contentBundleLoaded": true
+  },
+  "worlds": [
+    {
+      "world": {
+        "width": 250,
+        "height": 250,
+        "cells": 62500
+      },
+      "scenarios": [
+        {
+          "id": "random5_elements_scatter",
+          "label": "Random scatter (5 elements, target=62500)",
+          "baseline": {
+            "config": {},
+            "outer": {
+              "n": 240,
+              "avg": 2.9357256333333286,
+              "p50": 2.9124590000000126,
+              "p95": 3.12379999999996,
+              "p99": 3.311394000000007,
+              "max": 3.597533999999996
+            },
+            "fps": {
+              "n": 240,
+              "avg": 340.631286740704,
+              "p50": 343.352472944682,
+              "p95": 320.1229272040504,
+              "p99": 301.9876221313434,
+              "min": 277.9681859851779
+            },
+            "perfStepMs": null,
+            "perfBreakdown": null,
+            "endState": {
+              "particleCount": 47491,
+              "activeChunks": 64,
+              "totalChunks": 64
+            },
+            "spawns": [
+              [
+                {
+                  "placed": 59395,
+                  "elapsedMs": 11.033625999999998,
+                  "elements": [
+                    {
+                      "id": 14,
+                      "key": "base:electricity"
+                    },
+                    {
+                      "id": 15,
+                      "key": "base:gunpowder"
+                    },
+                    {
+                      "id": 1,
+                      "key": "base:stone"
+                    },
+                    {
+                      "id": 10,
+                      "key": "base:steam"
+                    },
+                    {
+                      "id": 11,
+                      "key": "base:smoke"
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          "variants": []
+        }
+      ]
+    },
+    {
+      "world": {
+        "width": 500,
+        "height": 500,
+        "cells": 250000
+      },
+      "scenarios": [
+        {
+          "id": "random5_elements_scatter",
+          "label": "Random scatter (5 elements, target=200000)",
+          "baseline": {
+            "config": {},
+            "outer": {
+              "n": 240,
+              "avg": 10.790871637500006,
+              "p50": 10.723739000000023,
+              "p95": 11.253276999999798,
+              "p99": 11.445620999999846,
+              "max": 11.523983000000044
+            },
+            "fps": {
+              "n": 240,
+              "avg": 92.67091979158013,
+              "p50": 93.25105730380027,
+              "p95": 88.86300408316777,
+              "p99": 87.36965866683978,
+              "min": 86.7755532093371
+            },
+            "perfStepMs": null,
+            "perfBreakdown": null,
+            "endState": {
+              "particleCount": 160000,
+              "activeChunks": 256,
+              "totalChunks": 256
+            },
+            "spawns": [
+              [
+                {
+                  "placed": 200000,
+                  "elapsedMs": 18.422225000000026,
+                  "elements": [
+                    {
+                      "id": 14,
+                      "key": "base:electricity"
+                    },
+                    {
+                      "id": 15,
+                      "key": "base:gunpowder"
+                    },
+                    {
+                      "id": 1,
+                      "key": "base:stone"
+                    },
+                    {
+                      "id": 10,
+                      "key": "base:steam"
+                    },
+                    {
+                      "id": 11,
+                      "key": "base:smoke"
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          "variants": []
+        }
+      ]
+    },
+    {
+      "world": {
+        "width": 1000,
+        "height": 1000,
+        "cells": 1000000
+      },
+      "scenarios": [
+        {
+          "id": "random5_elements_scatter",
+          "label": "Random scatter (5 elements, target=200000)",
+          "baseline": {
+            "config": {},
+            "outer": {
+              "n": 180,
+              "avg": 29.03640967222215,
+              "p50": 28.84082699999999,
+              "p95": 33.73014899999998,
+              "p99": 34.53158100000019,
+              "max": 34.5921330000001
+            },
+            "fps": {
+              "n": 180,
+              "avg": 34.43951959930693,
+              "p50": 34.673069534379174,
+              "p95": 29.647067375836393,
+              "p99": 28.958998431030267,
+              "min": 28.90830698413414
+            },
+            "perfStepMs": null,
+            "perfBreakdown": null,
+            "endState": {
+              "particleCount": 160000,
+              "activeChunks": 1024,
+              "totalChunks": 1024
+            },
+            "spawns": [
+              [
+                {
+                  "placed": 200000,
+                  "elapsedMs": 14.624037000000499,
+                  "elements": [
+                    {
+                      "id": 14,
+                      "key": "base:electricity"
+                    },
+                    {
+                      "id": 15,
+                      "key": "base:gunpowder"
+                    },
+                    {
+                      "id": 1,
+                      "key": "base:stone"
+                    },
+                    {
+                      "id": 10,
+                      "key": "base:steam"
+                    },
+                    {
+                      "id": 11,
+                      "key": "base:smoke"
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          "variants": []
+        }
+      ]
+    },
+    {
+      "world": {
+        "width": 2000,
+        "height": 2000,
+        "cells": 4000000
+      },
+      "scenarios": [
+        {
+          "id": "random5_elements_scatter",
+          "label": "Random scatter (5 elements, target=200000)",
+          "baseline": {
+            "config": {},
+            "outer": {
+              "n": 120,
+              "avg": 91.32019457499986,
+              "p50": 91.46879600000102,
+              "p95": 98.53919799999858,
+              "p99": 100.0945670000001,
+              "max": 101.73898499999996
+            },
+            "fps": {
+              "n": 120,
+              "avg": 10.950480391045549,
+              "p50": 10.932690094663418,
+              "p95": 10.14824577727956,
+              "p99": 9.99055223446842,
+              "min": 9.82907387959493
+            },
+            "perfStepMs": null,
+            "perfBreakdown": null,
+            "endState": {
+              "particleCount": 160000,
+              "activeChunks": 3969,
+              "totalChunks": 3969
+            },
+            "spawns": [
+              [
+                {
+                  "placed": 200000,
+                  "elapsedMs": 26.726237000000765,
+                  "elements": [
+                    {
+                      "id": 14,
+                      "key": "base:electricity"
+                    },
+                    {
+                      "id": 15,
+                      "key": "base:gunpowder"
+                    },
+                    {
+                      "id": 1,
+                      "key": "base:stone"
+                    },
+                    {
+                      "id": 10,
+                      "key": "base:steam"
+                    },
+                    {
+                      "id": 11,
+                      "key": "base:smoke"
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          "variants": []
+        }
+      ]
+    }
+  ]
+}

@@ -38,6 +38,8 @@ export class CanvasRenderer {
   private zoom: number = 1
   private panX: number = 0
   private panY: number = 0
+
+  private ambientTemp: number = 20
   
   // Background color as packed ABGR (for Uint32Array)
   // 0xFF0A0A0A = alpha=255, r=10, g=10, b=10
@@ -102,6 +104,10 @@ export class CanvasRenderer {
     this.mode = mode
   }
 
+  setAmbientTemperature(temp: number): void {
+    this.ambientTemp = temp
+  }
+
   getMode(): RenderMode {
     return this.mode
   }
@@ -115,7 +121,7 @@ export class CanvasRenderer {
   render(types: Uint8Array, colors: Uint32Array, temperatureData?: Float32Array): void {
     // 1. Render pixels to BUFFER
     if (this.mode === 'thermal' && temperatureData) {
-      this.renderThermal(temperatureData)
+      this.renderThermal(types, temperatureData)
     } else {
       this.renderNormalTyped(types, colors)
     }
@@ -214,12 +220,14 @@ export class CanvasRenderer {
   /**
    * Render thermal vision - temperature to color gradient
    */
-  private renderThermal(temps: Float32Array): void {
+  private renderThermal(types: Uint8Array, temps: Float32Array): void {
     const pixels = this.pixels
 
     renderThermalPixels({
       pixels,
       temps,
+      types,
+      ambientTemp: this.ambientTemp,
       width: this.width,
       height: this.height,
       getThermalColor: (t) => this.getThermalColor(t),

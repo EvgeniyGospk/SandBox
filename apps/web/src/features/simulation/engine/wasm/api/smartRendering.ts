@@ -1,21 +1,27 @@
 import type { WasmWorld } from '../types'
 
 export function getDirtyChunksCount(world: WasmWorld): number {
-  return world.collect_dirty_chunks()
+  void world
+  return 0
 }
 
 export function getDirtyListPtr(world: WasmWorld): number {
-  return world.get_dirty_list_ptr()
+  void world
+  return 0
 }
 
 export function extractChunkPixels(world: WasmWorld, chunkIdx: number): number {
-  return world.extract_chunk_pixels(chunkIdx)
+  void world
+  void chunkIdx
+  return 0
 }
 
 export function getChunksX(world: WasmWorld): number {
-  return world.chunks_x()
+  void world
+  return 0
 }
 
 export function getChunksY(world: WasmWorld): number {
-  return world.chunks_y()
+  void world
+  return 0
 }

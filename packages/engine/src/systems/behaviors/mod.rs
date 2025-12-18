@@ -54,7 +54,6 @@ impl<'a> UpdateContext<'a> {
         let prev = self.grid.get_type(x as i32, y as i32);
         self.grid.set_particle(x, y, element, color, life, temp);
         if prev == EL_EMPTY {
-            self.chunks.add_particle(x, y);
             *self.world_particle_count = self.world_particle_count.saturating_add(1);
         }
         self.chunks.mark_dirty(x, y);
@@ -67,7 +66,6 @@ impl<'a> UpdateContext<'a> {
             return;
         }
         self.grid.clear_cell(x, y);
-        self.chunks.remove_particle(x, y);
         *self.world_particle_count = self.world_particle_count.saturating_sub(1);
         self.chunks.mark_dirty(x, y);
     }

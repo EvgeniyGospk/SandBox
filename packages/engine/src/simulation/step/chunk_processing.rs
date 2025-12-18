@@ -15,10 +15,7 @@ pub(super) fn process_chunk_row(world: &mut WorldCore, cy: u32, chunks_x: u32, g
 }
 
 pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: bool) {
-    // Skip sleeping chunks with no activity
-    if world.chunk_gating_enabled && !world.chunks.should_process(cx, cy) {
-        return;
-    }
+    let started_dirty = world.chunks.is_dirty(cx, cy);
 
     // Calculate pixel bounds for this chunk
     let start_x = cx * CHUNK_SIZE;
@@ -26,22 +23,11 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
     let end_x = (start_x + CHUNK_SIZE).min(world.grid.width());
     let end_y = (start_y + CHUNK_SIZE).min(world.grid.height());
 
-    debug_assert!(
-        (end_y as usize) <= world.grid.row_has_data.len(),
-        "process_chunk: row_has_data too small (end_y={}, len={})",
-        end_y,
-        world.grid.row_has_data.len()
-    );
-
     let mut had_movement = false;
 
     // Process rows within chunk (bottom to top for gravity)
     if world.gravity_y >= 0.0 {
         for y in (start_y..end_y).rev() {
-            // Sparse skip: check row_has_data
-            if world.sparse_row_skip_enabled && !world.grid.row_has_data[y as usize] {
-                continue;
-            }
             if go_right {
                 for x in start_x..end_x {
                     let moved = world.update_particle_chunked(x, y);
@@ -72,10 +58,6 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
         }
     } else {
         for y in start_y..end_y {
-            // Sparse skip: check row_has_data
-            if world.sparse_row_skip_enabled && !world.grid.row_has_data[y as usize] {
-                continue;
-            }
             if go_right {
                 for x in start_x..end_x {
                     let moved = world.update_particle_chunked(x, y);
@@ -107,5 +89,7 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
     }
 
     // Update chunk state
-    world.chunks.end_chunk_update(cx, cy, had_movement);
+    world
+        .chunks
+        .end_chunk_update(cx, cy, had_movement || started_dirty);
 }

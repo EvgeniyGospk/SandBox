@@ -3,6 +3,7 @@ import { ArrowLeft, Sparkles, Wrench } from 'lucide-react'
 import { PreviewSession, type PreviewSessionHandle } from './PreviewSession'
 import { ElementEditor } from './ElementEditor'
 import { ReactionEditor } from './ReactionEditor'
+import { ModSelect, ModToggle } from './controls'
 import { useModStudioStore } from '../model/modStudioStore'
 import { createPacksZip, downloadBlob, makeModsZipFilename } from '@/features/simulation/ui/panels/topToolbar/exportZip'
 import { extractZipToFileEntries, isZipFile } from '@/features/simulation/ui/panels/topToolbar/zip'
@@ -45,6 +46,7 @@ export function ModStudioPage(args: { onBack: () => void }) {
   const isTypingTarget = (t: EventTarget | null): boolean => {
     if (!t) return false
     if (!(t instanceof HTMLElement)) return false
+    if (t.closest('[data-typing-target="true"]')) return true
     const tag = t.tagName.toLowerCase()
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return true
     if (t.isContentEditable) return true
@@ -485,17 +487,12 @@ export function ModStudioPage(args: { onBack: () => void }) {
             <div className="mt-4 space-y-4">
               <div>
                 <div className="text-xs text-gray-400 mb-2">Pack</div>
-                <select
-                  value={selectedImportPackId ?? ''}
-                  onChange={(e) => setSelectedImportPackId(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/10 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
-                >
-                  {importedPacks.map((p) => (
-                    <option key={p.manifest.id} value={p.manifest.id}>
-                      {p.manifest.id} — {p.manifest.title}
-                    </option>
-                  ))}
-                </select>
+                <ModSelect
+                  value={(selectedImportPackId ?? '') as string}
+                  onChange={(v) => setSelectedImportPackId(v)}
+                  options={importedPacks.map((p) => ({ value: p.manifest.id, label: `${p.manifest.id} — ${p.manifest.title}` }))}
+                  buttonClassName="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/10 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
+                />
               </div>
 
               <div>
@@ -808,14 +805,7 @@ export function ModStudioPage(args: { onBack: () => void }) {
           <div className="flex-1 overflow-auto p-4">
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
               <div className="flex items-center gap-3 mb-3">
-                <label className="inline-flex items-center gap-2 text-sm text-gray-200">
-                  <input
-                    type="checkbox"
-                    checked={autoApplyToPreview}
-                    onChange={(e) => setAutoApplyToPreview(e.target.checked)}
-                  />
-                  Auto-apply
-                </label>
+                <ModToggle checked={autoApplyToPreview} onCheckedChange={setAutoApplyToPreview} label="Auto-apply" />
 
                 <button
                   onClick={() => applyToPreview()}

@@ -86,16 +86,6 @@ export async function initEngine(
     }
 
     state.wasm.engine = new wasm.World(worldWidth, worldHeight)
-    {
-      const raw = import.meta.env.VITE_CHUNK_SLEEPING
-      const str = raw === undefined ? '' : String(raw).toLowerCase().trim()
-      const enabled = str === '' || (str !== '0' && str !== 'false' && str !== 'off')
-      const engine = state.wasm.engine as unknown as { set_chunk_sleeping_enabled?: (enabled: boolean) => void }
-      engine.set_chunk_sleeping_enabled?.(enabled)
-      if (!enabled) {
-        debugLog('🧩 Worker: Chunk sleeping disabled via VITE_CHUNK_SLEEPING')
-      }
-    }
 
     try {
       postContentBundleStatus({ phase: 'init', status: 'loading' })

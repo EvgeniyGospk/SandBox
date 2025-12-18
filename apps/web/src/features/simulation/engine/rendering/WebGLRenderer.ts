@@ -23,18 +23,10 @@ import { setupContextLossHandlers as setupContextLossHandlersImpl } from './webg
 import { initPBO as initPBOImpl } from './webgl/context/pbo'
 import { reinitializeResources as reinitializeResourcesImpl } from './webgl/context/reinitialize'
 import {
-  uploadDirtyChunks as uploadDirtyChunksImpl,
   uploadFull as uploadFullImpl,
-  uploadWithMergedRects as uploadWithMergedRectsImpl,
 } from './webgl/renderer/upload'
 import { renderThermal as renderThermalImpl } from './webgl/renderer/thermal'
 import { computeViewportSize, resizeWorldResources, updateBorderAndPBO } from './webgl/renderer/resize'
-
-const CHUNK_SIZE = 32;
-
-// Phase 2: Use merged rectangles for batching
-// Enabled: merged-rect extraction is bounds-safe in Rust (see `World::extract_rect_pixels`)
-const USE_MERGED_RECTS = true;
 
 // Phase 2: PBO for async texture upload (WebGL 2.0)
 const USE_PBO = true;
@@ -229,77 +221,17 @@ export class WebGLRenderer {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
 
-    // Ensure the GPU texture is fully initialized at least once.
-    // If we only ever upload dirty rects, untouched areas remain undefined (often all-zero),
-    // which looks like "shaders render only where particles moved".
-    // Also keep the existing `forceFullUpload` path for mode switches/resizes/paused input.
-    if (!this.hasDoneFullUpload || this.forceFullUpload) {
-      this.uploadFull(engine, memory, true); // immediate=true to skip PBO latency
-      const err = gl.getError();
-      if (err !== gl.NO_ERROR) {
-        debugWarn(`WebGL texture upload failed (gl error=${err}); will retry next frame`)
-        this.hasDoneFullUpload = false;
-      } else {
-        this.hasDoneFullUpload = true;
-      }
-      this.forceFullUpload = false;
-      return;
+    this.uploadFull(engine, memory, !this.hasDoneFullUpload || this.forceFullUpload)
+
+    const err = gl.getError();
+    if (err !== gl.NO_ERROR) {
+      debugWarn(`WebGL texture upload failed (gl error=${err}); will retry next frame`)
+      this.hasDoneFullUpload = false;
+    } else {
+      this.hasDoneFullUpload = true;
     }
 
-    // PHASE 2: Use merged rectangles for fewer GPU calls
-    if (USE_MERGED_RECTS) {
-      this.uploadWithMergedRects(engine, memory);
-      return;
-    }
-
-    // Fallback: Original per-chunk upload
-    const res = uploadDirtyChunksImpl({
-      gl,
-      engine,
-      memory,
-      worldWidth: this.worldWidth,
-      worldHeight: this.worldHeight,
-      chunkSize: CHUNK_SIZE,
-      forceFullUpload: this.forceFullUpload,
-      pboSize: this.pboSize,
-      usePBO: this.usePBO,
-      pbo: this.pbo,
-      pboIndex: this.pboIndex,
-    })
-
-    this.forceFullUpload = res.forceFullUpload
-    this.pboIndex = res.pboIndex
-  }
-
-  /**
-   * PHASE 2: Upload using merged rectangles
-   * 
-   * Instead of N calls for N dirty chunks, we merge adjacent chunks
-   * and upload fewer, larger rectangles.
-   */
-  private uploadWithMergedRects(engine: WasmWorld, _memory: WebAssembly.Memory): void {
-    // DEBUG WORKAROUND: can be enabled via env flag for diagnostics
-    const DEBUG_FORCE_FULL = import.meta.env.VITE_FORCE_FULL_UPLOAD === 'true'
-    if (DEBUG_FORCE_FULL) {
-      this.uploadFull(engine, _memory);
-      return;
-    }
-
-    const res = uploadWithMergedRectsImpl({
-      gl: this.gl,
-      engine,
-      memory: _memory,
-      worldWidth: this.worldWidth,
-      worldHeight: this.worldHeight,
-      forceFullUpload: false,
-      pboSize: this.pboSize,
-      usePBO: this.usePBO,
-      pbo: this.pbo,
-      pboIndex: this.pboIndex,
-    })
-
-    this.forceFullUpload = res.forceFullUpload
-    this.pboIndex = res.pboIndex
+    this.forceFullUpload = false;
   }
   
   /**

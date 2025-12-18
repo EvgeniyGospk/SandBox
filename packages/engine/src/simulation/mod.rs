@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use crate::grid::Grid;
-use crate::chunks::{ChunkGrid, CHUNK_SIZE, MergedDirtyRects};
+use crate::chunks::ChunkGrid;
 use crate::domain::content::ContentRegistry;
 use crate::elements::ElementId;
 use crate::behaviors::BehaviorRegistry;
@@ -27,10 +27,6 @@ mod perf_timer;
 mod perf_stats;
 #[path = "init/random.rs"]
 mod random;
-#[path = "step/hydration.rs"]
-mod hydration;
-#[path = "step/moves.rs"]
-mod moves;
 #[path = "step/step_reactions.rs"]
 mod step_reactions;
 #[path = "step/update.rs"]
@@ -41,8 +37,6 @@ mod step_physics;
 mod step;
 #[path = "step/chunk_processing.rs"]
 mod chunk_processing;
-#[path = "render/render_extract.rs"]
-mod render_extract;
 #[path = "commands/commands.rs"]
 mod commands;
 #[path = "rigid/rigid.rs"]
@@ -74,22 +68,6 @@ pub(crate) struct AbiLayoutData {
     pub(crate) temperature_ptr: *const f32,
     pub(crate) temperature_len_elements: usize,
     pub(crate) temperature_len_bytes: usize,
-    pub(crate) chunk_transfer_ptr: *const u32,
-    pub(crate) chunk_transfer_len_elements: usize,
-    pub(crate) chunk_transfer_len_bytes: usize,
-    pub(crate) dirty_list_ptr: *const u32,
-    pub(crate) dirty_list_len_elements: usize,
-    pub(crate) dirty_list_len_bytes: usize,
-    pub(crate) rect_transfer_ptr: *const u32,
-    pub(crate) rect_transfer_len_elements: usize,
-    pub(crate) rect_transfer_len_bytes: usize,
-}
-
-struct RenderBuffers {
-    dirty_list: Vec<u32>,
-    chunk_transfer_buffer: Vec<u32>,
-    merged_rects: MergedDirtyRects,
-    rect_transfer_buffer: Vec<u32>,
 }
 
 /// The simulation world
@@ -109,14 +87,10 @@ pub struct WorldCore {
     particle_count: u32,
     frame: u64,
     rng_state: u32,
-    chunk_gating_enabled: bool,
-    sparse_row_skip_enabled: bool,
-    temperature_every_frame: bool,
-
-    render: RenderBuffers,
 
     // Perf metrics
     perf_enabled: bool,
+    perf_detailed: bool,
     perf_stats: PerfStats,
     perf_stats_last_speed_max: f32,
 }
@@ -125,10 +99,6 @@ impl WorldCore {
     /// Create a new world with given dimensions
     pub fn new(width: u32, height: u32) -> Self {
         init::create_world_core(width, height)
-    }
-
-    pub fn new_with_move_buffer_capacity(width: u32, height: u32, move_buffer_capacity: usize) -> Self {
-        init::create_world_core_with_move_buffer_capacity(width, height, move_buffer_capacity)
     }
 
     pub fn load_content_bundle_json(&mut self, json: &str) -> Result<(), String> {
@@ -155,6 +125,10 @@ impl WorldCore {
         settings::enable_perf_metrics(self, enabled);
     }
 
+    pub fn enable_perf_detailed_metrics(&mut self, enabled: bool) {
+        settings::enable_perf_detailed_metrics(self, enabled);
+    }
+
     /// Get last step perf snapshot (zeros when perf disabled)
     pub fn get_perf_stats(&self) -> PerfStats {
         settings::get_perf_stats(self)
@@ -171,31 +145,6 @@ impl WorldCore {
     /// DEBUG: Get current ambient temperature
     pub fn get_ambient_temperature(&self) -> f32 {
         settings::get_ambient_temperature(self)
-    }
-
-    pub fn set_chunk_sleeping_enabled(&mut self, enabled: bool) {
-        settings::set_chunk_sleeping_enabled(self, enabled);
-    }
-    pub fn set_chunk_gating_enabled(&mut self, enabled: bool) {
-        settings::set_chunk_gating_enabled(self, enabled);
-    }
-
-    /// Enable/disable per-row sparse skipping (uses `row_has_data` markers).
-    ///
-    /// When disabled, chunk/physics passes scan every row in every processed chunk.
-    pub fn set_sparse_row_skip_enabled(&mut self, enabled: bool) {
-        settings::set_sparse_row_skip_enabled(self, enabled);
-    }
-
-    /// Enable/disable running the temperature system every frame.
-    ///
-    /// Default behavior runs temperature every 4th frame for performance.
-    pub fn set_temperature_every_frame(&mut self, enabled: bool) {
-        settings::set_temperature_every_frame(self, enabled);
-    }
-
-    pub fn set_cross_chunk_move_tracking_enabled(&mut self, enabled: bool) {
-        settings::set_cross_chunk_move_tracking_enabled(self, enabled);
     }
 
     /// Add a particle at position
@@ -252,19 +201,6 @@ impl WorldCore {
     /// Phase 2: Newtonian physics with velocity
     pub fn step(&mut self) {
         step::step(self);
-    }
-    
-    /// Lazy Hydration: Fill waking chunks with their virtual temperature
-    /// This ensures particles entering a previously-sleeping chunk
-    /// encounter the correct (smoothly animated) air temperature
-    fn hydrate_waking_chunks(&mut self) {
-        hydration::hydrate_waking_chunks(self);
-    }
-    
-    /// Phase 4.1: Apply all recorded moves to chunk tracking
-    /// Zero-allocation: uses raw pointer iteration instead of drain()
-    fn apply_pending_moves(&mut self) {
-        moves::apply_pending_moves(self);
     }
     
     /// Phase 2: Process physics for all particles in active chunks
@@ -346,130 +282,14 @@ impl WorldCore {
         self.grid.size()
     }
 
-    pub fn move_buffer_capacity(&self) -> usize {
-        self.grid.pending_moves.capacity()
-    }
-
-    pub fn move_buffer_count(&self) -> usize {
-        self.grid.pending_moves.count
-    }
-
-    pub fn move_buffer_overflow_count(&self) -> usize {
-        self.grid.pending_moves.overflow_count()
-    }
-    
-    // === PHASE 3: SMART RENDERING API ===
-    
-    /// Collect list of dirty chunks that need rendering
-    /// Uses visual_dirty (separate from physics dirty) to avoid state desync
-    pub fn collect_dirty_chunks(&mut self) -> usize {
-        render_extract::collect_dirty_chunks(self)
-    }
-    
-    /// Get pointer to dirty chunk list
-    pub fn get_dirty_list_ptr(&self) -> *const u32 {
-        self.render.dirty_list.as_ptr()
-    }
-
-    pub(crate) fn dirty_list_len_elements(&self) -> usize {
-        self.render.dirty_list.len()
-    }
-
-    pub(crate) fn dirty_list_len_bytes(&self) -> usize {
-        self.render.dirty_list.len() * std::mem::size_of::<u32>()
-    }
-
-    pub(crate) fn chunk_transfer_ptr(&self) -> *const u32 {
-        self.render.chunk_transfer_buffer.as_ptr()
-    }
-
-    pub(crate) fn chunk_transfer_len_elements(&self) -> usize {
-        self.render.chunk_transfer_buffer.len()
-    }
-
-    pub(crate) fn chunk_transfer_len_bytes(&self) -> usize {
-        self.render.chunk_transfer_buffer.len() * std::mem::size_of::<u32>()
-    }
-
-    pub(crate) fn rect_transfer_ptr(&self) -> *const u32 {
-        self.render.rect_transfer_buffer.as_ptr()
-    }
-
-    pub(crate) fn rect_transfer_len_elements(&self) -> usize {
-        self.render.rect_transfer_buffer.len()
-    }
-
-    pub(crate) fn rect_transfer_len_bytes(&self) -> usize {
-        self.render.rect_transfer_buffer.len() * std::mem::size_of::<u32>()
-    }
-    
-    /// Extract pixels from a chunk into transfer buffer (strided -> linear)
-    /// Returns pointer to the transfer buffer
-    pub fn extract_chunk_pixels(&mut self, chunk_idx: u32) -> *const u32 {
-        render_extract::extract_chunk_pixels(self, chunk_idx)
-    }
-    
-    /// Get chunk transfer buffer size (32*32 = 1024 pixels * 4 bytes = 4096 bytes)
-    pub fn chunk_buffer_byte_size(&self) -> usize {
-        (CHUNK_SIZE * CHUNK_SIZE * 4) as usize
-    }
-    
     /// Get chunks X count (for JS coordinate calculation)
     pub fn chunks_x(&self) -> u32 {
         self.chunks.dimensions().0
     }
-    
+
     /// Get chunks Y count
     pub fn chunks_y(&self) -> u32 {
         self.chunks.dimensions().1
-    }
-    
-    // === PHASE 2: MERGED DIRTY RECTANGLES API ===
-    
-    /// Collect dirty chunks and merge into rectangles for GPU batching
-    /// Returns number of merged rectangles
-    /// 
-    /// Call get_merged_rect_* functions to get each rectangle's properties
-    pub fn collect_merged_rects(&mut self) -> usize {
-        render_extract::collect_merged_rects(self)
-    }
-    
-    /// DEBUG: Count dirty chunks WITHOUT clearing (for logging)
-    pub fn count_dirty_chunks(&self) -> usize {
-        render_extract::count_dirty_chunks(self)
-    }
-    
-    /// Get merged rect X (in pixels)
-    pub fn get_merged_rect_x(&self, idx: usize) -> u32 {
-        render_extract::get_merged_rect_x(self, idx)
-    }
-    
-    /// Get merged rect Y (in pixels)
-    pub fn get_merged_rect_y(&self, idx: usize) -> u32 {
-        render_extract::get_merged_rect_y(self, idx)
-    }
-    
-    /// Get merged rect Width (in pixels)
-    pub fn get_merged_rect_w(&self, idx: usize) -> u32 {
-        render_extract::get_merged_rect_w(self, idx)
-    }
-    
-    /// Get merged rect Height (in pixels)
-    pub fn get_merged_rect_h(&self, idx: usize) -> u32 {
-        render_extract::get_merged_rect_h(self, idx)
-    }
-    
-    /// Extract pixels for a merged rectangle into transfer buffer
-    /// Returns pointer to the buffer
-    /// 
-    /// The buffer is laid out as row-major: width * height pixels
-    pub fn extract_rect_pixels(&mut self, idx: usize) -> *const u32 {
-        render_extract::extract_rect_pixels(self, idx)
-    }
-    
-    /// Get the size of the rect transfer buffer in bytes
-    pub fn rect_buffer_size(&self) -> usize {
-        render_extract::rect_buffer_size(self)
     }
 
     pub(crate) fn abi_layout_data(&self) -> AbiLayoutData {
@@ -483,15 +303,6 @@ impl WorldCore {
             temperature_ptr: self.temperature_ptr(),
             temperature_len_elements: self.temperature_len(),
             temperature_len_bytes: self.temperature_byte_len(),
-            chunk_transfer_ptr: self.chunk_transfer_ptr(),
-            chunk_transfer_len_elements: self.chunk_transfer_len_elements(),
-            chunk_transfer_len_bytes: self.chunk_transfer_len_bytes(),
-            dirty_list_ptr: self.get_dirty_list_ptr(),
-            dirty_list_len_elements: self.dirty_list_len_elements(),
-            dirty_list_len_bytes: self.dirty_list_len_bytes(),
-            rect_transfer_ptr: self.rect_transfer_ptr(),
-            rect_transfer_len_elements: self.rect_transfer_len_elements(),
-            rect_transfer_len_bytes: self.rect_transfer_len_bytes(),
         }
     }
 }

@@ -14,15 +14,6 @@ pub struct AbiLayout {
     temperature_ptr: u32,
     temperature_len_elements: u32,
     temperature_len_bytes: u32,
-    chunk_transfer_ptr: u32,
-    chunk_transfer_len_elements: u32,
-    chunk_transfer_len_bytes: u32,
-    dirty_list_ptr: u32,
-    dirty_list_len_elements: u32,
-    dirty_list_len_bytes: u32,
-    rect_transfer_ptr: u32,
-    rect_transfer_len_elements: u32,
-    rect_transfer_len_bytes: u32,
 }
 
 #[wasm_bindgen]
@@ -47,27 +38,6 @@ impl AbiLayout {
     pub fn temperature_len_elements(&self) -> u32 { self.temperature_len_elements }
     #[wasm_bindgen(getter)]
     pub fn temperature_len_bytes(&self) -> u32 { self.temperature_len_bytes }
-
-    #[wasm_bindgen(getter)]
-    pub fn chunk_transfer_ptr(&self) -> u32 { self.chunk_transfer_ptr }
-    #[wasm_bindgen(getter)]
-    pub fn chunk_transfer_len_elements(&self) -> u32 { self.chunk_transfer_len_elements }
-    #[wasm_bindgen(getter)]
-    pub fn chunk_transfer_len_bytes(&self) -> u32 { self.chunk_transfer_len_bytes }
-
-    #[wasm_bindgen(getter)]
-    pub fn dirty_list_ptr(&self) -> u32 { self.dirty_list_ptr }
-    #[wasm_bindgen(getter)]
-    pub fn dirty_list_len_elements(&self) -> u32 { self.dirty_list_len_elements }
-    #[wasm_bindgen(getter)]
-    pub fn dirty_list_len_bytes(&self) -> u32 { self.dirty_list_len_bytes }
-
-    #[wasm_bindgen(getter)]
-    pub fn rect_transfer_ptr(&self) -> u32 { self.rect_transfer_ptr }
-    #[wasm_bindgen(getter)]
-    pub fn rect_transfer_len_elements(&self) -> u32 { self.rect_transfer_len_elements }
-    #[wasm_bindgen(getter)]
-    pub fn rect_transfer_len_bytes(&self) -> u32 { self.rect_transfer_len_bytes }
 }
 
 #[wasm_bindgen]
@@ -82,13 +52,6 @@ impl World {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             core: WorldCore::new(width, height),
-        }
-    }
-
-    #[wasm_bindgen(js_name = newWithMoveBufferCapacity)]
-    pub fn new_with_move_buffer_capacity(width: u32, height: u32, move_buffer_capacity: usize) -> Self {
-        Self {
-            core: WorldCore::new_with_move_buffer_capacity(width, height, move_buffer_capacity),
         }
     }
 
@@ -109,6 +72,10 @@ impl World {
         self.core.enable_perf_metrics(enabled);
     }
 
+    pub fn enable_perf_detailed_metrics(&mut self, enabled: bool) {
+        self.core.enable_perf_detailed_metrics(enabled);
+    }
+
     /// Get last step perf snapshot (zeros when perf disabled)
     pub fn get_perf_stats(&self) -> PerfStats {
         self.core.get_perf_stats()
@@ -125,28 +92,6 @@ impl World {
     /// DEBUG: Get current ambient temperature
     pub fn get_ambient_temperature(&self) -> f32 {
         self.core.get_ambient_temperature()
-    }
-
-    /// Enable/disable empty-chunk sleeping (perf/debug toggle).
-    pub fn set_chunk_sleeping_enabled(&mut self, enabled: bool) {
-        self.core.set_chunk_sleeping_enabled(enabled);
-    }
-    pub fn set_chunk_gating_enabled(&mut self, enabled: bool) {
-        self.core.set_chunk_gating_enabled(enabled);
-    }
-
-    /// Enable/disable per-row sparse skipping (uses `row_has_data` markers).
-    pub fn set_sparse_row_skip_enabled(&mut self, enabled: bool) {
-        self.core.set_sparse_row_skip_enabled(enabled);
-    }
-
-    /// Enable/disable running the temperature system every frame.
-    pub fn set_temperature_every_frame(&mut self, enabled: bool) {
-        self.core.set_temperature_every_frame(enabled);
-    }
-
-    pub fn set_cross_chunk_move_tracking_enabled(&mut self, enabled: bool) {
-        self.core.set_cross_chunk_move_tracking_enabled(enabled);
     }
 
     /// Add a particle at position
@@ -296,100 +241,6 @@ impl World {
         self.core.temperature_byte_len()
     }
 
-    pub fn move_buffer_capacity(&self) -> usize {
-        self.core.move_buffer_capacity()
-    }
-
-    pub fn move_buffer_count(&self) -> usize {
-        self.core.move_buffer_count()
-    }
-
-    pub fn move_buffer_overflow_count(&self) -> usize {
-        self.core.move_buffer_overflow_count()
-    }
-
-    // === PHASE 3: SMART RENDERING API ===
-
-    /// Collect list of dirty chunks that need rendering
-    /// Uses visual_dirty (separate from physics dirty) to avoid state desync
-    pub fn collect_dirty_chunks(&mut self) -> usize {
-        self.core.collect_dirty_chunks()
-    }
-
-    /// Get pointer to dirty chunk list
-    pub fn get_dirty_list_ptr(&self) -> *const u32 {
-        self.core.get_dirty_list_ptr()
-    }
-
-    /// Extract pixels from a chunk into transfer buffer (strided -> linear)
-    /// Returns pointer to the transfer buffer
-    pub fn extract_chunk_pixels(&mut self, chunk_idx: u32) -> *const u32 {
-        self.core.extract_chunk_pixels(chunk_idx)
-    }
-
-    /// Get chunk transfer buffer size (32*32 = 1024 pixels * 4 bytes = 4096 bytes)
-    pub fn chunk_buffer_byte_size(&self) -> usize {
-        self.core.chunk_buffer_byte_size()
-    }
-
-    /// Get chunks X count (for JS coordinate calculation)
-    pub fn chunks_x(&self) -> u32 {
-        self.core.chunks_x()
-    }
-
-    /// Get chunks Y count
-    pub fn chunks_y(&self) -> u32 {
-        self.core.chunks_y()
-    }
-
-    // === PHASE 2: MERGED DIRTY RECTANGLES API ===
-
-    /// Collect dirty chunks and merge into rectangles for GPU batching
-    /// Returns number of merged rectangles
-    /// 
-    /// Call get_merged_rect_* functions to get each rectangle's properties
-    pub fn collect_merged_rects(&mut self) -> usize {
-        self.core.collect_merged_rects()
-    }
-
-    /// DEBUG: Count dirty chunks WITHOUT clearing (for logging)
-    pub fn count_dirty_chunks(&self) -> usize {
-        self.core.count_dirty_chunks()
-    }
-
-    /// Get merged rect X (in pixels)
-    pub fn get_merged_rect_x(&self, idx: usize) -> u32 {
-        self.core.get_merged_rect_x(idx)
-    }
-
-    /// Get merged rect Y (in pixels)
-    pub fn get_merged_rect_y(&self, idx: usize) -> u32 {
-        self.core.get_merged_rect_y(idx)
-    }
-
-    /// Get merged rect Width (in pixels)
-    pub fn get_merged_rect_w(&self, idx: usize) -> u32 {
-        self.core.get_merged_rect_w(idx)
-    }
-
-    /// Get merged rect Height (in pixels)
-    pub fn get_merged_rect_h(&self, idx: usize) -> u32 {
-        self.core.get_merged_rect_h(idx)
-    }
-
-    /// Extract pixels for a merged rectangle into transfer buffer
-    /// Returns pointer to the buffer
-    /// 
-    /// The buffer is laid out as row-major: width * height pixels
-    pub fn extract_rect_pixels(&mut self, idx: usize) -> *const u32 {
-        self.core.extract_rect_pixels(idx)
-    }
-
-    /// Get the size of the rect transfer buffer in bytes
-    pub fn rect_buffer_size(&self) -> usize {
-        self.core.rect_buffer_size()
-    }
-
     pub fn abi_layout(&self) -> AbiLayout {
         let data = self.core.abi_layout_data();
         AbiLayout {
@@ -402,15 +253,6 @@ impl World {
             temperature_ptr: data.temperature_ptr as u32,
             temperature_len_elements: data.temperature_len_elements as u32,
             temperature_len_bytes: data.temperature_len_bytes as u32,
-            chunk_transfer_ptr: data.chunk_transfer_ptr as u32,
-            chunk_transfer_len_elements: data.chunk_transfer_len_elements as u32,
-            chunk_transfer_len_bytes: data.chunk_transfer_len_bytes as u32,
-            dirty_list_ptr: data.dirty_list_ptr as u32,
-            dirty_list_len_elements: data.dirty_list_len_elements as u32,
-            dirty_list_len_bytes: data.dirty_list_len_bytes as u32,
-            rect_transfer_ptr: data.rect_transfer_ptr as u32,
-            rect_transfer_len_elements: data.rect_transfer_len_elements as u32,
-            rect_transfer_len_bytes: data.rect_transfer_len_bytes as u32,
         }
     }
 }

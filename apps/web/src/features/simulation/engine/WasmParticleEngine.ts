@@ -33,13 +33,6 @@ import {
 } from './wasm/api/rigidBodies'
 import { floodFill as floodFillImpl } from './wasm/api/fill'
 import { loadSnapshot as loadSnapshotImpl, saveSnapshot as saveSnapshotImpl } from './wasm/api/snapshots'
-import {
-  extractChunkPixels as extractChunkPixelsImpl,
-  getChunksX as getChunksXImpl,
-  getChunksY as getChunksYImpl,
-  getDirtyChunksCount as getDirtyChunksCountImpl,
-  getDirtyListPtr as getDirtyListPtrImpl,
-} from './wasm/api/smartRendering'
 import { getElementAt as getElementAtImpl } from './wasm/api/read'
 
 export class WasmParticleEngine {
@@ -209,8 +202,6 @@ export class WasmParticleEngine {
     this.updateMemoryViews()
   }
   
-  // === Phase 3: Smart Rendering API ===
-  
   /** Get WASM memory for zero-copy access */
   get memory(): WebAssembly.Memory | null {
     return getWasmMemory()
@@ -219,36 +210,6 @@ export class WasmParticleEngine {
   /** Get the renderer instance */
   getRenderer(): CanvasRenderer | null {
     return this.renderer
-  }
-  
-  /** Collect dirty chunks and return count */
-  getDirtyChunksCount(): number {
-    return getDirtyChunksCountImpl(this.world)
-  }
-  
-  /** Get pointer to dirty chunk list */
-  getDirtyListPtr(): number {
-    return getDirtyListPtrImpl(this.world)
-  }
-  
-  /** Extract chunk pixels to transfer buffer, returns pointer */
-  extractChunkPixels(chunkIdx: number): number {
-    return extractChunkPixelsImpl(this.world, chunkIdx)
-  }
-  
-  /** Get chunks X count */
-  getChunksX(): number {
-    return getChunksXImpl(this.world)
-  }
-  
-  /** Get chunks Y count */
-  getChunksY(): number {
-    return getChunksYImpl(this.world)
-  }
-  
-  /** Get total chunks count */
-  getTotalChunks(): number {
-    return this.world.chunks_x() * this.world.chunks_y()
   }
   
   setRenderMode(mode: RenderMode): void {

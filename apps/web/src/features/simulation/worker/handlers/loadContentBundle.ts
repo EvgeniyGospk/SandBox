@@ -1,4 +1,5 @@
 import type { WorkerContext } from '../context'
+import { applyCurrentSettingsToEngine } from '../memory'
 
 function postContentBundleStatus(args: {
   phase: 'init' | 'reload'
@@ -25,14 +26,16 @@ export function handleLoadContentBundle(ctx: WorkerContext, msg: { type: 'LOAD_C
   }
 
   try {
+    const wasPlaying = state.sim.isPlaying
+
     postContentBundleStatus({ phase: 'reload', status: 'loading' })
     engine.load_content_bundle(msg.json)
 
-    // After bundle reload we pause simulation and clear accumulators
-    state.sim.isPlaying = false
     state.sim.stepAccumulator = 0
+    state.sim.isPlaying = wasPlaying
 
-    // Renderer should upload full frame after content changes (colors/ids may change)
+    applyCurrentSettingsToEngine(ctx)
+
     state.render.renderer?.requestFullUpload()
 
     postContentBundleStatus({ phase: 'reload', status: 'loaded' })

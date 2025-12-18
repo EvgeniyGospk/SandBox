@@ -9,10 +9,8 @@ export function maybeLogDirtyDebug(state: SimulationWorkerState): void {
   if (state.debug.logInterval < state.debug.logEvery) return
   state.debug.logInterval = 0
 
-  const dirtyCount = state.wasm.engine.count_dirty_chunks ? state.wasm.engine.count_dirty_chunks() : 0
-  const chunksX = state.wasm.engine.chunks_x()
-  const chunksY = state.wasm.engine.chunks_y()
-  const totalChunks = chunksX * chunksY
+  const dirtyCount = 0
+  const totalChunks = 0
 
   let waterCount = 0
   let iceCount = 0

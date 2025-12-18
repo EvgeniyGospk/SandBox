@@ -24,45 +24,28 @@ pub fn process_temperature_grid_chunked(
     let mut processed_non_empty = 0u32;
     let mut simd_air_cells = 0u32;
 
-    // Air conductivity speed (same as in update_temperature: 0.02)
-    const AIR_LERP_SPEED: f32 = 0.02;
-
     for cy in 0..cy_count {
         for cx in 0..cx_count {
-            if chunks.is_sleeping(cx, cy) {
-                // === PATH 1: CHUNK IS SLEEPING (Fast O(1)) ===
-                // Just smoothly animate virtual_temp towards ambient
-                // This is the SAME math as update_temperature for air, but for ONE number
-                chunks.update_virtual_temp(cx, cy, ambient_temp, AIR_LERP_SPEED);
-            } else {
-                // === PATH 2: CHUNK IS ACTIVE ===
-                // LEGACY MODE: Per-pixel processing for smoother thermodynamics
-                // Each air cell is processed individually with random neighbor sampling
+            // LEGACY MODE: Per-pixel processing for smoother thermodynamics
+            // Each air cell is processed individually with random neighbor sampling
 
-                let start_x = cx * CHUNK_SIZE;
-                let start_y = cy * CHUNK_SIZE;
-                let end_x = (start_x + CHUNK_SIZE).min(grid.width());
-                let end_y = (start_y + CHUNK_SIZE).min(grid.height());
+            let start_x = cx * CHUNK_SIZE;
+            let start_y = cy * CHUNK_SIZE;
+            let end_x = (start_x + CHUNK_SIZE).min(grid.width());
+            let end_y = (start_y + CHUNK_SIZE).min(grid.height());
 
-                for y in start_y..end_y {
-                    for x in start_x..end_x {
-                        let element = grid.get_type(x as i32, y as i32);
-                        if element == EL_EMPTY {
-                            // Air cell: lerp towards ambient + random neighbor diffusion
-                            update_air_temperature_legacy(grid, x, y, ambient_temp, rng);
-                            simd_air_cells += 1;
-                        } else {
-                            // Particle: full heat transfer logic
-                            update_particle_temperature(content, grid, chunks, x, y, ambient_temp, frame, rng);
-                            processed_non_empty += 1;
-                        }
+            for y in start_y..end_y {
+                for x in start_x..end_x {
+                    let element = grid.get_type(x as i32, y as i32);
+                    if element == EL_EMPTY {
+                        // Air cell: lerp towards ambient + random neighbor diffusion
+                        update_air_temperature_legacy(grid, x, y, ambient_temp, rng);
+                        simd_air_cells += 1;
+                    } else {
+                        // Particle: full heat transfer logic
+                        update_particle_temperature(content, grid, chunks, x, y, ambient_temp, frame, rng);
+                        processed_non_empty += 1;
                     }
-                }
-
-                // Sync virtual_temp with actual air temperature in chunk
-                if frame & 3 == 0 {
-                    let avg = grid.get_average_air_temp(cx, cy);
-                    chunks.set_virtual_temp(cx, cy, avg);
                 }
             }
         }

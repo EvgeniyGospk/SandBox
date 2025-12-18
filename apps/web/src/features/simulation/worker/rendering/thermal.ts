@@ -8,6 +8,8 @@ export function renderThermal(state: SimulationWorkerState): void {
   const typesView = state.memory.manager.types
   const len = Math.min(temperatureView.length, state.render.pixels.length / 4)
 
+  const useAmbientForAir = true
+
   for (let i = 0; i < len; i++) {
     let temp = temperatureView[i]
 
@@ -15,10 +17,8 @@ export function renderThermal(state: SimulationWorkerState): void {
     // For thermal visualization (and for a sane UX when changing ambient temp), keep air cells
     // smoothly tracking the ambient temperature here.
     if (typesView[i] === 0) {
-      const diff = ambient - temp
-      if (Math.abs(diff) > 0.5) {
-        temp = temp + diff * 0.02
-        temperatureView[i] = temp
+      if (useAmbientForAir) {
+        temp = ambient
       }
     }
     const base = i << 2

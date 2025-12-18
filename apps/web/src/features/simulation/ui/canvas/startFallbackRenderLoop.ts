@@ -50,14 +50,7 @@ export function startFallbackRenderLoop(args: {
       }
     }
 
-    const renderer = engine.getRenderer()
-    const memory = engine.memory
-
-    if (renderer && memory) {
-      renderer.renderSmart(engine, memory)
-    } else {
-      engine.render()
-    }
+    engine.render()
 
     if (time - lastStatsUpdate > STATS_INTERVAL_MS) {
       let sum = 0

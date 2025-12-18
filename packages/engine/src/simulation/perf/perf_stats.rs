@@ -4,11 +4,9 @@ use wasm_bindgen::prelude::*;
 #[derive(Clone)]
 pub struct PerfStats {
     pub(super) step_ms: f64,
-    pub(super) hydrate_ms: f64,
     pub(super) rigid_ms: f64,
     pub(super) physics_ms: f64,
     pub(super) chunks_ms: f64,
-    pub(super) apply_moves_ms: f64,
     pub(super) temperature_ms: f64,
     pub(super) powder_ms: f64,
     pub(super) liquid_ms: f64,
@@ -29,8 +27,6 @@ pub struct PerfStats {
     pub(super) raycast_collisions: u32,
     pub(super) raycast_speed_max: f32,
     pub(super) non_empty_cells: u32,
-    pub(super) chunk_particle_sum: u32,
-    pub(super) chunk_particle_max: u32,
     pub(super) behavior_calls: u32,
     pub(super) behavior_powder: u32,
     pub(super) behavior_liquid: u32,
@@ -38,15 +34,10 @@ pub struct PerfStats {
     pub(super) behavior_energy: u32,
     pub(super) behavior_utility: u32,
     pub(super) behavior_bio: u32,
-    pub(super) move_buffer_overflows: u32,
-    pub(super) move_buffer_usage: f32,
-    pub(super) chunks_woken: u32,
-    pub(super) chunks_slept: u32,
     pub(super) memory_bytes: u32,
     pub(super) grid_size: u32,
     pub(super) active_chunks: u32,
     pub(super) dirty_chunks: u32,
-    pub(super) pending_moves: u32,
     pub(super) particle_count: u32,
 }
 
@@ -60,11 +51,9 @@ impl Default for PerfStats {
     fn default() -> Self {
         PerfStats {
             step_ms: 0.0,
-            hydrate_ms: 0.0,
             rigid_ms: 0.0,
             physics_ms: 0.0,
             chunks_ms: 0.0,
-            apply_moves_ms: 0.0,
             temperature_ms: 0.0,
             powder_ms: 0.0,
             liquid_ms: 0.0,
@@ -85,8 +74,6 @@ impl Default for PerfStats {
             raycast_collisions: 0,
             raycast_speed_max: 0.0,
             non_empty_cells: 0,
-            chunk_particle_sum: 0,
-            chunk_particle_max: 0,
             behavior_calls: 0,
             behavior_powder: 0,
             behavior_liquid: 0,
@@ -94,15 +81,10 @@ impl Default for PerfStats {
             behavior_energy: 0,
             behavior_utility: 0,
             behavior_bio: 0,
-            move_buffer_overflows: 0,
-            move_buffer_usage: 0.0,
-            chunks_woken: 0,
-            chunks_slept: 0,
             memory_bytes: 0,
             grid_size: 0,
             active_chunks: 0,
             dirty_chunks: 0,
-            pending_moves: 0,
             particle_count: 0,
         }
     }
@@ -113,15 +95,11 @@ impl PerfStats {
     #[wasm_bindgen(getter)]
     pub fn step_ms(&self) -> f64 { self.step_ms }
     #[wasm_bindgen(getter)]
-    pub fn hydrate_ms(&self) -> f64 { self.hydrate_ms }
-    #[wasm_bindgen(getter)]
     pub fn rigid_ms(&self) -> f64 { self.rigid_ms }
     #[wasm_bindgen(getter)]
     pub fn physics_ms(&self) -> f64 { self.physics_ms }
     #[wasm_bindgen(getter)]
     pub fn chunks_ms(&self) -> f64 { self.chunks_ms }
-    #[wasm_bindgen(getter)]
-    pub fn apply_moves_ms(&self) -> f64 { self.apply_moves_ms }
     #[wasm_bindgen(getter)]
     pub fn temperature_ms(&self) -> f64 { self.temperature_ms }
     #[wasm_bindgen(getter)]
@@ -163,10 +141,6 @@ impl PerfStats {
     #[wasm_bindgen(getter)]
     pub fn non_empty_cells(&self) -> u32 { self.non_empty_cells }
     #[wasm_bindgen(getter)]
-    pub fn chunk_particle_sum(&self) -> u32 { self.chunk_particle_sum }
-    #[wasm_bindgen(getter)]
-    pub fn chunk_particle_max(&self) -> u32 { self.chunk_particle_max }
-    #[wasm_bindgen(getter)]
     pub fn behavior_calls(&self) -> u32 { self.behavior_calls }
     #[wasm_bindgen(getter)]
     pub fn behavior_powder(&self) -> u32 { self.behavior_powder }
@@ -181,14 +155,6 @@ impl PerfStats {
     #[wasm_bindgen(getter)]
     pub fn behavior_bio(&self) -> u32 { self.behavior_bio }
     #[wasm_bindgen(getter)]
-    pub fn move_buffer_overflows(&self) -> u32 { self.move_buffer_overflows }
-    #[wasm_bindgen(getter)]
-    pub fn move_buffer_usage(&self) -> f32 { self.move_buffer_usage }
-    #[wasm_bindgen(getter)]
-    pub fn chunks_woken(&self) -> u32 { self.chunks_woken }
-    #[wasm_bindgen(getter)]
-    pub fn chunks_slept(&self) -> u32 { self.chunks_slept }
-    #[wasm_bindgen(getter)]
     pub fn memory_bytes(&self) -> u32 { self.memory_bytes }
     #[wasm_bindgen(getter)]
     pub fn grid_size(&self) -> u32 { self.grid_size }
@@ -196,8 +162,6 @@ impl PerfStats {
     pub fn active_chunks(&self) -> u32 { self.active_chunks }
     #[wasm_bindgen(getter)]
     pub fn dirty_chunks(&self) -> u32 { self.dirty_chunks }
-    #[wasm_bindgen(getter)]
-    pub fn pending_moves(&self) -> u32 { self.pending_moves }
     #[wasm_bindgen(getter)]
     pub fn particle_count(&self) -> u32 { self.particle_count }
 }

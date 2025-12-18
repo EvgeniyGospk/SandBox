@@ -11,7 +11,6 @@ pub(super) fn clear_body(body: &mut RigidBody, grid: &mut Grid, chunks: &mut Chu
         let ux = x as u32;
         let uy = y as u32;
         grid.clear_cell(ux, uy);
-        chunks.remove_particle(ux, uy);
         chunks.mark_dirty(ux, uy);
     }
     body.prev_world_coords.clear();
@@ -61,7 +60,7 @@ pub(super) fn rasterize_body(
             .unwrap_or(props.color);
 
         grid.set_particle(x, y, element, color, props.lifetime, props.default_temp);
-        chunks.add_particle(x, y);
+        chunks.mark_dirty(x, y);
 
         body.prev_world_coords.push((wx, wy));
     }

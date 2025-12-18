@@ -36,8 +36,7 @@ pub(super) fn add_particle(world: &mut WorldCore, x: u32, y: u32, element: u8) -
         props.default_temp,
     );
 
-    // Phase 4: Track particle in chunk
-    world.chunks.add_particle(x, y);
+    world.chunks.mark_dirty(x, y);
 
     world.particle_count += 1;
     true
@@ -67,8 +66,6 @@ pub(super) fn remove_particle(world: &mut WorldCore, x: u32, y: u32) -> bool {
         return false;
     }
 
-    // Phase 4: Track removal in chunk
-    world.chunks.remove_particle(x, y);
     world.chunks.mark_dirty(x, y); // Ensure render updates even without movement
 
     world.grid.clear_cell(x, y);

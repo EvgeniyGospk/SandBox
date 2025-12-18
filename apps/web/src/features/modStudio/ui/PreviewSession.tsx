@@ -6,6 +6,8 @@ import { WorkerBridge, isWorkerSupported } from '@/features/simulation/engine/wo
 import { EL_SAND, type ElementId } from '@/features/simulation/engine/api/types'
 import { worldToClip } from '@/features/simulation/engine/transform'
 
+import { ModSlider } from './controls'
+
 type PreviewTool = 'brush' | 'eraser'
 
 type PreviewStatus =
@@ -289,14 +291,9 @@ export const PreviewSession = forwardRef<PreviewSessionHandle, {
 
       <div className="flex items-center gap-3">
         <label className="text-xs text-gray-400 w-14">Size</label>
-        <input
-          type="range"
-          min={1}
-          max={12}
-          value={brushRadius}
-          onChange={(e) => setBrushRadius(Number(e.target.value))}
-          className="flex-1"
-        />
+        <div className="flex-1">
+          <ModSlider value={brushRadius} min={1} max={12} step={1} onChange={setBrushRadius} />
+        </div>
         <div className="text-xs text-gray-400 w-8 text-right">{brushRadius}</div>
       </div>
 

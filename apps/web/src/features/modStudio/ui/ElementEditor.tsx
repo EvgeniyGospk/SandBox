@@ -1,6 +1,8 @@
-import { useMemo, useId, useState, useCallback } from 'react'
+import { useMemo, useId, useState, useCallback, useEffect } from 'react'
 
 import type { PackElementFile } from '@/features/simulation/content/compilePacksToBundle'
+
+import { ModCheckbox, ModSelect, ModToggle } from './controls'
 
 const BEHAVIOR_OPTIONS = [
   '',
@@ -192,6 +194,12 @@ export function ElementEditor(args: {
 }) {
   const { element, packId, elementRefOptions, onPatch } = args
 
+  const [draftNumbers, setDraftNumbers] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    setDraftNumbers({})
+  }, [element.key])
+
   const [palette, setPalette] = useState<string[]>([])
 
   const addColorToPalette = useCallback(() => {
@@ -219,7 +227,7 @@ export function ElementEditor(args: {
   const flags = element.flags ?? {}
 
   const inputBase = 'px-3 py-2 rounded-lg bg-black/30 border border-white/10 focus:outline-none focus:ring-2 focus:ring-purple-500/40'
-  const inputMono = `${inputBase} font-mono`
+  const inputMono = `${inputBase} font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`
 
   const fieldClass = (key: string, base: string) => {
     if (!errors[key]) return base
@@ -252,6 +260,51 @@ export function ElementEditor(args: {
       },
     })
   }
+
+  const setDraftNumber = useCallback((key: string, value: string) => {
+    setDraftNumbers((prev) => ({ ...prev, [key]: value }))
+  }, [])
+
+  const clearDraftNumber = useCallback((key: string) => {
+    setDraftNumbers((prev) => {
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+  }, [])
+
+  const commitDraftNumber = useCallback(
+    (key: string, apply: (n: number) => void) => {
+      const raw = draftNumbers[key]
+      if (raw === undefined) return
+      const trimmed = raw.trim()
+      if (trimmed.length === 0) {
+        clearDraftNumber(key)
+        return
+      }
+      const n = Number(trimmed)
+      if (!Number.isFinite(n)) return
+      apply(n)
+      clearDraftNumber(key)
+    },
+    [clearDraftNumber, draftNumbers]
+  )
+
+  const onDraftNumberKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>, key: string, apply: (n: number) => void) => {
+      if (e.key !== 'Enter') return
+      e.currentTarget.blur()
+      commitDraftNumber(key, apply)
+    },
+    [commitDraftNumber]
+  )
+
+  const presetBtnClass = (category: Category) =>
+    `px-3 py-2 rounded-lg border text-sm transition-colors ${
+      element.category === category
+        ? 'bg-purple-600/30 border-purple-500/40'
+        : 'bg-black/20 hover:bg-white/5 border-white/10'
+    }`
 
   return (
     <div className="space-y-5">
@@ -288,7 +341,7 @@ export function ElementEditor(args: {
                 flags: { flammable: false, conductive: false, corrosive: false, hot: false, cold: false, ignoreGravity: false, rigid: true },
               })
             }
-            className="px-3 py-2 rounded-lg bg-black/20 hover:bg-white/5 border border-white/10 text-sm"
+            className={presetBtnClass('solid')}
           >
             Solid
           </button>
@@ -302,7 +355,7 @@ export function ElementEditor(args: {
                 flags: { flammable: false, conductive: false, corrosive: false, hot: false, cold: false, ignoreGravity: false, rigid: false },
               })
             }
-            className="px-3 py-2 rounded-lg bg-black/20 hover:bg-white/5 border border-white/10 text-sm"
+            className={presetBtnClass('powder')}
           >
             Powder
           </button>
@@ -316,7 +369,7 @@ export function ElementEditor(args: {
                 flags: { flammable: false, conductive: false, corrosive: false, hot: false, cold: false, ignoreGravity: false, rigid: false },
               })
             }
-            className="px-3 py-2 rounded-lg bg-black/20 hover:bg-white/5 border border-white/10 text-sm"
+            className={presetBtnClass('liquid')}
           >
             Liquid
           </button>
@@ -330,7 +383,7 @@ export function ElementEditor(args: {
                 flags: { flammable: false, conductive: false, corrosive: false, hot: false, cold: false, ignoreGravity: false, rigid: false },
               })
             }
-            className="px-3 py-2 rounded-lg bg-black/20 hover:bg-white/5 border border-white/10 text-sm"
+            className={presetBtnClass('gas')}
           >
             Gas
           </button>
@@ -344,7 +397,7 @@ export function ElementEditor(args: {
                 flags: { flammable: false, conductive: false, corrosive: false, hot: false, cold: false, ignoreGravity: true, rigid: false },
               })
             }
-            className="px-3 py-2 rounded-lg bg-black/20 hover:bg-white/5 border border-white/10 text-sm"
+            className={presetBtnClass('energy')}
           >
             Energy
           </button>
@@ -358,7 +411,7 @@ export function ElementEditor(args: {
                 flags: { flammable: false, conductive: false, corrosive: false, hot: false, cold: false, ignoreGravity: true, rigid: false },
               })
             }
-            className="px-3 py-2 rounded-lg bg-black/20 hover:bg-white/5 border border-white/10 text-sm"
+            className={presetBtnClass('utility')}
           >
             Utility
           </button>
@@ -372,7 +425,7 @@ export function ElementEditor(args: {
                 flags: { flammable: false, conductive: false, corrosive: false, hot: false, cold: false, ignoreGravity: false, rigid: false },
               })
             }
-            className="px-3 py-2 rounded-lg bg-black/20 hover:bg-white/5 border border-white/10 text-sm"
+            className={presetBtnClass('bio')}
           >
             Bio
           </button>
@@ -400,17 +453,12 @@ export function ElementEditor(args: {
 
         <label className="flex flex-col gap-1">
           <span className="text-xs text-gray-400">Category</span>
-          <select
-            value={element.category}
-            onChange={(e) => onPatch({ category: e.target.value })}
-            className={fieldClass('category', inputBase)}
-          >
-            {CATEGORY_OPTIONS.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          <ModSelect
+            value={element.category as Category}
+            onChange={(v) => onPatch({ category: v })}
+            options={CATEGORY_OPTIONS.map((c) => ({ value: c, label: c }))}
+            buttonClassName={fieldClass('category', inputBase)}
+          />
           {errorText('category')}
         </label>
 
@@ -513,19 +561,23 @@ export function ElementEditor(args: {
           <span className="text-xs text-gray-400">Dispersion</span>
           <input
             type="number"
-            value={element.dispersion}
-            onChange={(e) => onPatch({ dispersion: Number(e.target.value) })}
+            value={draftNumbers.dispersion ?? String(element.dispersion)}
+            onChange={(e) => setDraftNumber('dispersion', e.target.value)}
+            onBlur={() => commitDraftNumber('dispersion', (n) => onPatch({ dispersion: Math.floor(n) }))}
+            onKeyDown={(e) => onDraftNumberKeyDown(e, 'dispersion', (n) => onPatch({ dispersion: Math.floor(n) }))}
             className={fieldClass('dispersion', inputMono)}
           />
           {errorText('dispersion')}
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className="text-xs text-gray-400">Lifetime</span>
+          <span className="text-xs text-gray-400">Lifetime (steps)</span>
           <input
             type="number"
-            value={element.lifetime}
-            onChange={(e) => onPatch({ lifetime: Number(e.target.value) })}
+            value={draftNumbers.lifetime ?? String(element.lifetime)}
+            onChange={(e) => setDraftNumber('lifetime', e.target.value)}
+            onBlur={() => commitDraftNumber('lifetime', (n) => onPatch({ lifetime: Math.floor(n) }))}
+            onKeyDown={(e) => onDraftNumberKeyDown(e, 'lifetime', (n) => onPatch({ lifetime: Math.floor(n) }))}
             className={fieldClass('lifetime', inputMono)}
           />
           {errorText('lifetime')}
@@ -535,8 +587,10 @@ export function ElementEditor(args: {
           <span className="text-xs text-gray-400">Default temp</span>
           <input
             type="number"
-            value={element.defaultTemp}
-            onChange={(e) => onPatch({ defaultTemp: Number(e.target.value) })}
+            value={draftNumbers.defaultTemp ?? String(element.defaultTemp)}
+            onChange={(e) => setDraftNumber('defaultTemp', e.target.value)}
+            onBlur={() => commitDraftNumber('defaultTemp', (n) => onPatch({ defaultTemp: n }))}
+            onKeyDown={(e) => onDraftNumberKeyDown(e, 'defaultTemp', (n) => onPatch({ defaultTemp: n }))}
             className={fieldClass('defaultTemp', inputMono)}
           />
           {errorText('defaultTemp')}
@@ -546,8 +600,10 @@ export function ElementEditor(args: {
           <span className="text-xs text-gray-400">Heat conductivity</span>
           <input
             type="number"
-            value={element.heatConductivity}
-            onChange={(e) => onPatch({ heatConductivity: Number(e.target.value) })}
+            value={draftNumbers.heatConductivity ?? String(element.heatConductivity)}
+            onChange={(e) => setDraftNumber('heatConductivity', e.target.value)}
+            onBlur={() => commitDraftNumber('heatConductivity', (n) => onPatch({ heatConductivity: Math.floor(n) }))}
+            onKeyDown={(e) => onDraftNumberKeyDown(e, 'heatConductivity', (n) => onPatch({ heatConductivity: Math.floor(n) }))}
             className={fieldClass('heatConductivity', inputMono)}
           />
           {errorText('heatConductivity')}
@@ -606,14 +662,12 @@ export function ElementEditor(args: {
             'ignoreGravity',
             'rigid',
           ] as const).map((k) => (
-            <label key={k} className="inline-flex items-center gap-2 text-sm text-gray-200">
-              <input
-                type="checkbox"
-                checked={!!(flags as any)[k]}
-                onChange={(e) => onPatch({ flags: { ...flags, [k]: e.target.checked } })}
-              />
-              {k}
-            </label>
+            <ModCheckbox
+              key={k}
+              checked={!!(flags as any)[k]}
+              onCheckedChange={(checked) => onPatch({ flags: { ...flags, [k]: checked } })}
+              label={k}
+            />
           ))}
         </div>
       </div>
@@ -621,24 +675,19 @@ export function ElementEditor(args: {
       <div className="grid grid-cols-2 gap-3">
         <label className="flex flex-col gap-1">
           <span className="text-xs text-gray-400">Behavior</span>
-          <select
-            value={element.behavior ?? ''}
-            onChange={(e) => onPatch({ behavior: e.target.value.length === 0 ? null : e.target.value })}
-            className={fieldClass('behavior', inputBase)}
-          >
-            {BEHAVIOR_OPTIONS.map((v) => (
-              <option key={v} value={v}>
-                {v.length === 0 ? '(none)' : v}
-              </option>
-            ))}
-          </select>
+          <ModSelect
+            value={(element.behavior ?? '') as (typeof BEHAVIOR_OPTIONS)[number]}
+            onChange={(v) => onPatch({ behavior: v.length === 0 ? null : v })}
+            options={BEHAVIOR_OPTIONS.map((v) => ({ value: v, label: v.length === 0 ? '(none)' : v }))}
+            buttonClassName={fieldClass('behavior', inputBase)}
+          />
           {errorText('behavior')}
         </label>
 
         <label className="flex flex-col gap-1">
           <span className="text-xs text-gray-400">Hidden</span>
           <div className="h-10 flex items-center">
-            <input type="checkbox" checked={!!element.hidden} onChange={(e) => onPatch({ hidden: e.target.checked })} />
+            <ModToggle checked={!!element.hidden} onCheckedChange={(checked) => onPatch({ hidden: checked })} />
           </div>
         </label>
       </div>
@@ -652,14 +701,11 @@ export function ElementEditor(args: {
       <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold">Phase Change</div>
-          <label className="inline-flex items-center gap-2 text-sm text-gray-200">
-            <input
-              type="checkbox"
-              checked={element.phaseChange !== null}
-              onChange={(e) => onPatch({ phaseChange: e.target.checked ? {} : null })}
-            />
-            Enabled
-          </label>
+          <ModToggle
+            checked={element.phaseChange !== null}
+            onCheckedChange={(checked) => onPatch({ phaseChange: checked ? {} : null })}
+            label="Enabled"
+          />
         </div>
 
         {element.phaseChange ? (
@@ -669,17 +715,28 @@ export function ElementEditor(args: {
                 <span className="text-xs text-gray-400">High temp</span>
                 <input
                   type="number"
-                  value={element.phaseChange.high?.temp ?? ''}
-                  onChange={(e) => {
-                    const temp = Number(e.target.value)
-                    if (!Number.isFinite(temp)) return
-                    onPatch({
-                      phaseChange: {
-                        ...(element.phaseChange ?? {}),
-                        high: { temp, to: element.phaseChange?.high?.to ?? 'base:empty' },
-                      },
-                    })
-                  }}
+                  value={draftNumbers['phaseChange.high.temp'] ?? String(element.phaseChange.high?.temp ?? '')}
+                  onChange={(e) => setDraftNumber('phaseChange.high.temp', e.target.value)}
+                  onBlur={() =>
+                    commitDraftNumber('phaseChange.high.temp', (temp) =>
+                      onPatch({
+                        phaseChange: {
+                          ...(element.phaseChange ?? {}),
+                          high: { temp, to: element.phaseChange?.high?.to ?? 'base:empty' },
+                        },
+                      })
+                    )
+                  }
+                  onKeyDown={(e) =>
+                    onDraftNumberKeyDown(e, 'phaseChange.high.temp', (temp) =>
+                      onPatch({
+                        phaseChange: {
+                          ...(element.phaseChange ?? {}),
+                          high: { temp, to: element.phaseChange?.high?.to ?? 'base:empty' },
+                        },
+                      })
+                    )
+                  }
                   className={fieldClass('phaseChange.high.temp', inputMono)}
                   placeholder="temp"
                 />
@@ -712,17 +769,28 @@ export function ElementEditor(args: {
                 <span className="text-xs text-gray-400">Low temp</span>
                 <input
                   type="number"
-                  value={element.phaseChange.low?.temp ?? ''}
-                  onChange={(e) => {
-                    const temp = Number(e.target.value)
-                    if (!Number.isFinite(temp)) return
-                    onPatch({
-                      phaseChange: {
-                        ...(element.phaseChange ?? {}),
-                        low: { temp, to: element.phaseChange?.low?.to ?? 'base:empty' },
-                      },
-                    })
-                  }}
+                  value={draftNumbers['phaseChange.low.temp'] ?? String(element.phaseChange.low?.temp ?? '')}
+                  onChange={(e) => setDraftNumber('phaseChange.low.temp', e.target.value)}
+                  onBlur={() =>
+                    commitDraftNumber('phaseChange.low.temp', (temp) =>
+                      onPatch({
+                        phaseChange: {
+                          ...(element.phaseChange ?? {}),
+                          low: { temp, to: element.phaseChange?.low?.to ?? 'base:empty' },
+                        },
+                      })
+                    )
+                  }
+                  onKeyDown={(e) =>
+                    onDraftNumberKeyDown(e, 'phaseChange.low.temp', (temp) =>
+                      onPatch({
+                        phaseChange: {
+                          ...(element.phaseChange ?? {}),
+                          low: { temp, to: element.phaseChange?.low?.to ?? 'base:empty' },
+                        },
+                      })
+                    )
+                  }
                   className={fieldClass('phaseChange.low.temp', inputMono)}
                   placeholder="temp"
                 />
@@ -758,26 +826,23 @@ export function ElementEditor(args: {
       <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold">UI</div>
-          <label className="inline-flex items-center gap-2 text-sm text-gray-200">
-            <input
-              type="checkbox"
-              checked={ui !== null}
-              onChange={(e) =>
-                onPatch({
-                  ui: e.target.checked
-                    ? {
-                        category: 'draft',
-                        displayName: element.key,
-                        description: '',
-                        sort: 0,
-                        hidden: false,
-                      }
-                    : null,
-                })
-              }
-            />
-            Enabled
-          </label>
+          <ModToggle
+            checked={ui !== null}
+            onCheckedChange={(checked) =>
+              onPatch({
+                ui: checked
+                  ? {
+                      category: 'draft',
+                      displayName: element.key,
+                      description: '',
+                      sort: 0,
+                      hidden: false,
+                    }
+                  : null,
+              })
+            }
+            label="Enabled"
+          />
         </div>
 
         {ui ? (
@@ -814,8 +879,14 @@ export function ElementEditor(args: {
               <span className="text-xs text-gray-400">Sort</span>
               <input
                 type="number"
-                value={ui.sort ?? 0}
-                onChange={(e) => onPatch({ ui: { ...ui, sort: Number(e.target.value) } })}
+                value={draftNumbers['ui.sort'] ?? String(ui.sort ?? 0)}
+                onChange={(e) => setDraftNumber('ui.sort', e.target.value)}
+                onBlur={() =>
+                  commitDraftNumber('ui.sort', (n) => onPatch({ ui: { ...ui, sort: Math.floor(n) } }))
+                }
+                onKeyDown={(e) =>
+                  onDraftNumberKeyDown(e, 'ui.sort', (n) => onPatch({ ui: { ...ui, sort: Math.floor(n) } }))
+                }
                 className={fieldClass('ui.sort', inputMono)}
               />
               {errorText('ui.sort')}
@@ -824,7 +895,7 @@ export function ElementEditor(args: {
             <label className="flex flex-col gap-1">
               <span className="text-xs text-gray-400">UI hidden</span>
               <div className="h-10 flex items-center">
-                <input type="checkbox" checked={!!ui.hidden} onChange={(e) => onPatch({ ui: { ...ui, hidden: e.target.checked } })} />
+                <ModToggle checked={!!ui.hidden} onCheckedChange={(checked) => onPatch({ ui: { ...ui, hidden: checked } })} />
               </div>
             </label>
           </div>

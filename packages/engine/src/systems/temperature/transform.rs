@@ -56,13 +56,11 @@ pub(super) fn transform_particle_with_chunks(
     });
     if new_element == EL_EMPTY {
         grid.clear_cell(x, y);
-        chunks.remove_particle(x, y);
     } else {
         let seed = ((x * 7 + y * 13 + frame as u32) & 31) as u8;
 
         let Some(props) = content.props(new_element) else {
             grid.clear_cell(x, y);
-            chunks.remove_particle(x, y);
             chunks.mark_dirty(x, y);
             return;
         };

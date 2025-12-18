@@ -70,15 +70,6 @@ impl ChunkGrid {
     pub fn mark_dirty_idx(&mut self, idx: usize) {
         if idx >= self.chunk_count { return; }
 
-        // Any touch means the chunk is active again.
-        self.idle_frames[idx] = 0;
-
-        if self.state[idx] == ChunkState::Sleeping {
-            self.just_woke_up[idx] = true;
-            self.woke_this_frame = self.woke_this_frame.saturating_add(1);
-            self.state[idx] = ChunkState::Active;
-        }
-
         Self::set_bit(&mut self.dirty_bits, idx);
         Self::set_bit(&mut self.visual_dirty_bits, idx);
         self.visual_dirty[idx] = true; // Legacy compatibility
@@ -89,23 +80,6 @@ impl ChunkGrid {
     pub fn is_dirty(&self, cx: u32, cy: u32) -> bool {
         let idx = self.chunk_idx_from_coords(cx, cy);
         Self::check_bit(&self.dirty_bits, idx)
-    }
-
-    /// Check if chunk is sleeping
-    #[inline]
-    pub fn is_sleeping(&self, cx: u32, cy: u32) -> bool {
-        let idx = self.chunk_idx_from_coords(cx, cy);
-        self.sleep_enabled && self.state[idx] == ChunkState::Sleeping
-    }
-
-    /// Should we process this chunk? (BitSet version)
-    ///
-    /// CRITICAL: Chunks with particles must be processed so lifetime/reactions
-    /// don't "freeze" when there is no movement.
-    #[inline]
-    pub fn should_process(&self, cx: u32, cy: u32) -> bool {
-        let idx = self.chunk_idx_from_coords(cx, cy);
-        Self::check_bit(&self.dirty_bits, idx) || self.particle_count[idx] > 0
     }
 
     // === Wake neighbors ===

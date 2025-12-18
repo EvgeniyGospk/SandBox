@@ -1,5 +1,4 @@
 use super::*;
-use crate::chunks::DirtyRect;
 use crate::elements::{
     BehaviorKind,
     EL_CLONE,
@@ -13,113 +12,7 @@ use crate::elements::{
     EL_VOID,
     EL_WATER,
 };
-use crate::grid::BG_COLOR;
 use crate::physics::raycast_move;
-
-#[test]
-fn extract_rect_pixels_clamps_and_is_tightly_packed() {
-    let mut world = WorldCore::new(100, 100);
-
-    for (i, c) in world.grid.colors.iter_mut().enumerate() {
-        *c = i as u32;
-    }
-
-    // Rect starting at x=64 with width=64 (clamps to x..100 => 36px wide)
-    world.render.merged_rects.clear();
-    world.render.merged_rects.push(DirtyRect {
-        cx: 2,
-        cy: 0,
-        cw: 2,
-        ch: 1,
-    });
-
-    world.extract_rect_pixels(0);
-
-    let actual_w = 100 - (2 * CHUNK_SIZE);
-    let actual_h = CHUNK_SIZE;
-    let expected_len = (actual_w as usize) * (actual_h as usize);
-    assert!(world.render.rect_transfer_buffer.len() >= expected_len);
-
-    let buf = &world.render.rect_transfer_buffer[..expected_len];
-
-    // First row should be grid[0, 64..99]
-    assert_eq!(buf[0], 64);
-    assert_eq!(buf[(actual_w as usize) - 1], 99);
-    // Second row should start immediately after `actual_w` (tightly packed)
-    assert_eq!(buf[actual_w as usize], 100 + 64);
-}
-
-#[test]
-fn extract_rect_pixels_resizes_for_large_rects() {
-    let size = (CHUNK_SIZE * 5) as u32; // 160px
-    let mut world = WorldCore::new(size, size);
-
-    world.render.merged_rects.clear();
-    world.render.merged_rects.push(DirtyRect {
-        cx: 0,
-        cy: 0,
-        cw: 5,
-        ch: 5,
-    });
-
-    world.extract_rect_pixels(0);
-
-    let expected = (size as usize) * (size as usize);
-    assert!(world.render.rect_transfer_buffer.len() >= expected);
-}
-
-#[test]
-fn extract_chunk_pixels_is_32x32_strided_and_padded_with_bg_color_on_edges() {
-    let width = CHUNK_SIZE + 5;
-    let height = CHUNK_SIZE + 3;
-    let mut world = WorldCore::new(width, height);
-
-    for (i, c) in world.grid.colors.iter_mut().enumerate() {
-        *c = i as u32;
-    }
-
-    // Bottom-right chunk: only 5x3 pixels exist; rest must be BG_COLOR.
-    let chunk_idx = world.chunks.chunk_index(width - 1, height - 1) as u32;
-    world.extract_chunk_pixels(chunk_idx);
-
-    let buf = &world.render.chunk_transfer_buffer;
-    assert_eq!(buf.len(), (CHUNK_SIZE * CHUNK_SIZE) as usize);
-
-    let grid_width = width as usize;
-    let start_x = CHUNK_SIZE as usize;
-    let start_y = CHUNK_SIZE as usize;
-    let row_len = 5usize;
-    let row_count = 3usize;
-    let stride = CHUNK_SIZE as usize;
-
-    // In-bounds pixels.
-    for row in 0..row_count {
-        for col in 0..row_len {
-            let gx = start_x + col;
-            let gy = start_y + row;
-            let expected = (gy * grid_width + gx) as u32;
-            assert_eq!(buf[row * stride + col], expected);
-        }
-    }
-
-    // Row padding (right side) must be BG_COLOR.
-    for row in 0..row_count {
-        for col in row_len..stride {
-            assert_eq!(buf[row * stride + col], BG_COLOR);
-        }
-    }
-
-    // Remaining rows (bottom padding) must be BG_COLOR.
-    for row in row_count..stride {
-        for col in 0..stride {
-            assert_eq!(buf[row * stride + col], BG_COLOR);
-        }
-    }
-
-    // Stride contract: second row starts at index 32, not tightly packed.
-    let expected_row1_col0 = ((start_y + 1) * grid_width + start_x) as u32;
-    assert_eq!(buf[stride], expected_row1_col0);
-}
 
 #[test]
 fn utility_clone_spawns_and_updates_counts() {
@@ -227,32 +120,6 @@ fn spawn_rigid_body_rasterizes_and_counts_pixels() {
 }
 
 #[test]
-fn cross_chunk_swap_of_two_particles_keeps_chunk_counts() {
-    let mut world = WorldCore::new(64, 64);
-
-    let y = 10;
-    let left_x = CHUNK_SIZE - 1;
-    let right_x = CHUNK_SIZE;
-
-    assert!(world.add_particle(left_x, y, EL_STONE));
-    assert!(world.add_particle(right_x, y, EL_SAND));
-
-    let left_chunk = world.chunks.chunk_index(left_x, y);
-    let right_chunk = world.chunks.chunk_index(right_x, y);
-    assert_ne!(left_chunk, right_chunk);
-    assert_eq!(world.chunks.particle_counts()[left_chunk], 1);
-    assert_eq!(world.chunks.particle_counts()[right_chunk], 1);
-
-    world.grid.clear_moves();
-    unsafe { world.grid.swap_unchecked(left_x, y, right_x, y) };
-    assert_eq!(world.grid.pending_moves.count, 2);
-
-    world.apply_pending_moves();
-    assert_eq!(world.chunks.particle_counts()[left_chunk], 1);
-    assert_eq!(world.chunks.particle_counts()[right_chunk], 1);
-}
-
-#[test]
 fn phase_changes_are_generated_from_definitions() {
     let world = WorldCore::new(1, 1);
 
@@ -293,30 +160,4 @@ fn abi_layout_data_lengths_are_consistent() {
         data.temperature_len_bytes,
         data.temperature_len_elements * std::mem::size_of::<f32>()
     );
-
-    assert_eq!(
-        data.chunk_transfer_len_bytes,
-        data.chunk_transfer_len_elements * std::mem::size_of::<u32>()
-    );
-    assert_eq!(data.dirty_list_len_bytes, data.dirty_list_len_elements * std::mem::size_of::<u32>());
-    assert_eq!(
-        data.rect_transfer_len_bytes,
-        data.rect_transfer_len_elements * std::mem::size_of::<u32>()
-    );
-}
-
-#[test]
-fn move_buffer_default_capacity_is_clamped_to_min() {
-    let world = WorldCore::new(10, 10);
-    assert_eq!(world.grid.size(), 100);
-    assert_eq!(world.grid.pending_moves.capacity(), 1024);
-}
-
-#[test]
-fn move_buffer_try_push_reports_overflow() {
-    let mut buf = crate::grid::MoveBuffer::new(1);
-    assert!(buf.try_push((0, 0, 1, 1)));
-    assert!(buf.try_push((0, 0, 1, 1)));
-    assert_eq!(buf.count, 2);
-    assert_eq!(buf.overflow_count(), 1);
 }

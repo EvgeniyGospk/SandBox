@@ -1,6 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use super::super::*;
+use crate::chunks::CHUNK_SIZE;
 
 pub(super) unsafe fn batch_lerp_air_temps_impl(
     grid: &mut Grid,

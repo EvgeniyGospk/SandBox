@@ -179,6 +179,12 @@ export class SharedInputBuffer {
   pendingCount(): number {
     return pendingEventCount({ buffer: this.buffer, inputBufferSize: INPUT_BUFFER_SIZE })
   }
+
+  drain(): void {
+    const writeIndex = Atomics.load(this.buffer, 0)
+    Atomics.store(this.buffer, 1, writeIndex)
+    Atomics.store(this.buffer, OVERFLOW_INDEX, 0)
+  }
   
   // === PHASE 3 (Fort Knox): Overflow Protection ===
   

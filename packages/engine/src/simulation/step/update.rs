@@ -39,7 +39,7 @@ pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> 
             world.grid.set_life_unchecked(idx, life - 1);
             if life - 1 == 0 {
                 world.grid.clear_cell_unchecked(x, y);
-                world.chunks.remove_particle(x, y);
+                world.chunks.mark_dirty(x, y);
                 if world.particle_count > 0 {
                     world.particle_count -= 1;
                 }
@@ -76,36 +76,62 @@ pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> 
         };
 
         if world.perf_enabled {
-            let t_beh = PerfTimer::start();
-            world.behaviors.update(category, &mut ctx);
-            let dur = t_beh.elapsed_ms();
-            world.perf_stats.behavior_calls = world.perf_stats.behavior_calls.saturating_add(1);
-            match category {
-                CAT_POWDER => {
-                    world.perf_stats.behavior_powder = world.perf_stats.behavior_powder.saturating_add(1);
-                    world.perf_stats.powder_ms += dur;
+            if world.perf_detailed {
+                let t_beh = PerfTimer::start();
+                world.behaviors.update(category, &mut ctx);
+                let dur = t_beh.elapsed_ms();
+                world.perf_stats.behavior_calls = world.perf_stats.behavior_calls.saturating_add(1);
+                match category {
+                    CAT_POWDER => {
+                        world.perf_stats.behavior_powder = world.perf_stats.behavior_powder.saturating_add(1);
+                        world.perf_stats.powder_ms += dur;
+                    }
+                    CAT_LIQUID => {
+                        world.perf_stats.behavior_liquid = world.perf_stats.behavior_liquid.saturating_add(1);
+                        world.perf_stats.liquid_ms += dur;
+                    }
+                    CAT_GAS => {
+                        world.perf_stats.behavior_gas = world.perf_stats.behavior_gas.saturating_add(1);
+                        world.perf_stats.gas_ms += dur;
+                    }
+                    CAT_ENERGY => {
+                        world.perf_stats.behavior_energy = world.perf_stats.behavior_energy.saturating_add(1);
+                        world.perf_stats.energy_ms += dur;
+                    }
+                    CAT_UTILITY => {
+                        world.perf_stats.behavior_utility = world.perf_stats.behavior_utility.saturating_add(1);
+                        world.perf_stats.utility_ms += dur;
+                    }
+                    CAT_BIO => {
+                        world.perf_stats.behavior_bio = world.perf_stats.behavior_bio.saturating_add(1);
+                        world.perf_stats.bio_ms += dur;
+                    }
+                    _ => {}
                 }
-                CAT_LIQUID => {
-                    world.perf_stats.behavior_liquid = world.perf_stats.behavior_liquid.saturating_add(1);
-                    world.perf_stats.liquid_ms += dur;
+            } else {
+                world.behaviors.update(category, &mut ctx);
+                world.perf_stats.behavior_calls = world.perf_stats.behavior_calls.saturating_add(1);
+                match category {
+                    CAT_POWDER => {
+                        world.perf_stats.behavior_powder = world.perf_stats.behavior_powder.saturating_add(1);
+                    }
+                    CAT_LIQUID => {
+                        world.perf_stats.behavior_liquid = world.perf_stats.behavior_liquid.saturating_add(1);
+                    }
+                    CAT_GAS => {
+                        world.perf_stats.behavior_gas = world.perf_stats.behavior_gas.saturating_add(1);
+                    }
+                    CAT_ENERGY => {
+                        world.perf_stats.behavior_energy = world.perf_stats.behavior_energy.saturating_add(1);
+                    }
+                    CAT_UTILITY => {
+                        world.perf_stats.behavior_utility = world.perf_stats.behavior_utility.saturating_add(1);
+                    }
+                    CAT_BIO => {
+                        world.perf_stats.behavior_bio = world.perf_stats.behavior_bio.saturating_add(1);
+                    }
+                    _ => {}
                 }
-                CAT_GAS => {
-                    world.perf_stats.behavior_gas = world.perf_stats.behavior_gas.saturating_add(1);
-                    world.perf_stats.gas_ms += dur;
-                }
-                CAT_ENERGY => {
-                    world.perf_stats.behavior_energy = world.perf_stats.behavior_energy.saturating_add(1);
-                    world.perf_stats.energy_ms += dur;
-                }
-                CAT_UTILITY => {
-                    world.perf_stats.behavior_utility = world.perf_stats.behavior_utility.saturating_add(1);
-                    world.perf_stats.utility_ms += dur;
-                }
-                CAT_BIO => {
-                    world.perf_stats.behavior_bio = world.perf_stats.behavior_bio.saturating_add(1);
-                    world.perf_stats.bio_ms += dur;
-                }
-                _ => {}
             }
         } else {
             world.behaviors.update(category, &mut ctx);

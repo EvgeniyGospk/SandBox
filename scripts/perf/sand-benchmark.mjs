@@ -12,56 +12,6 @@ const wasmBytesPath = resolve(__dirname, '../../packages/engine-wasm/particula_e
 const WORLD_WIDTH = Number.parseInt(process.env.WORLD_WIDTH ?? '2048', 10); // 2,097,152 cells total (default)
 const WORLD_HEIGHT = Number.parseInt(process.env.WORLD_HEIGHT ?? '1024', 10);
 
-function resolveSleepingMode() {
-  const raw = (process.env.CHUNK_SLEEPING ?? '1').toLowerCase().trim();
-  if (raw === '0' || raw === 'false' || raw === 'off') return false;
-  return true;
-}
-
-function resolveGatingMode() {
-  const raw = (process.env.CHUNK_GATING ?? '1').toLowerCase().trim();
-  if (raw === '0' || raw === 'false' || raw === 'off') return false;
-  return true;
-}
-
-function resolveSparseRowSkipMode() {
-  const raw = (process.env.SPARSE_ROW_SKIP ?? '1').toLowerCase().trim();
-  if (raw === '0' || raw === 'false' || raw === 'off') return false;
-  return true;
-}
-
-function resolveTemperatureEveryFrameMode() {
-  const raw = (process.env.TEMPERATURE_EVERY_FRAME ?? '0').toLowerCase().trim();
-  if (raw === '1' || raw === 'true' || raw === 'on') return true;
-  return false;
-}
-
-function resolveCrossChunkMoveTrackingMode() {
-  const raw = (process.env.CROSS_CHUNK_MOVE_TRACKING ?? '1').toLowerCase().trim();
-  if (raw === '0' || raw === 'false' || raw === 'off') return false;
-  return true;
-}
-
-function resolveRenderExtractMode() {
-  const raw = (process.env.RENDER_EXTRACT ?? 'none').toLowerCase().trim();
-  if (raw === 'dirty_chunks' || raw === 'dirty') return 'dirty_chunks';
-  if (raw === 'merged_rects' || raw === 'merged') return 'merged_rects';
-  return 'none';
-}
-
-const COMPARE_SLEEPING = (process.env.COMPARE_SLEEPING ?? '0').toLowerCase().trim() === '1';
-const SLEEPING_ENABLED = resolveSleepingMode();
-const COMPARE_GATING = (process.env.COMPARE_GATING ?? '0').toLowerCase().trim() === '1';
-const GATING_ENABLED = resolveGatingMode();
-const COMPARE_SPARSE_ROW_SKIP = (process.env.COMPARE_SPARSE_ROW_SKIP ?? '0').toLowerCase().trim() === '1';
-const SPARSE_ROW_SKIP_ENABLED = resolveSparseRowSkipMode();
-const COMPARE_TEMPERATURE_EVERY_FRAME = (process.env.COMPARE_TEMPERATURE_EVERY_FRAME ?? '0').toLowerCase().trim() === '1';
-const TEMPERATURE_EVERY_FRAME_ENABLED = resolveTemperatureEveryFrameMode();
-const COMPARE_CROSS_CHUNK_MOVE_TRACKING =
-  (process.env.COMPARE_CROSS_CHUNK_MOVE_TRACKING ?? '0').toLowerCase().trim() === '1';
-const CROSS_CHUNK_MOVE_TRACKING_ENABLED = resolveCrossChunkMoveTrackingMode();
-const COMPARE_RENDER_EXTRACT = (process.env.COMPARE_RENDER_EXTRACT ?? '0').toLowerCase().trim() === '1';
-const RENDER_EXTRACT_MODE = resolveRenderExtractMode();
 const SCENARIO_FILTER = (process.env.SCENARIO_FILTER ?? '').trim();
 const OVERRIDE_WARMUP_STEPS = process.env.WARMUP_STEPS ? Number.parseInt(process.env.WARMUP_STEPS, 10) : null;
 const OVERRIDE_MEASURE_STEPS = process.env.MEASURE_STEPS ? Number.parseInt(process.env.MEASURE_STEPS, 10) : null;
@@ -71,14 +21,10 @@ let EL;
 let WASM_MEMORY;
 const METRIC_KEYS = [
   'outer_step_ms',
-  'outer_frame_ms',
-  'render_extract_ms',
   'step_ms',
-  'hydrate_ms',
   'rigid_ms',
   'physics_ms',
   'chunks_ms',
-  'apply_moves_ms',
   'temperature_ms',
   'powder_ms',
   'liquid_ms',
@@ -103,16 +49,11 @@ const METRIC_KEYS = [
   'behavior_energy',
   'behavior_utility',
   'behavior_bio',
-  'move_buffer_overflows',
-  'move_buffer_usage',
-  'chunks_woken',
-  'chunks_slept',
   'liquid_scans',
   'memory_bytes',
   'grid_size',
   'active_chunks',
   'dirty_chunks',
-  'pending_moves',
   'particle_count',
 ];
 
@@ -123,31 +64,6 @@ async function loadWasm() {
   const wasmExports = await wasmModule.default({ module_or_path: wasmBytes });
   WASM_MEMORY = wasmExports?.memory;
   return wasmModule;
-}
-
-function runRenderExtract(world, renderExtractMode) {
-  if (!renderExtractMode || renderExtractMode === 'none') return 0;
-  if (!WASM_MEMORY) return 0;
-
-  const t0 = performance.now();
-
-  if (renderExtractMode === 'dirty_chunks') {
-    const dirtyCount = world.collect_dirty_chunks();
-    if (dirtyCount > 0) {
-      const ptr = world.get_dirty_list_ptr();
-      const dirtyList = new Uint32Array(WASM_MEMORY.buffer, ptr, dirtyCount);
-      for (let i = 0; i < dirtyCount; i++) {
-        world.extract_chunk_pixels(dirtyList[i]);
-      }
-    }
-  } else if (renderExtractMode === 'merged_rects') {
-    const rectCount = world.collect_merged_rects();
-    for (let i = 0; i < rectCount; i++) {
-      world.extract_rect_pixels(i);
-    }
-  }
-
-  return performance.now() - t0;
 }
 
 function getElementIds(wasm) {
@@ -200,24 +116,18 @@ function aggregateMetrics(samples) {
   return metrics;
 }
 
-function summarizeCounts(samples) {
+function summarizeCounters(samples) {
   const last = samples[samples.length - 1];
   const maxActive = Math.max(...samples.map((s) => s.active_chunks));
   const maxDirty = Math.max(...samples.map((s) => s.dirty_chunks));
-  const maxOverflow = Math.max(...samples.map((s) => s.move_buffer_overflows ?? 0));
-  const maxMoveUsage = Math.max(...samples.map((s) => s.move_buffer_usage ?? 0));
   const maxPhase = Math.max(...samples.map((s) => s.phase_changes ?? 0));
   const maxLiquidScans = Math.max(...samples.map((s) => s.liquid_scans ?? 0));
   return {
     last_active_chunks: last?.active_chunks ?? 0,
     max_active_chunks: maxActive,
-    last_dirty_chunks: last?.dirty_chunks ?? 0,
     max_dirty_chunks: maxDirty,
     last_particle_count: last?.particle_count ?? 0,
     max_particle_count: Math.max(...samples.map((s) => s.particle_count)),
-    max_pending_moves: Math.max(...samples.map((s) => s.pending_moves)),
-    max_overflow: maxOverflow,
-    max_move_usage: maxMoveUsage,
     max_phase_changes: maxPhase,
     max_liquid_scans: maxLiquidScans,
   };
@@ -237,26 +147,6 @@ async function runScenario(wasm, config) {
   const world = new wasm.World(WORLD_WIDTH, WORLD_HEIGHT);
   world.enable_perf_metrics(ENGINE_PERF);
 
-  if (typeof world.set_chunk_sleeping_enabled === 'function') {
-    world.set_chunk_sleeping_enabled(config.sleepingEnabled);
-  }
-
-  if (typeof world.set_chunk_gating_enabled === 'function') {
-    world.set_chunk_gating_enabled(config.gatingEnabled);
-  }
-
-  if (typeof world.set_sparse_row_skip_enabled === 'function') {
-    world.set_sparse_row_skip_enabled(config.sparseRowSkipEnabled);
-  }
-
-  if (typeof world.set_temperature_every_frame === 'function') {
-    world.set_temperature_every_frame(config.temperatureEveryFrame);
-  }
-
-  if (typeof world.set_cross_chunk_move_tracking_enabled === 'function') {
-    world.set_cross_chunk_move_tracking_enabled(config.crossChunkMoveTrackingEnabled);
-  }
-
   const spawnRes = [];
   for (const spawn of config.spawns) {
     spawnRes.push(spawn(world));
@@ -275,7 +165,6 @@ async function runScenario(wasm, config) {
   for (let i = 0; i < warmupSteps; i++) {
     if (config.perStep) config.perStep(world, i, true);
     world.step();
-    runRenderExtract(world, config.renderExtractMode);
   }
 
   const samples = [];
@@ -286,22 +175,15 @@ async function runScenario(wasm, config) {
     world.step();
     const outerStepMs = performance.now() - t0;
 
-    const renderExtractMs = runRenderExtract(world, config.renderExtractMode);
-    const outerFrameMs = outerStepMs + renderExtractMs;
-
     if (ENGINE_PERF) {
       const stats = world.get_perf_stats();
       samples.push({
         outer_step_ms: outerStepMs,
-        outer_frame_ms: outerFrameMs,
-        render_extract_ms: renderExtractMs,
         ...perfStatsToPojo(stats),
       });
     } else {
       samples.push({
         outer_step_ms: outerStepMs,
-        outer_frame_ms: outerFrameMs,
-        render_extract_ms: renderExtractMs,
       });
     }
   }
@@ -316,7 +198,7 @@ async function runScenario(wasm, config) {
     label: config.label,
     spawn: spawnRes,
     metrics: aggregateMetrics(samples),
-    counts: ENGINE_PERF ? summarizeCounts(samples) : endState,
+    counters: ENGINE_PERF ? summarizeCounters(samples) : endState,
   };
 }
 
@@ -328,41 +210,29 @@ function printScenarioResult(result) {
     );
   }
   const m = result.metrics;
-  const c = result.counts;
+  const c = result.counters;
   const fmt = (q) =>
     `avg/p50/p95/p99/max=${q.avg.toFixed(2)}/${q.p50.toFixed(2)}/${q.p95.toFixed(
       2
     )}/${q.p99.toFixed(2)}/${q.max.toFixed(2)} ms`;
   console.log(`World.step() wall-time: ${fmt(m.outer_step_ms)}`);
-  if (m.outer_frame_ms && m.render_extract_ms) {
-    console.log(`Frame (step+render) wall-time: ${fmt(m.outer_frame_ms)}`);
-    console.log(`Render extract: ${fmt(m.render_extract_ms)}`);
-  }
 
   if (ENGINE_PERF) {
     console.log(`Engine step_ms:      ${fmt(m.step_ms)}`);
-    console.log(`  hydrate: ${fmt(m.hydrate_ms)} | rigid: ${fmt(m.rigid_ms)}`);
+    console.log(`  rigid: ${fmt(m.rigid_ms)}`);
     console.log(`  physics: ${fmt(m.physics_ms)} | chunks: ${fmt(m.chunks_ms)}`);
-    console.log(`  apply_moves: ${fmt(m.apply_moves_ms)} | temperature: ${fmt(m.temperature_ms)}`);
+    console.log(`  temperature: ${fmt(m.temperature_ms)}`);
     console.log(
       `Processed particles avg=${m.particles_processed.avg.toFixed(0)} ` +
       `moved avg=${m.particles_moved.avg.toFixed(0)} ` +
       `reactions checked avg=${m.reactions_checked.avg.toFixed(0)} applied avg=${m.reactions_applied.avg.toFixed(0)}`
     );
-    console.log(
-      `Temp cells avg=${m.temp_cells.avg.toFixed(0)} | pending moves max=${c.max_pending_moves}`
-    );
+    console.log(`Temp cells avg=${m.temp_cells.avg.toFixed(0)}`);
     console.log(
       `Chunks active last=${c.last_active_chunks}/${c.max_active_chunks} ` +
-      `dirty last=${c.last_dirty_chunks}/${c.max_dirty_chunks} ` +
-      `particles last=${c.last_particle_count.toLocaleString()}`
+      `dirty max=${c.max_dirty_chunks} ` +
+      `phase changes max=${c.max_phase_changes} liquid scans max=${c.max_liquid_scans}`
     );
-    console.log(
-      `Move buffer overflow max=${c.max_overflow} usage max=${(c.max_move_usage * 100).toFixed(1)}% | phase_changes max=${c.max_phase_changes} | liquid_scans max=${c.max_liquid_scans}`
-    );
-    if (c.max_overflow > 0) {
-      console.warn(`  ⚠️  Move buffer overflowed ${c.max_overflow} times`);
-    }
   } else {
     const total = c.total_chunks ?? 0;
     const active = c.active_chunks ?? 0;
@@ -620,95 +490,15 @@ async function main() {
     ? scenarios.filter((s) => s.label.includes(SCENARIO_FILTER))
     : scenarios;
 
-  const modes = COMPARE_SLEEPING
-    ? [
-        { labelSuffix: 'sleep=on', sleepingEnabled: true },
-        { labelSuffix: 'sleep=off', sleepingEnabled: false },
-      ]
-    : [{ labelSuffix: `sleep=${SLEEPING_ENABLED ? 'on' : 'off'}`, sleepingEnabled: SLEEPING_ENABLED }];
-
-  const gatingModes = COMPARE_GATING
-    ? [
-        { labelSuffix: 'gating=on', gatingEnabled: true },
-        { labelSuffix: 'gating=off', gatingEnabled: false },
-      ]
-    : [{ labelSuffix: `gating=${GATING_ENABLED ? 'on' : 'off'}`, gatingEnabled: GATING_ENABLED }];
-
-  const sparseRowSkipModes = COMPARE_SPARSE_ROW_SKIP
-    ? [
-        { labelSuffix: 'sparseRowSkip=on', sparseRowSkipEnabled: true },
-        { labelSuffix: 'sparseRowSkip=off', sparseRowSkipEnabled: false },
-      ]
-    : [
-        {
-          labelSuffix: `sparseRowSkip=${SPARSE_ROW_SKIP_ENABLED ? 'on' : 'off'}`,
-          sparseRowSkipEnabled: SPARSE_ROW_SKIP_ENABLED,
-        },
-      ];
-
-  const crossChunkMoveTrackingModes = COMPARE_CROSS_CHUNK_MOVE_TRACKING
-    ? [
-        { labelSuffix: 'moveTracking=crossChunkOnly', crossChunkMoveTrackingEnabled: true },
-        { labelSuffix: 'moveTracking=all', crossChunkMoveTrackingEnabled: false },
-      ]
-    : [
-        {
-          labelSuffix: `moveTracking=${CROSS_CHUNK_MOVE_TRACKING_ENABLED ? 'crossChunkOnly' : 'all'}`,
-          crossChunkMoveTrackingEnabled: CROSS_CHUNK_MOVE_TRACKING_ENABLED,
-        },
-      ];
-
-  const renderExtractModes = COMPARE_RENDER_EXTRACT
-    ? [
-        { labelSuffix: 'render=mergedRects', renderExtractMode: 'merged_rects' },
-        { labelSuffix: 'render=dirtyChunks', renderExtractMode: 'dirty_chunks' },
-      ]
-    : [
-        {
-          labelSuffix: `render=${RENDER_EXTRACT_MODE}`,
-          renderExtractMode: RENDER_EXTRACT_MODE,
-        },
-      ];
-
-  const temperatureEveryFrameModes = COMPARE_TEMPERATURE_EVERY_FRAME
-    ? [
-        { labelSuffix: 'tempEveryFrame=on', temperatureEveryFrame: true },
-        { labelSuffix: 'tempEveryFrame=off', temperatureEveryFrame: false },
-      ]
-    : [
-        {
-          labelSuffix: `tempEveryFrame=${TEMPERATURE_EVERY_FRAME_ENABLED ? 'on' : 'off'}`,
-          temperatureEveryFrame: TEMPERATURE_EVERY_FRAME_ENABLED,
-        },
-      ];
-
-  for (const mode of modes) {
-    for (const gmode of gatingModes) {
-      for (const smode of sparseRowSkipModes) {
-        for (const tmode of temperatureEveryFrameModes) {
-          for (const mmode of crossChunkMoveTrackingModes) {
-            for (const rmode of renderExtractModes) {
-              for (const scenario of selectedScenarios) {
-                const label = `${scenario.label} (${mode.labelSuffix}, ${gmode.labelSuffix}, ${smode.labelSuffix}, ${tmode.labelSuffix}, ${mmode.labelSuffix}, ${rmode.labelSuffix})`;
-                console.log(`\nRunning scenario: ${label}`);
-                results.push(
-                  await runScenario(wasm, {
-                    ...scenario,
-                    label,
-                    sleepingEnabled: mode.sleepingEnabled,
-                    gatingEnabled: gmode.gatingEnabled,
-                    sparseRowSkipEnabled: smode.sparseRowSkipEnabled,
-                    temperatureEveryFrame: tmode.temperatureEveryFrame,
-                    crossChunkMoveTrackingEnabled: mmode.crossChunkMoveTrackingEnabled,
-                    renderExtractMode: rmode.renderExtractMode,
-                  })
-                );
-              }
-            }
-          }
-        }
-      }
-    }
+  for (const scenario of selectedScenarios) {
+    const label = `${scenario.label}`;
+    console.log(`\nRunning scenario: ${label}`);
+    results.push(
+      await runScenario(wasm, {
+        ...scenario,
+        label,
+      })
+    );
   }
 
   console.log('=== Particula WASM perf report ===');
