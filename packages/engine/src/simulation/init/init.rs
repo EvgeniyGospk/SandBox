@@ -24,6 +24,7 @@ pub(super) fn create_world_core(width: u32, height: u32) -> WorldCore {
         rng_state: 12345,
         perf_enabled: false,
         perf_detailed: false,
+        perf_split: false,
         perf_stats: PerfStats::default(),
         perf_stats_last_speed_max: 0.0,
     }

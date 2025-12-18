@@ -14,7 +14,6 @@ pub(super) fn step(world: &mut WorldCore) {
         world.perf_stats_last_speed_max = 0.0;
         // Snapshot pre-step counts
         world.perf_stats.active_chunks = world.chunks.active_chunk_count() as u32;
-        world.perf_stats.dirty_chunks = world.chunks.dirty_chunk_count() as u32;
         world.perf_stats.particle_count = world.particle_count;
         world.perf_stats.grid_size = world.grid.size() as u32;
         // rough memory estimate of SoA arrays (bytes)
@@ -31,21 +30,18 @@ pub(super) fn step(world: &mut WorldCore) {
     // "at most one physics integration per particle per step".
     world.grid.reset_updated();
 
-    // Phase 4: Begin frame for chunk tracking
-    world.chunks.begin_frame();
-
     // === RIGID BODY PHYSICS ===
     // Update rigid bodies BEFORE particle physics so particles can react to new body positions
     if perf_on {
         let t0 = PerfTimer::start();
         world
             .rigid_bodies
-            .update(&world.content, &mut world.grid, &mut world.chunks, world.gravity_x, world.gravity_y);
+            .update(&world.content, &mut world.grid, world.gravity_x, world.gravity_y);
         world.perf_stats.rigid_ms = t0.elapsed_ms();
     } else {
         world
             .rigid_bodies
-            .update(&world.content, &mut world.grid, &mut world.chunks, world.gravity_x, world.gravity_y);
+            .update(&world.content, &mut world.grid, world.gravity_x, world.gravity_y);
     }
 
     // === PHASE 2: PHYSICS PASS ===
@@ -54,6 +50,51 @@ pub(super) fn step(world: &mut WorldCore) {
         let t0 = PerfTimer::start();
         world.process_physics();
         world.perf_stats.physics_ms = t0.elapsed_ms();
+
+        if world.perf_split || world.perf_detailed {
+            let n = world.perf_stats.physics_split_sample_n as f64;
+            if n >= 3.0 {
+                let m00 = n;
+                let m01 = world.perf_stats.physics_split_s_c;
+                let m02 = world.perf_stats.physics_split_s_s;
+                let m10 = m01;
+                let m11 = world.perf_stats.physics_split_s_cc;
+                let m12 = world.perf_stats.physics_split_s_cs;
+                let m20 = m02;
+                let m21 = m12;
+                let m22 = world.perf_stats.physics_split_s_ss;
+
+                let det = m00 * (m11 * m22 - m12 * m21)
+                    - m01 * (m10 * m22 - m12 * m20)
+                    + m02 * (m10 * m21 - m11 * m20);
+
+                if det.abs() > 1e-9 {
+                    let b0 = world.perf_stats.physics_split_s_t;
+                    let b1 = world.perf_stats.physics_split_s_ct;
+                    let b2 = world.perf_stats.physics_split_s_st;
+
+                    let det_a2 = m00 * (m11 * b2 - b1 * m21)
+                        - m01 * (m10 * b2 - b1 * m20)
+                        + b0 * (m10 * m21 - m11 * m20);
+
+                    let a2 = det_a2 / det; // ms per raycast step
+
+                    let raycast_ms = (a2 * (world.perf_stats.raycast_steps_total as f64)).max(0.0);
+                    let raycast_ms = raycast_ms.min(world.perf_stats.physics_ms);
+                    world.perf_stats.physics_raycast_ms = raycast_ms;
+                    world.perf_stats.physics_other_ms = (world.perf_stats.physics_ms - raycast_ms).max(0.0);
+                } else {
+                    world.perf_stats.physics_raycast_ms = 0.0;
+                    world.perf_stats.physics_other_ms = world.perf_stats.physics_ms;
+                }
+            } else {
+                world.perf_stats.physics_raycast_ms = 0.0;
+                world.perf_stats.physics_other_ms = world.perf_stats.physics_ms;
+            }
+        } else {
+            world.perf_stats.physics_raycast_ms = 0.0;
+            world.perf_stats.physics_other_ms = 0.0;
+        }
     } else {
         world.process_physics();
     }
@@ -78,6 +119,29 @@ pub(super) fn step(world: &mut WorldCore) {
             }
         }
         world.perf_stats.chunks_ms = t0.elapsed_ms();
+
+        if world.perf_split || world.perf_detailed {
+            let s_ee = world.perf_stats.chunks_split_s_ee;
+            let s_nn = world.perf_stats.chunks_split_s_nn;
+            let s_en = world.perf_stats.chunks_split_s_en;
+            let s_et = world.perf_stats.chunks_split_s_et;
+            let s_nt = world.perf_stats.chunks_split_s_nt;
+
+            let det = s_ee * s_nn - s_en * s_en;
+            if det.abs() > 1e-9 {
+                let a = (s_et * s_nn - s_nt * s_en) / det; // ms per empty cell
+                let b = (s_nt * s_ee - s_et * s_en) / det; // ms per non-empty cell
+
+                world.perf_stats.chunks_empty_ms = (a * (world.perf_stats.chunk_empty_cells as f64)).max(0.0);
+                world.perf_stats.chunks_non_empty_ms = (b * (world.perf_stats.chunk_non_empty_cells as f64)).max(0.0);
+            } else {
+                world.perf_stats.chunks_empty_ms = 0.0;
+                world.perf_stats.chunks_non_empty_ms = 0.0;
+            }
+        } else {
+            world.perf_stats.chunks_empty_ms = 0.0;
+            world.perf_stats.chunks_non_empty_ms = 0.0;
+        }
     } else {
         // Process chunks from bottom to top (for gravity)
         if world.gravity_y >= 0.0 {
@@ -91,37 +155,36 @@ pub(super) fn step(world: &mut WorldCore) {
         }
     }
 
-    // Temperature pass - run every 4th frame for performance
-    // Lazy Hydration: now updates virtual_temp for sleeping chunks!
-    // PERF: Use bitwise AND instead of modulo (4x less temperature updates)
+    // Temperature pass - run every frame
     if perf_on {
         let t0 = PerfTimer::start();
-        let (temp_processed, air_processed) = process_temperature_grid_chunked(
+        let (temp_processed, air_processed, air_ms_est, particle_ms_est) = process_temperature_grid_chunked(
             &world.content,
             &mut world.grid,
-            &mut world.chunks, // Now mutable for virtual_temp updates
             world.ambient_temperature,
             world.frame,
             &mut world.rng_state,
+            world.perf_split || world.perf_detailed,
         );
         world.perf_stats.temperature_ms = t0.elapsed_ms();
         world.perf_stats.temp_cells = temp_processed;
         world.perf_stats.simd_air_cells = air_processed;
+        world.perf_stats.temperature_air_ms = air_ms_est;
+        world.perf_stats.temperature_particle_ms = particle_ms_est;
     } else {
         process_temperature_grid_chunked(
             &world.content,
             &mut world.grid,
-            &mut world.chunks, // Now mutable for virtual_temp updates
             world.ambient_temperature,
             world.frame,
             &mut world.rng_state,
+            false,
         );
     }
 
     if perf_on {
         // Post-step snapshot
         world.perf_stats.active_chunks = world.chunks.active_chunk_count() as u32;
-        world.perf_stats.dirty_chunks = world.chunks.dirty_chunk_count() as u32;
         world.perf_stats.particle_count = world.particle_count;
         let (ray_steps, ray_collisions) = take_physics_perf_counters();
         world.perf_stats.raycast_steps_total = ray_steps as u32;

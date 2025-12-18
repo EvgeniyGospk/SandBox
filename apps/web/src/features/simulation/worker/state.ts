@@ -75,11 +75,6 @@ export type SimulationWorkerState = {
     lastStatsUpdate: number
   }
 
-  debug: {
-    dirty: boolean
-    logInterval: number
-    logEvery: number
-  }
 }
 
 export function createInitialWorkerState(): SimulationWorkerState {
@@ -145,10 +140,5 @@ export function createInitialWorkerState(): SimulationWorkerState {
       lastStatsUpdate: 0,
     },
 
-    debug: {
-      dirty: import.meta.env.VITE_DEBUG_DIRTY === 'true',
-      logInterval: 0,
-      logEvery: 60,
-    },
   }
 }

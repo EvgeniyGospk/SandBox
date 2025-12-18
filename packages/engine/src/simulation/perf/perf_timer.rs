@@ -1,5 +1,12 @@
 #[cfg(target_arch = "wasm32")]
-use js_sys;
+use wasm_bindgen::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn performance_now() -> f64;
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct PerfTimer {
@@ -13,7 +20,7 @@ impl PerfTimer {
     pub(crate) fn start() -> Self {
         #[cfg(target_arch = "wasm32")]
         {
-            PerfTimer { start_ms: js_sys::Date::now() }
+            PerfTimer { start_ms: performance_now() }
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -24,7 +31,7 @@ impl PerfTimer {
     pub(crate) fn elapsed_ms(&self) -> f64 {
         #[cfg(target_arch = "wasm32")]
         {
-            js_sys::Date::now() - self.start_ms
+            performance_now() - self.start_ms
         }
         #[cfg(not(target_arch = "wasm32"))]
         {

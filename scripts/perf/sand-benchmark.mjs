@@ -53,7 +53,6 @@ const METRIC_KEYS = [
   'memory_bytes',
   'grid_size',
   'active_chunks',
-  'dirty_chunks',
   'particle_count',
 ];
 
@@ -119,13 +118,11 @@ function aggregateMetrics(samples) {
 function summarizeCounters(samples) {
   const last = samples[samples.length - 1];
   const maxActive = Math.max(...samples.map((s) => s.active_chunks));
-  const maxDirty = Math.max(...samples.map((s) => s.dirty_chunks));
   const maxPhase = Math.max(...samples.map((s) => s.phase_changes ?? 0));
   const maxLiquidScans = Math.max(...samples.map((s) => s.liquid_scans ?? 0));
   return {
     last_active_chunks: last?.active_chunks ?? 0,
     max_active_chunks: maxActive,
-    max_dirty_chunks: maxDirty,
     last_particle_count: last?.particle_count ?? 0,
     max_particle_count: Math.max(...samples.map((s) => s.particle_count)),
     max_phase_changes: maxPhase,
@@ -230,7 +227,6 @@ function printScenarioResult(result) {
     console.log(`Temp cells avg=${m.temp_cells.avg.toFixed(0)}`);
     console.log(
       `Chunks active last=${c.last_active_chunks}/${c.max_active_chunks} ` +
-      `dirty max=${c.max_dirty_chunks} ` +
       `phase changes max=${c.max_phase_changes} liquid scans max=${c.max_liquid_scans}`
     );
   } else {
@@ -297,23 +293,22 @@ async function main() {
 
   const scenarios = [
     // ---------------------------------------------------------------------
-    // Sleeping-chunks focused scenarios (use SCENARIO_FILTER=sleep_)
+    // Baseline scenarios (use SCENARIO_FILTER=empty_/sparse_/full_ etc.)
     // ---------------------------------------------------------------------
     {
-      label: 'sleep_empty_world',
+      label: 'empty_world',
       spawns: [(_world) => ({ placed: 0, elapsedMs: 0 })],
-      // Ensure empty chunks have time to transition to Sleeping (threshold=60 frames).
       warmup_steps: 80,
       measure_steps: 120,
     },
     {
-      label: 'sleep_sparse_sand_10k',
+      label: 'sparse_sand_10k',
       spawns: [(world) => spawnRandom(world, EL.SAND, 10_000)],
       warmup_steps: 80,
       measure_steps: 120,
     },
     {
-      label: 'sleep_full_stone',
+      label: 'full_stone',
       spawns: [
         (world) => {
           const t0 = performance.now();
@@ -330,7 +325,7 @@ async function main() {
       measure_steps: 40,
     },
     {
-      label: 'sleep_full_sand',
+      label: 'full_sand',
       spawns: [
         (world) => {
           const t0 = performance.now();

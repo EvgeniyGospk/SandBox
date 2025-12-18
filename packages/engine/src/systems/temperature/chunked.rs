@@ -1,28 +1,38 @@
-use crate::chunks::{ChunkGrid, CHUNK_SIZE};
+use crate::chunks::CHUNK_SIZE;
 use crate::domain::content::ContentRegistry;
 use crate::elements::EL_EMPTY;
 use crate::grid::Grid;
+use crate::simulation::PerfTimer;
 
 use super::legacy_air::update_air_temperature_legacy;
 use super::rng::xorshift32;
-use super::transform::transform_particle_with_chunks;
+use super::transform::transform_particle;
 
-/// Lazy Hydration: Process temperature with chunk-aware optimization
-/// 
-/// - Sleeping chunks: Only update virtual_temp (O(1) per chunk)
-/// - Active chunks: Per-pixel processing for smoother thermodynamics
-///   (each air cell samples a random neighbor for realistic heat diffusion)
+/// Chunked temperature pass for cache-friendly iteration.
 pub fn process_temperature_grid_chunked(
     content: &ContentRegistry,
     grid: &mut Grid,
-    chunks: &mut ChunkGrid,  // Now mutable for virtual_temp updates!
     ambient_temp: f32,
     frame: u64,
-    rng: &mut u32
-) -> (u32, u32) {
-    let (cx_count, cy_count) = chunks.dimensions();
+    rng: &mut u32,
+    perf_detailed: bool,
+) -> (u32, u32, f64, f64) {
+    let cx_count = (grid.width() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    let cy_count = (grid.height() + CHUNK_SIZE - 1) / CHUNK_SIZE;
     let mut processed_non_empty = 0u32;
     let mut simd_air_cells = 0u32;
+
+    const SAMPLE_MASK: u32 = 63;
+    let frame_u32 = frame as u32;
+
+    let mut s_aa = 0.0;
+    let mut s_pp = 0.0;
+    let mut s_ap = 0.0;
+    let mut s_at = 0.0;
+    let mut s_pt = 0.0;
+    let mut sample_n = 0u32;
+    let mut sample_total_ms = 0.0;
+    let mut sample_total_cells = 0u64;
 
     for cy in 0..cy_count {
         for cx in 0..cx_count {
@@ -34,6 +44,16 @@ pub fn process_temperature_grid_chunked(
             let end_x = (start_x + CHUNK_SIZE).min(grid.width());
             let end_y = (start_y + CHUNK_SIZE).min(grid.height());
 
+            let sample_chunk = perf_detailed
+                && (((cx.wrapping_mul(73856093)
+                    ^ cy.wrapping_mul(19349663)
+                    ^ frame_u32.wrapping_mul(83492791))
+                    & SAMPLE_MASK)
+                    == 0);
+            let t_chunk = if sample_chunk { Some(PerfTimer::start()) } else { None };
+            let mut air_in_chunk: u32 = 0;
+            let mut part_in_chunk: u32 = 0;
+
             for y in start_y..end_y {
                 for x in start_x..end_x {
                     let element = grid.get_type(x as i32, y as i32);
@@ -41,17 +61,57 @@ pub fn process_temperature_grid_chunked(
                         // Air cell: lerp towards ambient + random neighbor diffusion
                         update_air_temperature_legacy(grid, x, y, ambient_temp, rng);
                         simd_air_cells += 1;
+                        if sample_chunk {
+                            air_in_chunk = air_in_chunk.saturating_add(1);
+                        }
                     } else {
                         // Particle: full heat transfer logic
-                        update_particle_temperature(content, grid, chunks, x, y, ambient_temp, frame, rng);
+                        update_particle_temperature(content, grid, x, y, ambient_temp, frame, rng);
                         processed_non_empty += 1;
+                        if sample_chunk {
+                            part_in_chunk = part_in_chunk.saturating_add(1);
+                        }
                     }
                 }
+            }
+
+            if let Some(t) = t_chunk {
+                let t_ms = t.elapsed_ms();
+                let a = air_in_chunk as f64;
+                let p = part_in_chunk as f64;
+                s_aa += a * a;
+                s_pp += p * p;
+                s_ap += a * p;
+                s_at += a * t_ms;
+                s_pt += p * t_ms;
+                sample_n = sample_n.saturating_add(1);
+                sample_total_ms += t_ms;
+                sample_total_cells = sample_total_cells.saturating_add((air_in_chunk as u64).saturating_add(part_in_chunk as u64));
             }
         }
     }
 
-    (processed_non_empty, simd_air_cells)
+    let (air_ms_est, particle_ms_est) = if perf_detailed && sample_n > 0 {
+        let det = s_aa * s_pp - s_ap * s_ap;
+        if det.abs() > 1e-9 {
+            let a = (s_at * s_pp - s_pt * s_ap) / det; // ms per air cell
+            let b = (s_pt * s_aa - s_at * s_ap) / det; // ms per particle cell
+            let air_ms = (a * (simd_air_cells as f64)).max(0.0);
+            let part_ms = (b * (processed_non_empty as f64)).max(0.0);
+            (air_ms, part_ms)
+        } else if sample_total_cells > 0 {
+            let avg_ms_per_cell = sample_total_ms / (sample_total_cells as f64);
+            let air_ms = avg_ms_per_cell * (simd_air_cells as f64);
+            let part_ms = avg_ms_per_cell * (processed_non_empty as f64);
+            (air_ms, part_ms)
+        } else {
+            (0.0, 0.0)
+        }
+    } else {
+        (0.0, 0.0)
+    };
+
+    (processed_non_empty, simd_air_cells, air_ms_est, particle_ms_est)
 }
 
 /// Update temperature for a single NON-EMPTY cell (particle)
@@ -59,7 +119,6 @@ pub fn process_temperature_grid_chunked(
 fn update_particle_temperature(
     content: &ContentRegistry,
     grid: &mut Grid,
-    chunks: &mut ChunkGrid,
     x: u32,
     y: u32,
     ambient_temp: f32,
@@ -89,7 +148,7 @@ fn update_particle_temperature(
     // This ensures frozen water turns to ice even if at thermal equilibrium
     // (when diff < 0.5 would cause early return before old phase check)
     if let Some(new_element) = content.check_phase_change(element, my_temp) {
-        transform_particle_with_chunks(content, grid, chunks, x, y, new_element, my_temp, frame);
+        transform_particle(content, grid, x, y, new_element, my_temp, frame);
         return; // Already transformed, no need for heat transfer
     }
 
@@ -127,6 +186,6 @@ fn update_particle_temperature(
 
     // Check phase changes for particles
     if let Some(new_element) = content.check_phase_change(element, new_temp) {
-        transform_particle_with_chunks(content, grid, chunks, x, y, new_element, new_temp, frame);
+        transform_particle(content, grid, x, y, new_element, new_temp, frame);
     }
 }

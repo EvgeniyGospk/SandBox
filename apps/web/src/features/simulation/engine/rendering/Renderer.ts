@@ -8,12 +8,10 @@
  * - Uint32Array.fill(): 50-100x faster clear
  * - No object access = no pointer chasing = cache friendly
  */
-import { applyDirtyChunksToBuffer } from './canvas/applyDirtyChunksToBuffer'
 import { createRenderBuffer, resizeRenderBuffer } from './canvas/buffer'
 import { drawBufferToScreen } from './canvas/drawBufferToScreen'
 import { renderNormalTyped as renderNormalTypedPixels } from './canvas/renderNormalTyped'
 import { renderThermal as renderThermalPixels } from './canvas/renderThermal'
-import { getDirtyChunkIdsView, shouldFallbackToFullRender } from './canvas/smartRender'
 
 export type RenderMode = 'normal' | 'thermal'
 
@@ -48,9 +46,6 @@ export class CanvasRenderer {
   private readonly BG_G = 10
   private readonly BG_B = 10
   
-  // Phase 3: Smart Rendering (Dirty Rectangles)
-  private static readonly CHUNK_SIZE = 32
-  private chunkImageData: ImageData
 
   constructor(ctx: CanvasRenderingContext2D, width: number, height: number) {
     this.ctx = ctx
@@ -70,9 +65,6 @@ export class CanvasRenderer {
     
     // Pixel-art rendering (no smoothing on zoom)
     this.ctx.imageSmoothingEnabled = false
-    
-    // Phase 3: Create chunk ImageData once (32x32)
-    this.chunkImageData = new ImageData(CanvasRenderer.CHUNK_SIZE, CanvasRenderer.CHUNK_SIZE)
     
     this.clearPixels()
   }
@@ -272,73 +264,6 @@ export class CanvasRenderer {
     // Extreme: Red to White (500-1000+)
     const ratio = Math.min(1, (t - 500) / 500)
     return [255, Math.floor(255 * ratio), Math.floor(255 * ratio)]
-  }
-  
-  // === PHASE 3: SMART RENDERING (Dirty Rectangles) ===
-  
-  /**
-   * Smart render - only update dirty chunks
-   * Massive performance improvement when most of the screen is static
-   */
-  renderSmart(
-    engine: { 
-      getDirtyChunksCount: () => number
-      getDirtyListPtr: () => number
-      extractChunkPixels: (idx: number) => number
-      getChunksX: () => number
-      render: () => void
-    },
-    memory: WebAssembly.Memory
-  ): void {
-    // 1. Ask Rust: how many chunks changed?
-    const count = engine.getDirtyChunksCount()
-    
-    // Heuristic: If >70% of chunks changed, full render is faster
-    const shouldFallback = shouldFallbackToFullRender({
-      dirtyCount: count,
-      worldWidth: this.width,
-      worldHeight: this.height,
-      chunkSize: CanvasRenderer.CHUNK_SIZE,
-      thresholdRatio: 0.7,
-    })
-    
-    if (shouldFallback) {
-      // Fallback to full render
-      engine.render()
-      return
-    }
-    
-    if (count === 0) {
-      // Nothing changed, just redraw buffer to screen (for zoom/pan)
-      this.drawBufferToScreen()
-      return
-    }
-    
-    // 2. Get dirty chunk list (zero-copy view into WASM memory)
-    const listPtr = engine.getDirtyListPtr()
-    const dirtyIds = getDirtyChunkIdsView({ memory, listPtr, count })
-    
-    const chunksX = engine.getChunksX()
-    const CHUNK_SIZE = CanvasRenderer.CHUNK_SIZE
-    
-    // 3. Process each dirty chunk
-    // Ask Rust to copy chunk pixels to transfer buffer
-    // Create view into chunk pixels (4096 bytes = 32*32*4)
-    // Copy to ImageData
-    // Calculate screen position
-    // Stamp chunk to buffer
-    applyDirtyChunksToBuffer({
-      engine,
-      memory,
-      dirtyIds,
-      chunksX,
-      chunkSize: CHUNK_SIZE,
-      chunkImageData: this.chunkImageData,
-      bufferCtx: this.bufferCtx,
-    })
-    
-    // 4. Draw buffer to screen with camera transform
-    this.drawBufferToScreen()
   }
   
   /**

@@ -2,7 +2,7 @@ use crate::chunks::CHUNK_SIZE;
 use crate::elements::EL_EMPTY;
 use crate::physics::update_particle_physics;
 
-use super::WorldCore;
+use super::{PerfTimer, WorldCore};
 
 pub(super) fn process_physics(world: &mut WorldCore) {
     let (chunks_x, chunks_y) = world.chunks.dimensions();
@@ -40,6 +40,16 @@ pub(super) fn process_physics_chunk(
     let end_x = (start_x + CHUNK_SIZE).min(world.grid.width());
     let end_y = (start_y + CHUNK_SIZE).min(world.grid.height());
 
+    const SAMPLE_MASK: u32 = 63;
+    let split_on = world.perf_enabled && (world.perf_split || world.perf_detailed);
+    let frame_u32 = world.frame as u32;
+    let sample_chunk = split_on
+        && (((cx.wrapping_mul(73856093) ^ cy.wrapping_mul(19349663) ^ frame_u32.wrapping_mul(83492791)) & SAMPLE_MASK)
+            == 0);
+    let t_chunk = if sample_chunk { Some(PerfTimer::start()) } else { None };
+    let mut chunk_calls: u32 = 0;
+    let mut chunk_steps: u32 = 0;
+
     if top_to_bottom {
         // For negative gravity: process top-to-bottom
         for y in start_y..end_y {
@@ -54,12 +64,15 @@ pub(super) fn process_physics_chunk(
                     let res = update_particle_physics(
                         &world.content,
                         &mut world.grid,
-                        &mut world.chunks,
                         x,
                         y,
                         gravity_x,
                         gravity_y,
                     );
+                    if sample_chunk {
+                        chunk_calls = chunk_calls.saturating_add(1);
+                        chunk_steps = chunk_steps.saturating_add(res.steps);
+                    }
                     if world.perf_enabled {
                         world.perf_stats.physics_calls = world.perf_stats.physics_calls.saturating_add(1);
                         world.perf_stats.raycast_steps_total =
@@ -89,12 +102,15 @@ pub(super) fn process_physics_chunk(
                     let res = update_particle_physics(
                         &world.content,
                         &mut world.grid,
-                        &mut world.chunks,
                         x,
                         y,
                         gravity_x,
                         gravity_y,
                     );
+                    if sample_chunk {
+                        chunk_calls = chunk_calls.saturating_add(1);
+                        chunk_steps = chunk_steps.saturating_add(res.steps);
+                    }
                     if world.perf_enabled {
                         world.perf_stats.physics_calls = world.perf_stats.physics_calls.saturating_add(1);
                         world.perf_stats.raycast_steps_total =
@@ -110,5 +126,21 @@ pub(super) fn process_physics_chunk(
                 }
             }
         }
+    }
+
+    if let Some(t) = t_chunk {
+        let tm = t.elapsed_ms();
+        let c = chunk_calls as f64;
+        let s = chunk_steps as f64;
+
+        world.perf_stats.physics_split_s_cc += c * c;
+        world.perf_stats.physics_split_s_ss += s * s;
+        world.perf_stats.physics_split_s_cs += c * s;
+        world.perf_stats.physics_split_s_ct += c * tm;
+        world.perf_stats.physics_split_s_st += s * tm;
+        world.perf_stats.physics_split_s_c += c;
+        world.perf_stats.physics_split_s_s += s;
+        world.perf_stats.physics_split_s_t += tm;
+        world.perf_stats.physics_split_sample_n = world.perf_stats.physics_split_sample_n.saturating_add(1);
     }
 }

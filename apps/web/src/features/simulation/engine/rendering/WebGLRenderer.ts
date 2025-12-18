@@ -2,13 +2,12 @@
  * WebGLRenderer - Production Grade
  * 
  * Phase 3: WebGL Revolution + Border Rendering
- * Phase 2: GPU Batching with Merged Rectangles + PBO
+ * Phase 2: PBO double-buffering for async upload
  * 
  * Features:
  * - Zero-copy upload (WASM -> GPU via texSubImage2D)
  * - Hardware accelerated Zoom & Pan (Vertex Shader)
- * - Dirty Rectangles support (only upload changed chunks)
- * - PHASE 2: Merged rectangle batching (fewer GPU calls)
+ * - Full texture uploads (simple, always-live rendering)
  * - PHASE 2: PBO double-buffering for async upload
  * - Neon Border rendering (Line Shader)
  */
@@ -180,9 +179,9 @@ export class WebGLRenderer {
   }
 
   /**
-   * Render with Dirty Rectangles optimization
+   * Render a full frame.
    */
-  renderWithDirtyRects(
+  render(
     engine: WasmWorld,
     memory: WebAssembly.Memory,
     transform: { zoom: number; panX: number; panY: number }

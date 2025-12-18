@@ -116,7 +116,4 @@ pub(super) fn replace_particle(world: &mut WorldCore, x: u32, y: u32, element: E
     // Mark as updated
     world.grid.set_updated(x, y, true);
 
-    // CRITICAL: Mark chunk as dirty for rendering!
-    // Without this, reactions don't trigger re-render!
-    world.chunks.mark_dirty(x, y);
 }

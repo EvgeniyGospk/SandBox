@@ -24,7 +24,6 @@ pub use plant::PlantBehavior;
 pub use common::{get_random_dir, gravity_dir, perp_dirs, xorshift32};
 
 use crate::grid::Grid;
-use crate::chunks::ChunkGrid;
 use crate::domain::content::ContentRegistry;
 use crate::elements::{CategoryId, ElementId, EL_EMPTY, CAT_POWDER, CAT_LIQUID, CAT_GAS, CAT_ENERGY, CAT_UTILITY, CAT_BIO};
 
@@ -32,7 +31,6 @@ use crate::elements::{CategoryId, ElementId, EL_EMPTY, CAT_POWDER, CAT_LIQUID, C
 pub struct UpdateContext<'a> {
     pub content: &'a ContentRegistry,
     pub grid: &'a mut Grid,
-    pub chunks: &'a mut ChunkGrid,
     pub world_particle_count: &'a mut u32,
     pub x: u32,
     pub y: u32,
@@ -45,29 +43,22 @@ pub struct UpdateContext<'a> {
 
 impl<'a> UpdateContext<'a> {
     #[inline]
-    pub fn mark_dirty(&mut self, x: u32, y: u32) {
-        self.chunks.mark_dirty(x, y);
-    }
-
-    #[inline]
-    pub fn set_particle_dirty(&mut self, x: u32, y: u32, element: ElementId, color: u32, life: u16, temp: f32) {
+    pub fn set_particle(&mut self, x: u32, y: u32, element: ElementId, color: u32, life: u16, temp: f32) {
         let prev = self.grid.get_type(x as i32, y as i32);
         self.grid.set_particle(x, y, element, color, life, temp);
         if prev == EL_EMPTY {
             *self.world_particle_count = self.world_particle_count.saturating_add(1);
         }
-        self.chunks.mark_dirty(x, y);
     }
 
     #[inline]
-    pub fn clear_cell_dirty(&mut self, x: u32, y: u32) {
+    pub fn clear_cell(&mut self, x: u32, y: u32) {
         let prev = self.grid.get_type(x as i32, y as i32);
         if prev == EL_EMPTY {
             return;
         }
         self.grid.clear_cell(x, y);
         *self.world_particle_count = self.world_particle_count.saturating_sub(1);
-        self.chunks.mark_dirty(x, y);
     }
 }
 

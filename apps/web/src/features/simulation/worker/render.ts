@@ -4,7 +4,6 @@ import { BG_COLOR_32, EL_EMPTY } from './state'
 import { renderNormal } from './rendering/normal'
 import { renderThermal } from './rendering/thermal'
 import { renderCanvas2DToScreen } from './rendering/canvas2d'
-import { maybeLogDirtyDebug } from './rendering/debugDirty'
 
 export function renderFrame(ctx: WorkerContext): void {
   const state = ctx.state
@@ -28,9 +27,7 @@ export function renderFrame(ctx: WorkerContext): void {
   }
 
   if (state.render.useWebGL && state.render.renderer && state.wasm.memory) {
-    maybeLogDirtyDebug(state)
-
-    state.render.renderer.renderWithDirtyRects(state.wasm.engine, state.wasm.memory, transform)
+    state.render.renderer.render(state.wasm.engine, state.wasm.memory, transform)
     return
   }
 

@@ -1,6 +1,6 @@
 //! World - High-performance particle simulation
 //! 
-//! Phase 4: Chunk-based spatial optimization
+//! Phase 4: Chunk-based spatial partitioning
 //! 
 //! Refactored for SOLID principles:
 //! - Single Responsibility: World only orchestrates, delegates to behaviors/reactions/temperature
@@ -9,7 +9,7 @@
 //! All particle physics are in behaviors/ module
 //! Chemical reactions are in reactions.rs
 //! Temperature system is in temperature.rs
-//! Chunk optimization in chunks.rs
+//! Chunk partitioning in chunks.rs
 
 use std::sync::Arc;
 
@@ -50,7 +50,7 @@ mod facade;
 pub use facade::World;
 pub use perf_stats::PerfStats;
 
-use perf_timer::PerfTimer;
+pub(crate) use perf_timer::PerfTimer;
 
 /// Random number generator (xorshift32)
 #[inline]
@@ -91,6 +91,7 @@ pub struct WorldCore {
     // Perf metrics
     perf_enabled: bool,
     perf_detailed: bool,
+    perf_split: bool,
     perf_stats: PerfStats,
     perf_stats_last_speed_max: f32,
 }
@@ -127,6 +128,10 @@ impl WorldCore {
 
     pub fn enable_perf_detailed_metrics(&mut self, enabled: bool) {
         settings::enable_perf_detailed_metrics(self, enabled);
+    }
+
+    pub fn enable_perf_split_metrics(&mut self, enabled: bool) {
+        settings::enable_perf_split_metrics(self, enabled);
     }
 
     /// Get last step perf snapshot (zeros when perf disabled)
@@ -197,13 +202,11 @@ impl WorldCore {
     }
 
     /// Step the simulation forward
-    /// Phase 4: Only process active chunks!
-    /// Phase 2: Newtonian physics with velocity
     pub fn step(&mut self) {
         step::step(self);
     }
     
-    /// Phase 2: Process physics for all particles in active chunks
+    /// Process physics for all particles
     /// Applies gravity and velocity-based movement
     /// 
     /// CRITICAL: Processing order depends on gravity direction!

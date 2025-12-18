@@ -1,4 +1,3 @@
-use crate::chunks::ChunkGrid;
 use crate::domain::content::ContentRegistry;
 use crate::elements::{EL_EMPTY, GRAVITY, AIR_FRICTION, MAX_VELOCITY, CAT_GAS, CAT_SOLID, CAT_ENERGY, CAT_BIO};
 use crate::grid::Grid;
@@ -18,7 +17,6 @@ use super::types::PhysicsResult;
 pub fn update_particle_physics(
     content: &ContentRegistry,
     grid: &mut Grid,
-    chunks: &mut ChunkGrid,
     x: u32,
     y: u32,
     gravity_x: f32,
@@ -107,10 +105,6 @@ pub fn update_particle_physics(
     // 7. Move particle if position changed
     if result.new_x != x || result.new_y != y {
         grid.swap(x, y, result.new_x, result.new_y);
-
-        // Mark chunks as dirty
-        chunks.mark_dirty(x, y);
-        chunks.mark_dirty(result.new_x, result.new_y);
 
         return result;
     }

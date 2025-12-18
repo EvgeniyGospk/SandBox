@@ -1,9 +1,8 @@
-use crate::chunks::ChunkGrid;
 use crate::domain::content::ContentRegistry;
 use crate::grid::Grid;
 use crate::rigid_body::RigidBody;
 
-pub(super) fn clear_body(body: &mut RigidBody, grid: &mut Grid, chunks: &mut ChunkGrid) {
+pub(super) fn clear_body(body: &mut RigidBody, grid: &mut Grid) {
     for &(x, y) in body.prev_world_coords.iter() {
         if !grid.in_bounds(x, y) {
             continue;
@@ -11,7 +10,6 @@ pub(super) fn clear_body(body: &mut RigidBody, grid: &mut Grid, chunks: &mut Chu
         let ux = x as u32;
         let uy = y as u32;
         grid.clear_cell(ux, uy);
-        chunks.mark_dirty(ux, uy);
     }
     body.prev_world_coords.clear();
 }
@@ -20,7 +18,6 @@ pub(super) fn rasterize_body(
     content: &ContentRegistry,
     body: &mut RigidBody,
     grid: &mut Grid,
-    chunks: &mut ChunkGrid,
 ) {
     body.prev_world_coords.clear();
     body.prev_world_coords.reserve(body.pixels.len());
@@ -60,7 +57,6 @@ pub(super) fn rasterize_body(
             .unwrap_or(props.color);
 
         grid.set_particle(x, y, element, color, props.lifetime, props.default_temp);
-        chunks.mark_dirty(x, y);
 
         body.prev_world_coords.push((wx, wy));
     }

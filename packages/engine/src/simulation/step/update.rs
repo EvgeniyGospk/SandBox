@@ -17,6 +17,13 @@ pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> 
 
     unsafe {
         let element = world.grid.get_type_unchecked(x, y);
+        if world.perf_enabled {
+            if element == EL_EMPTY {
+                world.perf_stats.chunk_empty_cells = world.perf_stats.chunk_empty_cells.saturating_add(1);
+            } else {
+                world.perf_stats.chunk_non_empty_cells = world.perf_stats.chunk_non_empty_cells.saturating_add(1);
+            }
+        }
         if element == EL_EMPTY {
             return false;
         }
@@ -39,7 +46,6 @@ pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> 
             world.grid.set_life_unchecked(idx, life - 1);
             if life - 1 == 0 {
                 world.grid.clear_cell_unchecked(x, y);
-                world.chunks.mark_dirty(x, y);
                 if world.particle_count > 0 {
                     world.particle_count -= 1;
                 }
@@ -64,7 +70,6 @@ pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> 
         let mut ctx = UpdateContext {
             content: &world.content,
             grid: &mut world.grid,
-            chunks: &mut world.chunks,
             world_particle_count: &mut world.particle_count,
             x,
             y,
@@ -142,15 +147,10 @@ pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> 
         let new_type = world.grid.get_type_unchecked(x, y);
         let moved = new_type != old_type || new_type == EL_EMPTY;
 
-        if moved {
-            world.chunks.wake_neighbors(x, y);
-        }
-
         let current_type = world.grid.get_type_unchecked(x, y);
         if current_type != EL_EMPTY {
             world.process_reactions(x, y, current_type);
         }
-
         moved
     }
 }

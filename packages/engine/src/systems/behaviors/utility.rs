@@ -48,7 +48,7 @@ impl UtilityBehavior {
             let nk = ctx.content.behavior_kind(neighbor_type);
 
             if nk != BehaviorKind::UtilityVoid && nk != BehaviorKind::UtilityClone {
-                ctx.clear_cell_dirty(nx as u32, ny as u32);
+                ctx.clear_cell(nx as u32, ny as u32);
             }
         }
     }
@@ -110,7 +110,7 @@ impl UtilityBehavior {
                 .color_with_variation(source_type, seed)
                 .unwrap_or(props.color);
             
-            ctx.set_particle_dirty(
+            ctx.set_particle(
                 nx as u32, ny as u32,
                 source_type,
                 color,

@@ -25,7 +25,7 @@ pub(super) fn process_plant(ctx: &mut UpdateContext) {
 
     // Too hot - burns
     if temp > 150.0 {
-        ctx.clear_cell_dirty(x, y);
+        ctx.clear_cell(x, y);
         return;
     }
 
@@ -47,7 +47,7 @@ pub(super) fn process_plant(ctx: &mut UpdateContext) {
     // Find water within radius 3
     if let Some((wx, wy)) = find_water(ctx, xi, yi, 3) {
         // Consume water
-        ctx.clear_cell_dirty(wx as u32, wy as u32);
+        ctx.clear_cell(wx as u32, wy as u32);
 
         // Choose grow direction using weighted random (mirrors TypeScript weights)
         // PHASE 1 OPT: fast-range reduction instead of % 1000

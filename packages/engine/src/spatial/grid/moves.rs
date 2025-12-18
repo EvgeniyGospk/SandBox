@@ -2,7 +2,6 @@ use super::*;
 
 impl Grid {
     // === Swap two cells (all data) ===
-    // Phase 4: Records cross-chunk moves for chunk tracking
     pub fn swap(&mut self, x1: u32, y1: u32, x2: u32, y2: u32) {
         let idx1 = self.index(x1, y1);
         let idx2 = self.index(x2, y2);
@@ -24,10 +23,6 @@ impl Grid {
 
     /// Fast swap using raw pointers - UNSAFE: caller must ensure both coords are valid
     /// This is the hottest path in the simulation!
-    /// 
-    /// PHASE 4 OPTIMIZATION: Only record moves that cross chunk boundaries!
-    /// Before: Every swap was recorded → millions of writes per second
-    /// After: Only cross-chunk swaps → 10-100x fewer writes
     #[inline(always)]
     pub unsafe fn swap_unchecked(&mut self, x1: u32, y1: u32, x2: u32, y2: u32) {
         let idx1 = self.index_unchecked(x1, y1);

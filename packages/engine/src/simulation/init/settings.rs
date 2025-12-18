@@ -9,6 +9,10 @@ pub(super) fn enable_perf_detailed_metrics(world: &mut WorldCore, enabled: bool)
     world.perf_detailed = enabled;
 }
 
+pub(super) fn enable_perf_split_metrics(world: &mut WorldCore, enabled: bool) {
+    world.perf_split = enabled;
+}
+
 pub(super) fn get_perf_stats(world: &WorldCore) -> PerfStats {
     world.perf_stats.clone()
 }

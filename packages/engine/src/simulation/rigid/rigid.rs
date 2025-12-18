@@ -6,7 +6,7 @@ pub(super) fn spawn_rigid_body(world: &mut WorldCore, x: f32, y: f32, w: i32, h:
     let body = RigidBody::new_rect(x, y, w, h, element_id, 0);
     match world
         .rigid_bodies
-        .add_body(&world.content, body, &mut world.grid, &mut world.chunks)
+        .add_body(&world.content, body, &mut world.grid)
     {
         Some(res) => {
             world.particle_count = world.particle_count.saturating_add(res.pixels);
@@ -20,7 +20,7 @@ pub(super) fn spawn_rigid_circle(world: &mut WorldCore, x: f32, y: f32, radius: 
     let body = RigidBody::new_circle(x, y, radius, element_id, 0);
     match world
         .rigid_bodies
-        .add_body(&world.content, body, &mut world.grid, &mut world.chunks)
+        .add_body(&world.content, body, &mut world.grid)
     {
         Some(res) => {
             world.particle_count = world.particle_count.saturating_add(res.pixels);
@@ -31,7 +31,7 @@ pub(super) fn spawn_rigid_circle(world: &mut WorldCore, x: f32, y: f32, radius: 
 }
 
 pub(super) fn remove_rigid_body(world: &mut WorldCore, id: u32) {
-    let removed = world.rigid_bodies.remove_body(id, &mut world.grid, &mut world.chunks);
+    let removed = world.rigid_bodies.remove_body(id, &mut world.grid);
     world.particle_count = world.particle_count.saturating_sub(removed);
 }
 

@@ -28,6 +28,7 @@ const SEED = Number.parseInt(process.env.SEED ?? '1337', 10) >>> 0
 
 const ENGINE_PERF = (process.env.ENGINE_PERF ?? '0').toLowerCase().trim() === '1'
 const ENGINE_PERF_DETAILED = (process.env.ENGINE_PERF_DETAILED ?? '0').toLowerCase().trim() === '1'
+const ENGINE_PERF_SPLIT = (process.env.ENGINE_PERF_SPLIT ?? '0').toLowerCase().trim() === '1'
 const OUT = (process.env.OUT ?? '').trim()
 const SCENARIO_FILTER = (process.env.SCENARIO_FILTER ?? '').trim()
 const MODE = (process.env.MODE ?? 'ablation').toLowerCase().trim()
@@ -243,6 +244,7 @@ function applyConfig(world, config) {
   // Most toggles are intended for perf experiments; older WASM builds may not expose them.
   world.enable_perf_metrics(ENGINE_PERF)
   safeCall(world, 'enable_perf_detailed_metrics', ENGINE_PERF_DETAILED)
+  safeCall(world, 'enable_perf_split_metrics', ENGINE_PERF_SPLIT)
 }
 
 function fillRect(world, x0, y0, w, h, element) {
@@ -331,8 +333,14 @@ async function runScenarioOnce(wasm, EL, scenario, config, runIndex, contentBund
     ? {
         rigid_ms: [],
         physics_ms: [],
+        physics_raycast_ms: [],
+        physics_other_ms: [],
         chunks_ms: [],
+        chunks_empty_ms: [],
+        chunks_non_empty_ms: [],
         temperature_ms: [],
+        temperature_air_ms: [],
+        temperature_particle_ms: [],
         powder_ms: [],
         liquid_ms: [],
         gas_ms: [],
@@ -345,6 +353,8 @@ async function runScenarioOnce(wasm, EL, scenario, config, runIndex, contentBund
   const perfCounters = ENGINE_PERF
     ? {
         particles_processed: [],
+        chunk_empty_cells: [],
+        chunk_non_empty_cells: [],
         particles_moved: [],
         reactions_checked: [],
         reactions_applied: [],
@@ -365,7 +375,6 @@ async function runScenarioOnce(wasm, EL, scenario, config, runIndex, contentBund
         grid_size: [],
         memory_bytes: [],
         active_chunks: [],
-        dirty_chunks: [],
         particle_count: [],
         non_empty_cells: [],
       }
@@ -391,8 +400,14 @@ async function runScenarioOnce(wasm, EL, scenario, config, runIndex, contentBund
       if (perfBreakdown) {
         if (typeof stats?.rigid_ms === 'number') perfBreakdown.rigid_ms.push(stats.rigid_ms)
         if (typeof stats?.physics_ms === 'number') perfBreakdown.physics_ms.push(stats.physics_ms)
+        if (typeof stats?.physics_raycast_ms === 'number') perfBreakdown.physics_raycast_ms.push(stats.physics_raycast_ms)
+        if (typeof stats?.physics_other_ms === 'number') perfBreakdown.physics_other_ms.push(stats.physics_other_ms)
         if (typeof stats?.chunks_ms === 'number') perfBreakdown.chunks_ms.push(stats.chunks_ms)
+        if (typeof stats?.chunks_empty_ms === 'number') perfBreakdown.chunks_empty_ms.push(stats.chunks_empty_ms)
+        if (typeof stats?.chunks_non_empty_ms === 'number') perfBreakdown.chunks_non_empty_ms.push(stats.chunks_non_empty_ms)
         if (typeof stats?.temperature_ms === 'number') perfBreakdown.temperature_ms.push(stats.temperature_ms)
+        if (typeof stats?.temperature_air_ms === 'number') perfBreakdown.temperature_air_ms.push(stats.temperature_air_ms)
+        if (typeof stats?.temperature_particle_ms === 'number') perfBreakdown.temperature_particle_ms.push(stats.temperature_particle_ms)
         if (typeof stats?.powder_ms === 'number') perfBreakdown.powder_ms.push(stats.powder_ms)
         if (typeof stats?.liquid_ms === 'number') perfBreakdown.liquid_ms.push(stats.liquid_ms)
         if (typeof stats?.gas_ms === 'number') perfBreakdown.gas_ms.push(stats.gas_ms)
@@ -432,8 +447,14 @@ async function runScenario(wasm, EL, scenario, config, contentBundleJson) {
     ? {
         rigid_ms: [],
         physics_ms: [],
+        physics_raycast_ms: [],
+        physics_other_ms: [],
         chunks_ms: [],
+        chunks_empty_ms: [],
+        chunks_non_empty_ms: [],
         temperature_ms: [],
+        temperature_air_ms: [],
+        temperature_particle_ms: [],
         powder_ms: [],
         liquid_ms: [],
         gas_ms: [],
@@ -446,6 +467,8 @@ async function runScenario(wasm, EL, scenario, config, contentBundleJson) {
   const countersAll = ENGINE_PERF
     ? {
         particles_processed: [],
+        chunk_empty_cells: [],
+        chunk_non_empty_cells: [],
         particles_moved: [],
         reactions_checked: [],
         reactions_applied: [],
@@ -466,7 +489,6 @@ async function runScenario(wasm, EL, scenario, config, contentBundleJson) {
         grid_size: [],
         memory_bytes: [],
         active_chunks: [],
-        dirty_chunks: [],
         particle_count: [],
         non_empty_cells: [],
       }
@@ -544,6 +566,7 @@ async function main() {
       seed: SEED,
       enginePerf: ENGINE_PERF,
       enginePerfDetailed: ENGINE_PERF_DETAILED,
+      enginePerfSplit: ENGINE_PERF_SPLIT,
       warmupStepsOverride: OVERRIDE_WARMUP_STEPS,
       measureStepsOverride: OVERRIDE_MEASURE_STEPS,
       baselineConfig: BASELINE_CONFIG,
@@ -722,7 +745,7 @@ async function main() {
       },
       {
         id: 'empty_world',
-        label: 'Empty world (sleep dominates, sanity check)',
+        label: 'Empty world (sanity check)',
         spawns: [(_world) => ({ placed: 0, elapsedMs: 0 })],
         warmupSteps: 80,
         measureSteps: 240,

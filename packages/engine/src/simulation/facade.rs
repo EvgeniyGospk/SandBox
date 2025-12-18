@@ -76,6 +76,10 @@ impl World {
         self.core.enable_perf_detailed_metrics(enabled);
     }
 
+    pub fn enable_perf_split_metrics(&mut self, enabled: bool) {
+        self.core.enable_perf_split_metrics(enabled);
+    }
+
     /// Get last step perf snapshot (zeros when perf disabled)
     pub fn get_perf_stats(&self) -> PerfStats {
         self.core.get_perf_stats()
@@ -155,8 +159,6 @@ impl World {
     }
 
     /// Step the simulation forward
-    /// Phase 4: Only process active chunks!
-    /// Phase 2: Newtonian physics with velocity
     pub fn step(&mut self) {
         self.core.step();
     }

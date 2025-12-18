@@ -1,4 +1,3 @@
-use crate::chunks::ChunkGrid;
 use crate::domain::content::ContentRegistry;
 use crate::elements::{GRAVITY, CAT_SOLID};
 use crate::grid::Grid;
@@ -34,7 +33,6 @@ impl RigidBodySystem {
         content: &ContentRegistry,
         mut body: RigidBody,
         grid: &mut Grid,
-        chunks: &mut ChunkGrid,
     ) -> Option<SpawnResult> {
         // Enforce SOLID pixels for now to prevent the particle solver from trying to move the body.
         if body.pixels.is_empty() {
@@ -58,27 +56,27 @@ impl RigidBodySystem {
             return None;
         }
 
-        rasterize_body(content, &mut body, grid, chunks);
+        rasterize_body(content, &mut body, grid);
         let pixels = body.prev_world_coords.len() as u32;
         self.bodies.push(body);
         Some(SpawnResult { id, pixels })
     }
 
     /// Remove a rigid body by ID.
-    pub fn remove_body(&mut self, id: u32, grid: &mut Grid, chunks: &mut ChunkGrid) -> u32 {
+    pub fn remove_body(&mut self, id: u32, grid: &mut Grid) -> u32 {
         if let Some(idx) = self.bodies.iter().position(|b| b.id == id) {
             let mut body = self.bodies.swap_remove(idx);
             let removed = body.prev_world_coords.len() as u32;
-            clear_body(&mut body, grid, chunks);
+            clear_body(&mut body, grid);
             return removed;
         }
         0
     }
 
     /// Remove all bodies (used by World::clear()).
-    pub fn clear(&mut self, grid: &mut Grid, chunks: &mut ChunkGrid) {
+    pub fn clear(&mut self, grid: &mut Grid) {
         for body in self.bodies.iter_mut() {
-            clear_body(body, grid, chunks);
+            clear_body(body, grid);
         }
         self.bodies.clear();
         self.next_id = 1;
@@ -93,7 +91,6 @@ impl RigidBodySystem {
         &mut self,
         content: &ContentRegistry,
         grid: &mut Grid,
-        chunks: &mut ChunkGrid,
         gravity_x: f32,
         gravity_y: f32,
     ) {
@@ -103,7 +100,7 @@ impl RigidBodySystem {
             }
 
             // Remove current rasterization so collision tests don't self-intersect.
-            clear_body(body, grid, chunks);
+            clear_body(body, grid);
 
             // Integrate velocity (very simple).
             body.velocity.x += gravity_x * GRAVITY;
@@ -135,7 +132,7 @@ impl RigidBodySystem {
             body.pos = next;
 
             // Rasterize back into the particle grid.
-            rasterize_body(content, body, grid, chunks);
+            rasterize_body(content, body, grid);
         }
     }
 }

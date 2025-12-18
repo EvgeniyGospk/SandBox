@@ -14,7 +14,7 @@ pub(super) fn transform_to_plant(ctx: &mut UpdateContext, x: i32, y: i32) {
         .color_with_variation(EL_PLANT, seed)
         .unwrap_or(props.color);
 
-    ctx.set_particle_dirty(
+    ctx.set_particle(
         x as u32, y as u32,
         EL_PLANT,
         color,

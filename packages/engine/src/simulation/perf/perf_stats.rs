@@ -6,8 +6,14 @@ pub struct PerfStats {
     pub(super) step_ms: f64,
     pub(super) rigid_ms: f64,
     pub(super) physics_ms: f64,
+    pub(super) physics_raycast_ms: f64,
+    pub(super) physics_other_ms: f64,
     pub(super) chunks_ms: f64,
+    pub(super) chunks_empty_ms: f64,
+    pub(super) chunks_non_empty_ms: f64,
     pub(super) temperature_ms: f64,
+    pub(super) temperature_air_ms: f64,
+    pub(super) temperature_particle_ms: f64,
     pub(super) powder_ms: f64,
     pub(super) liquid_ms: f64,
     pub(super) gas_ms: f64,
@@ -15,6 +21,8 @@ pub struct PerfStats {
     pub(super) utility_ms: f64,
     pub(super) bio_ms: f64,
     pub(super) particles_processed: u32,
+    pub(super) chunk_empty_cells: u32,
+    pub(super) chunk_non_empty_cells: u32,
     pub(super) particles_moved: u32,
     pub(super) reactions_checked: u32,
     pub(super) reactions_applied: u32,
@@ -37,8 +45,29 @@ pub struct PerfStats {
     pub(super) memory_bytes: u32,
     pub(super) grid_size: u32,
     pub(super) active_chunks: u32,
-    pub(super) dirty_chunks: u32,
     pub(super) particle_count: u32,
+
+    pub(super) chunks_empty_sample_ms: f64,
+    pub(super) chunks_empty_sample_n: u32,
+    pub(super) chunks_non_empty_sample_ms: f64,
+    pub(super) chunks_non_empty_sample_n: u32,
+
+    pub(super) physics_split_s_cc: f64,
+    pub(super) physics_split_s_ss: f64,
+    pub(super) physics_split_s_cs: f64,
+    pub(super) physics_split_s_ct: f64,
+    pub(super) physics_split_s_st: f64,
+    pub(super) physics_split_s_c: f64,
+    pub(super) physics_split_s_s: f64,
+    pub(super) physics_split_s_t: f64,
+    pub(super) physics_split_sample_n: u32,
+
+    pub(super) chunks_split_s_ee: f64,
+    pub(super) chunks_split_s_nn: f64,
+    pub(super) chunks_split_s_en: f64,
+    pub(super) chunks_split_s_et: f64,
+    pub(super) chunks_split_s_nt: f64,
+    pub(super) chunks_split_sample_n: u32,
 }
 
 impl PerfStats {
@@ -53,8 +82,14 @@ impl Default for PerfStats {
             step_ms: 0.0,
             rigid_ms: 0.0,
             physics_ms: 0.0,
+            physics_raycast_ms: 0.0,
+            physics_other_ms: 0.0,
             chunks_ms: 0.0,
+            chunks_empty_ms: 0.0,
+            chunks_non_empty_ms: 0.0,
             temperature_ms: 0.0,
+            temperature_air_ms: 0.0,
+            temperature_particle_ms: 0.0,
             powder_ms: 0.0,
             liquid_ms: 0.0,
             gas_ms: 0.0,
@@ -62,6 +97,8 @@ impl Default for PerfStats {
             utility_ms: 0.0,
             bio_ms: 0.0,
             particles_processed: 0,
+            chunk_empty_cells: 0,
+            chunk_non_empty_cells: 0,
             particles_moved: 0,
             reactions_checked: 0,
             reactions_applied: 0,
@@ -84,8 +121,29 @@ impl Default for PerfStats {
             memory_bytes: 0,
             grid_size: 0,
             active_chunks: 0,
-            dirty_chunks: 0,
             particle_count: 0,
+
+            chunks_empty_sample_ms: 0.0,
+            chunks_empty_sample_n: 0,
+            chunks_non_empty_sample_ms: 0.0,
+            chunks_non_empty_sample_n: 0,
+
+            physics_split_s_cc: 0.0,
+            physics_split_s_ss: 0.0,
+            physics_split_s_cs: 0.0,
+            physics_split_s_ct: 0.0,
+            physics_split_s_st: 0.0,
+            physics_split_s_c: 0.0,
+            physics_split_s_s: 0.0,
+            physics_split_s_t: 0.0,
+            physics_split_sample_n: 0,
+
+            chunks_split_s_ee: 0.0,
+            chunks_split_s_nn: 0.0,
+            chunks_split_s_en: 0.0,
+            chunks_split_s_et: 0.0,
+            chunks_split_s_nt: 0.0,
+            chunks_split_sample_n: 0,
         }
     }
 }
@@ -99,9 +157,21 @@ impl PerfStats {
     #[wasm_bindgen(getter)]
     pub fn physics_ms(&self) -> f64 { self.physics_ms }
     #[wasm_bindgen(getter)]
+    pub fn physics_raycast_ms(&self) -> f64 { self.physics_raycast_ms }
+    #[wasm_bindgen(getter)]
+    pub fn physics_other_ms(&self) -> f64 { self.physics_other_ms }
+    #[wasm_bindgen(getter)]
     pub fn chunks_ms(&self) -> f64 { self.chunks_ms }
     #[wasm_bindgen(getter)]
+    pub fn chunks_empty_ms(&self) -> f64 { self.chunks_empty_ms }
+    #[wasm_bindgen(getter)]
+    pub fn chunks_non_empty_ms(&self) -> f64 { self.chunks_non_empty_ms }
+    #[wasm_bindgen(getter)]
     pub fn temperature_ms(&self) -> f64 { self.temperature_ms }
+    #[wasm_bindgen(getter)]
+    pub fn temperature_air_ms(&self) -> f64 { self.temperature_air_ms }
+    #[wasm_bindgen(getter)]
+    pub fn temperature_particle_ms(&self) -> f64 { self.temperature_particle_ms }
     #[wasm_bindgen(getter)]
     pub fn powder_ms(&self) -> f64 { self.powder_ms }
     #[wasm_bindgen(getter)]
@@ -116,6 +186,10 @@ impl PerfStats {
     pub fn bio_ms(&self) -> f64 { self.bio_ms }
     #[wasm_bindgen(getter)]
     pub fn particles_processed(&self) -> u32 { self.particles_processed }
+    #[wasm_bindgen(getter)]
+    pub fn chunk_empty_cells(&self) -> u32 { self.chunk_empty_cells }
+    #[wasm_bindgen(getter)]
+    pub fn chunk_non_empty_cells(&self) -> u32 { self.chunk_non_empty_cells }
     #[wasm_bindgen(getter)]
     pub fn particles_moved(&self) -> u32 { self.particles_moved }
     #[wasm_bindgen(getter)]
@@ -160,8 +234,6 @@ impl PerfStats {
     pub fn grid_size(&self) -> u32 { self.grid_size }
     #[wasm_bindgen(getter)]
     pub fn active_chunks(&self) -> u32 { self.active_chunks }
-    #[wasm_bindgen(getter)]
-    pub fn dirty_chunks(&self) -> u32 { self.dirty_chunks }
     #[wasm_bindgen(getter)]
     pub fn particle_count(&self) -> u32 { self.particle_count }
 }
