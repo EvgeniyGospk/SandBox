@@ -12,6 +12,7 @@
     "content:build": "node scripts/compile-content.mjs",
     "codegen": "node scripts/generate-elements.js",
     "perf:sand": "node scripts/perf/sand-benchmark.mjs",
+    "perf:engine": "node scripts/perf/engine-optimizations.mjs",
     "build:wasm": "npm run codegen && cd packages/engine && ./build-standard.sh",
     "build:wasm:parallel": "npm run codegen && cd packages/engine && ./build-parallel.sh",
     "lint": "turbo run lint",

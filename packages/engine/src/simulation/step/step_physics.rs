@@ -60,7 +60,7 @@ pub(super) fn process_physics_chunk(
         // For negative gravity: process top-to-bottom
         for y in start_y..end_y {
             // PERF: Use row_has_data instead of scanning row (O(1) vs O(32))
-            if !world.grid.row_has_data[y as usize] {
+            if world.sparse_row_skip_enabled && !world.grid.row_has_data[y as usize] {
                 continue;
             }
             for x in start_x..end_x {
@@ -99,7 +99,7 @@ pub(super) fn process_physics_chunk(
         // For positive gravity: process bottom-to-top
         for y in (start_y..end_y).rev() {
             // PERF: Use row_has_data instead of scanning row (O(1) vs O(32))
-            if !world.grid.row_has_data[y as usize] {
+            if world.sparse_row_skip_enabled && !world.grid.row_has_data[y as usize] {
                 continue;
             }
             for x in start_x..end_x {

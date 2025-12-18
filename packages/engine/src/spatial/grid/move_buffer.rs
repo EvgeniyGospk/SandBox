@@ -1,6 +1,8 @@
 /// Recorded particle movement (from_x, from_y, to_x, to_y)
 pub type ParticleMove = (u32, u32, u32, u32);
 
+const MAX_MOVE_BUFFER_CAPACITY: usize = 1_000_000;
+
 // === PHASE 4: ZERO-ALLOCATION MOVE BUFFER ===
 // Fixed-size buffer that never reallocates. GC killer!
 
@@ -24,8 +26,14 @@ impl MoveBuffer {
 
     #[inline(always)]
     fn try_grow(&mut self) -> bool {
+        if self.capacity >= MAX_MOVE_BUFFER_CAPACITY {
+            return false;
+        }
         let old_capacity = self.capacity;
-        let new_capacity = old_capacity.saturating_mul(2).max(old_capacity.saturating_add(1));
+        let new_capacity = old_capacity
+            .saturating_mul(2)
+            .max(old_capacity.saturating_add(1))
+            .min(MAX_MOVE_BUFFER_CAPACITY);
         if new_capacity == old_capacity {
             return false;
         }

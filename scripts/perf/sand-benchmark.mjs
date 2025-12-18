@@ -18,16 +18,61 @@ function resolveSleepingMode() {
   return true;
 }
 
+function resolveGatingMode() {
+  const raw = (process.env.CHUNK_GATING ?? '1').toLowerCase().trim();
+  if (raw === '0' || raw === 'false' || raw === 'off') return false;
+  return true;
+}
+
+function resolveSparseRowSkipMode() {
+  const raw = (process.env.SPARSE_ROW_SKIP ?? '1').toLowerCase().trim();
+  if (raw === '0' || raw === 'false' || raw === 'off') return false;
+  return true;
+}
+
+function resolveTemperatureEveryFrameMode() {
+  const raw = (process.env.TEMPERATURE_EVERY_FRAME ?? '0').toLowerCase().trim();
+  if (raw === '1' || raw === 'true' || raw === 'on') return true;
+  return false;
+}
+
+function resolveCrossChunkMoveTrackingMode() {
+  const raw = (process.env.CROSS_CHUNK_MOVE_TRACKING ?? '1').toLowerCase().trim();
+  if (raw === '0' || raw === 'false' || raw === 'off') return false;
+  return true;
+}
+
+function resolveRenderExtractMode() {
+  const raw = (process.env.RENDER_EXTRACT ?? 'none').toLowerCase().trim();
+  if (raw === 'dirty_chunks' || raw === 'dirty') return 'dirty_chunks';
+  if (raw === 'merged_rects' || raw === 'merged') return 'merged_rects';
+  return 'none';
+}
+
 const COMPARE_SLEEPING = (process.env.COMPARE_SLEEPING ?? '0').toLowerCase().trim() === '1';
 const SLEEPING_ENABLED = resolveSleepingMode();
+const COMPARE_GATING = (process.env.COMPARE_GATING ?? '0').toLowerCase().trim() === '1';
+const GATING_ENABLED = resolveGatingMode();
+const COMPARE_SPARSE_ROW_SKIP = (process.env.COMPARE_SPARSE_ROW_SKIP ?? '0').toLowerCase().trim() === '1';
+const SPARSE_ROW_SKIP_ENABLED = resolveSparseRowSkipMode();
+const COMPARE_TEMPERATURE_EVERY_FRAME = (process.env.COMPARE_TEMPERATURE_EVERY_FRAME ?? '0').toLowerCase().trim() === '1';
+const TEMPERATURE_EVERY_FRAME_ENABLED = resolveTemperatureEveryFrameMode();
+const COMPARE_CROSS_CHUNK_MOVE_TRACKING =
+  (process.env.COMPARE_CROSS_CHUNK_MOVE_TRACKING ?? '0').toLowerCase().trim() === '1';
+const CROSS_CHUNK_MOVE_TRACKING_ENABLED = resolveCrossChunkMoveTrackingMode();
+const COMPARE_RENDER_EXTRACT = (process.env.COMPARE_RENDER_EXTRACT ?? '0').toLowerCase().trim() === '1';
+const RENDER_EXTRACT_MODE = resolveRenderExtractMode();
 const SCENARIO_FILTER = (process.env.SCENARIO_FILTER ?? '').trim();
 const OVERRIDE_WARMUP_STEPS = process.env.WARMUP_STEPS ? Number.parseInt(process.env.WARMUP_STEPS, 10) : null;
 const OVERRIDE_MEASURE_STEPS = process.env.MEASURE_STEPS ? Number.parseInt(process.env.MEASURE_STEPS, 10) : null;
 const ENGINE_PERF = (process.env.ENGINE_PERF ?? '0').toLowerCase().trim() === '1';
 
 let EL;
+let WASM_MEMORY;
 const METRIC_KEYS = [
   'outer_step_ms',
+  'outer_frame_ms',
+  'render_extract_ms',
   'step_ms',
   'hydrate_ms',
   'rigid_ms',
@@ -75,8 +120,34 @@ const METRIC_KEYS = [
 async function loadWasm() {
   const wasmModule = await import(wasmPath);
   const wasmBytes = await readFile(wasmBytesPath);
-  await wasmModule.default({ module_or_path: wasmBytes });
+  const wasmExports = await wasmModule.default({ module_or_path: wasmBytes });
+  WASM_MEMORY = wasmExports?.memory;
   return wasmModule;
+}
+
+function runRenderExtract(world, renderExtractMode) {
+  if (!renderExtractMode || renderExtractMode === 'none') return 0;
+  if (!WASM_MEMORY) return 0;
+
+  const t0 = performance.now();
+
+  if (renderExtractMode === 'dirty_chunks') {
+    const dirtyCount = world.collect_dirty_chunks();
+    if (dirtyCount > 0) {
+      const ptr = world.get_dirty_list_ptr();
+      const dirtyList = new Uint32Array(WASM_MEMORY.buffer, ptr, dirtyCount);
+      for (let i = 0; i < dirtyCount; i++) {
+        world.extract_chunk_pixels(dirtyList[i]);
+      }
+    }
+  } else if (renderExtractMode === 'merged_rects') {
+    const rectCount = world.collect_merged_rects();
+    for (let i = 0; i < rectCount; i++) {
+      world.extract_rect_pixels(i);
+    }
+  }
+
+  return performance.now() - t0;
 }
 
 function getElementIds(wasm) {
@@ -86,6 +157,7 @@ function getElementIds(wasm) {
     WATER: wasm.el_water(),
     LAVA: wasm.el_lava(),
     ICE: wasm.el_ice(),
+    STONE: wasm.el_stone(),
   };
 }
 
@@ -169,6 +241,22 @@ async function runScenario(wasm, config) {
     world.set_chunk_sleeping_enabled(config.sleepingEnabled);
   }
 
+  if (typeof world.set_chunk_gating_enabled === 'function') {
+    world.set_chunk_gating_enabled(config.gatingEnabled);
+  }
+
+  if (typeof world.set_sparse_row_skip_enabled === 'function') {
+    world.set_sparse_row_skip_enabled(config.sparseRowSkipEnabled);
+  }
+
+  if (typeof world.set_temperature_every_frame === 'function') {
+    world.set_temperature_every_frame(config.temperatureEveryFrame);
+  }
+
+  if (typeof world.set_cross_chunk_move_tracking_enabled === 'function') {
+    world.set_cross_chunk_move_tracking_enabled(config.crossChunkMoveTrackingEnabled);
+  }
+
   const spawnRes = [];
   for (const spawn of config.spawns) {
     spawnRes.push(spawn(world));
@@ -187,6 +275,7 @@ async function runScenario(wasm, config) {
   for (let i = 0; i < warmupSteps; i++) {
     if (config.perStep) config.perStep(world, i, true);
     world.step();
+    runRenderExtract(world, config.renderExtractMode);
   }
 
   const samples = [];
@@ -197,15 +286,22 @@ async function runScenario(wasm, config) {
     world.step();
     const outerStepMs = performance.now() - t0;
 
+    const renderExtractMs = runRenderExtract(world, config.renderExtractMode);
+    const outerFrameMs = outerStepMs + renderExtractMs;
+
     if (ENGINE_PERF) {
       const stats = world.get_perf_stats();
       samples.push({
         outer_step_ms: outerStepMs,
+        outer_frame_ms: outerFrameMs,
+        render_extract_ms: renderExtractMs,
         ...perfStatsToPojo(stats),
       });
     } else {
       samples.push({
         outer_step_ms: outerStepMs,
+        outer_frame_ms: outerFrameMs,
+        render_extract_ms: renderExtractMs,
       });
     }
   }
@@ -238,6 +334,10 @@ function printScenarioResult(result) {
       2
     )}/${q.p99.toFixed(2)}/${q.max.toFixed(2)} ms`;
   console.log(`World.step() wall-time: ${fmt(m.outer_step_ms)}`);
+  if (m.outer_frame_ms && m.render_extract_ms) {
+    console.log(`Frame (step+render) wall-time: ${fmt(m.outer_frame_ms)}`);
+    console.log(`Render extract: ${fmt(m.render_extract_ms)}`);
+  }
 
   if (ENGINE_PERF) {
     console.log(`Engine step_ms:      ${fmt(m.step_ms)}`);
@@ -290,6 +390,34 @@ function waterLavaStripe(EL) {
     world.add_particle(x, midY - 1, EL.LAVA);
   }
   return { placed: WORLD_WIDTH * 2, elapsedMs: 0 };
+  };
+}
+
+function fillHalfTop(elementId) {
+  return (world) => {
+    const t0 = performance.now();
+    let placed = 0;
+    const endY = Math.floor(WORLD_HEIGHT / 2);
+    for (let y = 0; y < endY; y++) {
+      for (let x = 0; x < WORLD_WIDTH; x++) {
+        if (world.add_particle(x, y, elementId)) placed++;
+      }
+    }
+    return { placed, elapsedMs: performance.now() - t0 };
+  };
+}
+
+function fillHalfBottom(elementId) {
+  return (world) => {
+    const t0 = performance.now();
+    let placed = 0;
+    const startY = Math.floor(WORLD_HEIGHT / 2);
+    for (let y = startY; y < WORLD_HEIGHT; y++) {
+      for (let x = 0; x < WORLD_WIDTH; x++) {
+        if (world.add_particle(x, y, elementId)) placed++;
+      }
+    }
+    return { placed, elapsedMs: performance.now() - t0 };
   };
 }
 
@@ -347,6 +475,37 @@ async function main() {
       ],
       warmup_steps: 10,
       measure_steps: 40,
+    },
+
+    {
+      label: 'half_stone_top',
+      spawns: [fillHalfTop(EL.STONE)],
+      warmup_steps: 80,
+      measure_steps: 120,
+    },
+    {
+      label: 'half_stone_bottom',
+      spawns: [fillHalfBottom(EL.STONE)],
+      warmup_steps: 80,
+      measure_steps: 120,
+    },
+    {
+      label: 'half_sand_top',
+      spawns: [fillHalfTop(EL.SAND)],
+      warmup_steps: 80,
+      measure_steps: 120,
+    },
+    {
+      label: 'half_sand_bottom',
+      spawns: [fillHalfBottom(EL.SAND)],
+      warmup_steps: 80,
+      measure_steps: 120,
+    },
+    {
+      label: 'half_water_bottom',
+      spawns: [fillHalfBottom(EL.WATER)],
+      warmup_steps: 80,
+      measure_steps: 120,
     },
 
     {
@@ -468,17 +627,87 @@ async function main() {
       ]
     : [{ labelSuffix: `sleep=${SLEEPING_ENABLED ? 'on' : 'off'}`, sleepingEnabled: SLEEPING_ENABLED }];
 
+  const gatingModes = COMPARE_GATING
+    ? [
+        { labelSuffix: 'gating=on', gatingEnabled: true },
+        { labelSuffix: 'gating=off', gatingEnabled: false },
+      ]
+    : [{ labelSuffix: `gating=${GATING_ENABLED ? 'on' : 'off'}`, gatingEnabled: GATING_ENABLED }];
+
+  const sparseRowSkipModes = COMPARE_SPARSE_ROW_SKIP
+    ? [
+        { labelSuffix: 'sparseRowSkip=on', sparseRowSkipEnabled: true },
+        { labelSuffix: 'sparseRowSkip=off', sparseRowSkipEnabled: false },
+      ]
+    : [
+        {
+          labelSuffix: `sparseRowSkip=${SPARSE_ROW_SKIP_ENABLED ? 'on' : 'off'}`,
+          sparseRowSkipEnabled: SPARSE_ROW_SKIP_ENABLED,
+        },
+      ];
+
+  const crossChunkMoveTrackingModes = COMPARE_CROSS_CHUNK_MOVE_TRACKING
+    ? [
+        { labelSuffix: 'moveTracking=crossChunkOnly', crossChunkMoveTrackingEnabled: true },
+        { labelSuffix: 'moveTracking=all', crossChunkMoveTrackingEnabled: false },
+      ]
+    : [
+        {
+          labelSuffix: `moveTracking=${CROSS_CHUNK_MOVE_TRACKING_ENABLED ? 'crossChunkOnly' : 'all'}`,
+          crossChunkMoveTrackingEnabled: CROSS_CHUNK_MOVE_TRACKING_ENABLED,
+        },
+      ];
+
+  const renderExtractModes = COMPARE_RENDER_EXTRACT
+    ? [
+        { labelSuffix: 'render=mergedRects', renderExtractMode: 'merged_rects' },
+        { labelSuffix: 'render=dirtyChunks', renderExtractMode: 'dirty_chunks' },
+      ]
+    : [
+        {
+          labelSuffix: `render=${RENDER_EXTRACT_MODE}`,
+          renderExtractMode: RENDER_EXTRACT_MODE,
+        },
+      ];
+
+  const temperatureEveryFrameModes = COMPARE_TEMPERATURE_EVERY_FRAME
+    ? [
+        { labelSuffix: 'tempEveryFrame=on', temperatureEveryFrame: true },
+        { labelSuffix: 'tempEveryFrame=off', temperatureEveryFrame: false },
+      ]
+    : [
+        {
+          labelSuffix: `tempEveryFrame=${TEMPERATURE_EVERY_FRAME_ENABLED ? 'on' : 'off'}`,
+          temperatureEveryFrame: TEMPERATURE_EVERY_FRAME_ENABLED,
+        },
+      ];
+
   for (const mode of modes) {
-    for (const scenario of selectedScenarios) {
-      const label = `${scenario.label} (${mode.labelSuffix})`;
-      console.log(`\nRunning scenario: ${label}`);
-      results.push(
-        await runScenario(wasm, {
-          ...scenario,
-          label,
-          sleepingEnabled: mode.sleepingEnabled,
-        })
-      );
+    for (const gmode of gatingModes) {
+      for (const smode of sparseRowSkipModes) {
+        for (const tmode of temperatureEveryFrameModes) {
+          for (const mmode of crossChunkMoveTrackingModes) {
+            for (const rmode of renderExtractModes) {
+              for (const scenario of selectedScenarios) {
+                const label = `${scenario.label} (${mode.labelSuffix}, ${gmode.labelSuffix}, ${smode.labelSuffix}, ${tmode.labelSuffix}, ${mmode.labelSuffix}, ${rmode.labelSuffix})`;
+                console.log(`\nRunning scenario: ${label}`);
+                results.push(
+                  await runScenario(wasm, {
+                    ...scenario,
+                    label,
+                    sleepingEnabled: mode.sleepingEnabled,
+                    gatingEnabled: gmode.gatingEnabled,
+                    sparseRowSkipEnabled: smode.sparseRowSkipEnabled,
+                    temperatureEveryFrame: tmode.temperatureEveryFrame,
+                    crossChunkMoveTrackingEnabled: mmode.crossChunkMoveTrackingEnabled,
+                    renderExtractMode: rmode.renderExtractMode,
+                  })
+                );
+              }
+            }
+          }
+        }
+      }
     }
   }
 

@@ -45,6 +45,8 @@ pub struct Grid {
     // Phase 4: Zero-allocation move buffer
     pub pending_moves: MoveBuffer,
 
+    cross_chunk_move_tracking_enabled: bool,
+
     pub row_has_data: Vec<bool>,    // per-row fast skip inside chunk (32 rows per chunk)
     row_non_empty: Vec<u32>,
 }
@@ -69,6 +71,7 @@ impl Grid {
             vx: vec![0.0; size],
             vy: vec![0.0; size],
             pending_moves: MoveBuffer::new(move_capacity),
+            cross_chunk_move_tracking_enabled: true,
             row_has_data: vec![false; sparse_rows],
             row_non_empty: vec![0u32; sparse_rows],
         }
@@ -91,6 +94,7 @@ impl Grid {
             vx: vec![0.0; size],
             vy: vec![0.0; size],
             pending_moves: MoveBuffer::new(move_buffer_capacity),
+            cross_chunk_move_tracking_enabled: true,
             row_has_data: vec![false; sparse_rows],
             row_non_empty: vec![0u32; sparse_rows],
         }
@@ -113,5 +117,9 @@ impl Grid {
             }
             self.row_has_data[yi] = self.row_non_empty[yi] > 0;
         }
+    }
+
+    pub fn set_cross_chunk_move_tracking_enabled(&mut self, enabled: bool) {
+        self.cross_chunk_move_tracking_enabled = enabled;
     }
 }

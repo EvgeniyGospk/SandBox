@@ -131,6 +131,23 @@ impl World {
     pub fn set_chunk_sleeping_enabled(&mut self, enabled: bool) {
         self.core.set_chunk_sleeping_enabled(enabled);
     }
+    pub fn set_chunk_gating_enabled(&mut self, enabled: bool) {
+        self.core.set_chunk_gating_enabled(enabled);
+    }
+
+    /// Enable/disable per-row sparse skipping (uses `row_has_data` markers).
+    pub fn set_sparse_row_skip_enabled(&mut self, enabled: bool) {
+        self.core.set_sparse_row_skip_enabled(enabled);
+    }
+
+    /// Enable/disable running the temperature system every frame.
+    pub fn set_temperature_every_frame(&mut self, enabled: bool) {
+        self.core.set_temperature_every_frame(enabled);
+    }
+
+    pub fn set_cross_chunk_move_tracking_enabled(&mut self, enabled: bool) {
+        self.core.set_cross_chunk_move_tracking_enabled(enabled);
+    }
 
     /// Add a particle at position
     pub fn add_particle(&mut self, x: u32, y: u32, element: u8) -> bool {

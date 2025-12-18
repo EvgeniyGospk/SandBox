@@ -16,7 +16,7 @@ pub(super) fn process_chunk_row(world: &mut WorldCore, cy: u32, chunks_x: u32, g
 
 pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: bool) {
     // Skip sleeping chunks with no activity
-    if !world.chunks.should_process(cx, cy) {
+    if world.chunk_gating_enabled && !world.chunks.should_process(cx, cy) {
         return;
     }
 
@@ -39,7 +39,7 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
     if world.gravity_y >= 0.0 {
         for y in (start_y..end_y).rev() {
             // Sparse skip: check row_has_data
-            if !world.grid.row_has_data[y as usize] {
+            if world.sparse_row_skip_enabled && !world.grid.row_has_data[y as usize] {
                 continue;
             }
             if go_right {
@@ -73,7 +73,7 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
     } else {
         for y in start_y..end_y {
             // Sparse skip: check row_has_data
-            if !world.grid.row_has_data[y as usize] {
+            if world.sparse_row_skip_enabled && !world.grid.row_has_data[y as usize] {
                 continue;
             }
             if go_right {

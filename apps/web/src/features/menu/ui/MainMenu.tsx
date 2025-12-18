@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
 import { useSimulationStore, WORLD_SIZE_PRESETS, type WorldSizePreset } from '@/features/simulation/model/simulationStore'
-import { Play, Settings, Sparkles } from 'lucide-react'
+import { Play, Settings, Sparkles, Wrench } from 'lucide-react'
 import { startMenuBackground } from './background/startMenuBackground'
 
 interface MainMenuProps {
   onStartGame: () => void
+  onOpenModStudio: () => void
 }
 
 const WORLD_SIZE_INFO: Record<WorldSizePreset, { label: string; desc: string; fps: string }> = {
@@ -15,7 +16,7 @@ const WORLD_SIZE_INFO: Record<WorldSizePreset, { label: string; desc: string; fp
   full: { label: 'Full', desc: 'Viewport', fps: '~30 FPS' },
 }
 
-export function MainMenu({ onStartGame }: MainMenuProps) {
+export function MainMenu({ onStartGame, onOpenModStudio }: MainMenuProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const { worldSizePreset, setWorldSizePreset } = useSimulationStore()
   const [showSettings, setShowSettings] = useState(false)
@@ -84,6 +85,17 @@ export function MainMenu({ onStartGame }: MainMenuProps) {
               >
                 <Settings size={20} />
                 World Settings
+              </button>
+
+              <button
+                onClick={onOpenModStudio}
+                className="w-full flex items-center justify-center gap-3 px-6 py-4 
+                         bg-white/5 hover:bg-white/10 border border-white/10
+                         rounded-xl font-medium transition-all
+                         hover:scale-[1.02] active:scale-[0.98]"
+              >
+                <Wrench size={20} />
+                Mod Studio
               </button>
             </div>
           ) : (

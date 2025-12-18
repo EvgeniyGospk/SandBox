@@ -2,7 +2,6 @@ import type { ToolType } from '@/features/simulation/engine/api/types'
 
 import { screenToWorld as invertTransform } from '@/features/simulation/engine/transform'
 import { debugWarn } from '@/platform/logging/log'
-import { ELEMENT_ID_TO_NAME } from '@/features/simulation/engine/api/types'
 
 import type { WorkerContext } from './context'
 
@@ -135,7 +134,7 @@ export function processSharedInput(ctx: WorkerContext): void {
 
   const width = world.width as number
   const height = world.height as number
-  const maxElementId = ELEMENT_ID_TO_NAME.length - 1
+  const maxElementId = 255
 
   const overflowed = input.checkAndClearOverflow()
   if (shouldResetTrackingOnOverflow(overflowed)) {

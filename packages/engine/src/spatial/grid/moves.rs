@@ -53,7 +53,7 @@ impl Grid {
         let c2_x = x2 >> 5;
         let c2_y = y2 >> 5;
 
-        if c1_x == c2_x && c1_y == c2_y {
+        if self.cross_chunk_move_tracking_enabled && c1_x == c2_x && c1_y == c2_y {
             return;
         }
 

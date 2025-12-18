@@ -7,7 +7,7 @@ import { WORLD_SIZE_PRESETS, getWorldSize, type WorldSizePreset } from './worldS
 export { WORLD_SIZE_PRESETS, getWorldSize }
 export type { WorldSizePreset }
 
-export type GameState = 'menu' | 'playing'
+export type GameState = 'menu' | 'playing' | 'modStudio'
 
 type ContentManifest = {
   formatVersion: number
@@ -73,6 +73,7 @@ interface SimulationState {
   
   // Actions
   startGame: () => void
+  openModStudio: () => void
   returnToMenu: () => void
   play: () => void
   pause: () => void
@@ -134,6 +135,11 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
 
       // Actions
       startGame: () => set({ gameState: 'playing', isPlaying: true }),
+      openModStudio: () => {
+        const backend = get().backend
+        if (backend) backend.pause()
+        set({ gameState: 'modStudio', isPlaying: false })
+      },
       returnToMenu: () => {
         const backend = get().backend
         if (backend) backend.pause()

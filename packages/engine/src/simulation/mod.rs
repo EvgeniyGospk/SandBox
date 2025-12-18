@@ -109,6 +109,9 @@ pub struct WorldCore {
     particle_count: u32,
     frame: u64,
     rng_state: u32,
+    chunk_gating_enabled: bool,
+    sparse_row_skip_enabled: bool,
+    temperature_every_frame: bool,
 
     render: RenderBuffers,
 
@@ -172,6 +175,27 @@ impl WorldCore {
 
     pub fn set_chunk_sleeping_enabled(&mut self, enabled: bool) {
         settings::set_chunk_sleeping_enabled(self, enabled);
+    }
+    pub fn set_chunk_gating_enabled(&mut self, enabled: bool) {
+        settings::set_chunk_gating_enabled(self, enabled);
+    }
+
+    /// Enable/disable per-row sparse skipping (uses `row_has_data` markers).
+    ///
+    /// When disabled, chunk/physics passes scan every row in every processed chunk.
+    pub fn set_sparse_row_skip_enabled(&mut self, enabled: bool) {
+        settings::set_sparse_row_skip_enabled(self, enabled);
+    }
+
+    /// Enable/disable running the temperature system every frame.
+    ///
+    /// Default behavior runs temperature every 4th frame for performance.
+    pub fn set_temperature_every_frame(&mut self, enabled: bool) {
+        settings::set_temperature_every_frame(self, enabled);
+    }
+
+    pub fn set_cross_chunk_move_tracking_enabled(&mut self, enabled: bool) {
+        settings::set_cross_chunk_move_tracking_enabled(self, enabled);
     }
 
     /// Add a particle at position

@@ -125,7 +125,7 @@ pub(super) fn step(world: &mut WorldCore) {
     // Temperature pass - run every 4th frame for performance
     // Lazy Hydration: now updates virtual_temp for sleeping chunks!
     // PERF: Use bitwise AND instead of modulo (4x less temperature updates)
-    if world.frame & 3 == 0 {
+    if world.temperature_every_frame || (world.frame & 3 == 0) {
         if perf_on {
             let t0 = PerfTimer::start();
             let (temp_processed, air_processed) = process_temperature_grid_chunked(

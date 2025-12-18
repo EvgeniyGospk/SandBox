@@ -1,6 +1,7 @@
 import { useEffect, useCallback } from 'react'
 import { Canvas } from '@/features/simulation/ui/Canvas'
 import { MainMenu } from '@/features/menu/ui/MainMenu'
+import { ModStudioPage } from '@/features/modStudio/ui/ModStudioPage'
 import { LeftPanel } from '@/features/simulation/ui/panels/LeftPanel'
 import { TopToolbar } from '@/features/simulation/ui/panels/TopToolbar'
 import { BottomBar } from '@/features/simulation/ui/panels/BottomBar'
@@ -8,12 +9,12 @@ import { RightPanel } from '@/features/simulation/ui/panels/RightPanel'
 import { useSimulationStore } from '@/features/simulation/model/simulationStore'
 
 function App() {
-  const { gameState, startGame, returnToMenu } = useSimulationStore()
+  const { gameState, startGame, openModStudio, returnToMenu } = useSimulationStore()
 
   // Handle ESC to return to menu
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && gameState === 'playing') {
+      if (e.key === 'Escape' && gameState !== 'menu') {
         returnToMenu()
       }
     }
@@ -27,7 +28,11 @@ function App() {
 
   // Show Main Menu
   if (gameState === 'menu') {
-    return <MainMenu onStartGame={handleStartGame} />
+    return <MainMenu onStartGame={handleStartGame} onOpenModStudio={openModStudio} />
+  }
+
+  if (gameState === 'modStudio') {
+    return <ModStudioPage onBack={returnToMenu} />
   }
 
   // Show Game

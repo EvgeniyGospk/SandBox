@@ -23,6 +23,9 @@ pub(super) fn create_world_core(width: u32, height: u32) -> WorldCore {
         particle_count: 0,
         frame: 0,
         rng_state: 12345,
+        chunk_gating_enabled: true,
+        sparse_row_skip_enabled: true,
+        temperature_every_frame: false,
 
         render: RenderBuffers {
             dirty_list: Vec::with_capacity(1000),
@@ -54,6 +57,9 @@ pub(super) fn create_world_core_with_move_buffer_capacity(
         particle_count: 0,
         frame: 0,
         rng_state: 12345,
+        chunk_gating_enabled: true,
+        sparse_row_skip_enabled: true,
+        temperature_every_frame: false,
 
         render: RenderBuffers {
             dirty_list: Vec::with_capacity(1000),
