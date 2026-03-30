@@ -12,22 +12,22 @@ use super::WorldCore;
 pub(super) fn create_world_core(width: u32, height: u32) -> WorldCore {
     let total_cells = (width as u64) * (height as u64);
     let (physics_cadence_mask, behavior_cadence_mask) = if total_cells >= 2_000_000 {
-        (0b111_1111, 0b111_1111)  // 128-frame cadence for very large worlds
+        (0b111_1111, 0b1111_1111)  // physics=128, behavior=256 for very large worlds
     } else if total_cells >= 1_000_000 {
-        (0b11_1111, 0b111_1111)  // physics=64, behavior=128 for large worlds
+        (0b11_1111, 0b1111_1111)   // physics=64, behavior=256 for large worlds
     } else if total_cells >= 400_000 {
-        (0b1111, 0b1_1111)  // physics=16, behavior=32 for medium worlds
+        (0b1111, 0b1_1111)         // physics=16, behavior=32 for medium worlds
     } else {
-        (0, 0)  // no cadence for small worlds
+        (0, 0)                     // no cadence for small worlds
     };
     let temperature_cadence_mask = if total_cells >= 2_000_000 {
-        0b1_1111  // 32-frame cadence for very large worlds
+        0b11_1111  // 64-frame cadence for very large worlds
     } else if total_cells >= 1_000_000 {
-        0b1_1111  // 32-frame cadence for large worlds
+        0b11_1111  // 64-frame cadence for large worlds
     } else if total_cells >= 400_000 {
-        0b1111    // 16-frame cadence for medium worlds
+        0b1_1111   // 32-frame cadence for medium worlds
     } else {
-        0         // no cadence for small worlds
+        0          // no cadence for small worlds
     };
 
     WorldCore {
