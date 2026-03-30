@@ -166,6 +166,7 @@ pub(super) fn step(world: &mut WorldCore) {
                 world.frame,
                 &mut world.rng_state,
                 world.perf_split || world.perf_detailed,
+                world.temperature_cadence_mask,
             );
             world.perf_stats.temperature_ms = t0.elapsed_ms();
             world.perf_stats.temp_cells = temp_processed;
@@ -180,6 +181,7 @@ pub(super) fn step(world: &mut WorldCore) {
                 world.frame,
                 &mut world.rng_state,
                 false,
+                world.temperature_cadence_mask,
             );
         }
     } else if perf_on {

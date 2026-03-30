@@ -20,6 +20,15 @@ pub(super) fn create_world_core(width: u32, height: u32) -> WorldCore {
     } else {
         (0, 0)  // no cadence for small worlds
     };
+    let temperature_cadence_mask = if total_cells >= 2_000_000 {
+        0b111  // 8-frame cadence for very large worlds
+    } else if total_cells >= 1_000_000 {
+        0b111  // 8-frame cadence for large worlds
+    } else if total_cells >= 400_000 {
+        0b11   // 4-frame cadence for medium worlds
+    } else {
+        0      // no cadence for small worlds
+    };
 
     WorldCore {
         content: Arc::new(ContentRegistry::from_generated()),
@@ -32,6 +41,7 @@ pub(super) fn create_world_core(width: u32, height: u32) -> WorldCore {
         ambient_temperature: 20.0,
         physics_cadence_mask,
         behavior_cadence_mask,
+        temperature_cadence_mask,
         particle_count: 0,
         frame: 0,
         rng_state: 12345,

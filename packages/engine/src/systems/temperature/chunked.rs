@@ -16,6 +16,7 @@ pub fn process_temperature_grid_chunked(
     frame: u64,
     rng: &mut u32,
     perf_detailed: bool,
+    cadence_mask: u32,
 ) -> (u32, u32, f64, f64) {
     let cx_count = (grid.width() + CHUNK_SIZE - 1) / CHUNK_SIZE;
     let cy_count = (grid.height() + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -61,6 +62,10 @@ pub fn process_temperature_grid_chunked(
 
             for y in start_y..end_y {
                 for x in start_x..end_x {
+                    // Cadence: skip this cell if not in this frame's phase
+                    if cadence_mask > 0 && (x ^ y ^ frame_u32) & cadence_mask != 0 {
+                        continue;
+                    }
                     let element = grid.get_type(x as i32, y as i32);
                     if element == EL_EMPTY {
                         // Air cell: lerp towards ambient + random neighbor diffusion
