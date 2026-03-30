@@ -21,13 +21,13 @@ pub(super) fn create_world_core(width: u32, height: u32) -> WorldCore {
         (0, 0)  // no cadence for small worlds
     };
     let temperature_cadence_mask = if total_cells >= 2_000_000 {
-        0b111  // 8-frame cadence for very large worlds
+        0b1_1111  // 32-frame cadence for very large worlds
     } else if total_cells >= 1_000_000 {
-        0b111  // 8-frame cadence for large worlds
+        0b1_1111  // 32-frame cadence for large worlds
     } else if total_cells >= 400_000 {
-        0b11   // 4-frame cadence for medium worlds
+        0b1111    // 16-frame cadence for medium worlds
     } else {
-        0      // no cadence for small worlds
+        0         // no cadence for small worlds
     };
 
     WorldCore {

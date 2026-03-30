@@ -12,11 +12,14 @@ pub(super) fn update_air_temperature_legacy(grid: &mut Grid, x: u32, y: u32, amb
 
     let my_temp = grid.get_temp(xi, yi);
 
-    // Air tends towards ambient temperature
+    // Fast skip: air cell already at ambient — nothing to do
     let diff_ambient = ambient_temp - my_temp;
-    if diff_ambient.abs() > 0.5 {
-        grid.set_temp(x, y, my_temp + diff_ambient * 0.02);
+    if diff_ambient.abs() <= 0.5 {
+        return;
     }
+
+    // Air tends towards ambient temperature
+    grid.set_temp(x, y, my_temp + diff_ambient * 0.02);
 
     // Also sample ONE random neighbor for diffusion (like particles do)
     // This creates more realistic heat flow through air

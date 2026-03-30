@@ -66,7 +66,7 @@ pub fn process_temperature_grid_chunked(
                     if cadence_mask > 0 && (x ^ y ^ frame_u32) & cadence_mask != 0 {
                         continue;
                     }
-                    let element = grid.get_type(x as i32, y as i32);
+                    let element = unsafe { grid.get_type_unchecked(x, y) };
                     if element == EL_EMPTY {
                         // Air cell: lerp towards ambient + random neighbor diffusion
                         update_air_temperature_legacy(grid, x, y, ambient_temp, rng);
