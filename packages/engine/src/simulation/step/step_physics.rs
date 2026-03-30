@@ -61,42 +61,40 @@ pub(super) fn process_physics_chunk(
         // For negative gravity: process top-to-bottom
         for y in start_y..end_y {
             for x in start_x..end_x {
-                let element = world.grid.get_type(x as i32, y as i32);
-                if element != EL_EMPTY {
-                    // Cadence: skip this cell if not in this frame's phase
-                    if physics_cadence_mask > 0 {
-                        if (x ^ y ^ frame_u32) & physics_cadence_mask != 0 {
-                            continue;
-                        }
+                // Cadence first: pure arithmetic, no memory access
+                if physics_cadence_mask > 0 && (x ^ y ^ frame_u32) & physics_cadence_mask != 0 {
+                    continue;
+                }
+                let element = unsafe { world.grid.get_type_unchecked(x, y) };
+                if element == EL_EMPTY {
+                    continue;
+                }
+                if unsafe { world.grid.is_updated_unchecked(world.grid.index_unchecked(x, y)) } {
+                    continue;
+                }
+                unsafe { world.grid.set_updated_unchecked(world.grid.index_unchecked(x, y), true) };
+                let res = update_particle_physics(
+                    &world.content,
+                    &mut world.grid,
+                    x,
+                    y,
+                    gravity_x,
+                    gravity_y,
+                );
+                if sample_chunk {
+                    chunk_calls = chunk_calls.saturating_add(1);
+                    chunk_steps = chunk_steps.saturating_add(res.steps);
+                }
+                if world.perf_enabled {
+                    world.perf_stats.physics_calls = world.perf_stats.physics_calls.saturating_add(1);
+                    world.perf_stats.raycast_steps_total =
+                        world.perf_stats.raycast_steps_total.saturating_add(res.steps);
+                    if res.collided {
+                        world.perf_stats.raycast_collisions =
+                            world.perf_stats.raycast_collisions.saturating_add(1);
                     }
-                    // Ensure each particle is integrated at most once per step.
-                    if world.grid.is_updated(x, y) {
-                        continue;
-                    }
-                    world.grid.set_updated(x, y, true);
-                    let res = update_particle_physics(
-                        &world.content,
-                        &mut world.grid,
-                        x,
-                        y,
-                        gravity_x,
-                        gravity_y,
-                    );
-                    if sample_chunk {
-                        chunk_calls = chunk_calls.saturating_add(1);
-                        chunk_steps = chunk_steps.saturating_add(res.steps);
-                    }
-                    if world.perf_enabled {
-                        world.perf_stats.physics_calls = world.perf_stats.physics_calls.saturating_add(1);
-                        world.perf_stats.raycast_steps_total =
-                            world.perf_stats.raycast_steps_total.saturating_add(res.steps);
-                        if res.collided {
-                            world.perf_stats.raycast_collisions =
-                                world.perf_stats.raycast_collisions.saturating_add(1);
-                        }
-                        if res.speed > world.perf_stats_last_speed_max {
-                            world.perf_stats_last_speed_max = res.speed;
-                        }
+                    if res.speed > world.perf_stats_last_speed_max {
+                        world.perf_stats_last_speed_max = res.speed;
                     }
                 }
             }
@@ -105,42 +103,40 @@ pub(super) fn process_physics_chunk(
         // For positive gravity: process bottom-to-top
         for y in (start_y..end_y).rev() {
             for x in start_x..end_x {
-                let element = world.grid.get_type(x as i32, y as i32);
-                if element != EL_EMPTY {
-                    // Cadence: skip this cell if not in this frame's phase
-                    if physics_cadence_mask > 0 {
-                        if (x ^ y ^ frame_u32) & physics_cadence_mask != 0 {
-                            continue;
-                        }
+                // Cadence first: pure arithmetic, no memory access
+                if physics_cadence_mask > 0 && (x ^ y ^ frame_u32) & physics_cadence_mask != 0 {
+                    continue;
+                }
+                let element = unsafe { world.grid.get_type_unchecked(x, y) };
+                if element == EL_EMPTY {
+                    continue;
+                }
+                if unsafe { world.grid.is_updated_unchecked(world.grid.index_unchecked(x, y)) } {
+                    continue;
+                }
+                unsafe { world.grid.set_updated_unchecked(world.grid.index_unchecked(x, y), true) };
+                let res = update_particle_physics(
+                    &world.content,
+                    &mut world.grid,
+                    x,
+                    y,
+                    gravity_x,
+                    gravity_y,
+                );
+                if sample_chunk {
+                    chunk_calls = chunk_calls.saturating_add(1);
+                    chunk_steps = chunk_steps.saturating_add(res.steps);
+                }
+                if world.perf_enabled {
+                    world.perf_stats.physics_calls = world.perf_stats.physics_calls.saturating_add(1);
+                    world.perf_stats.raycast_steps_total =
+                        world.perf_stats.raycast_steps_total.saturating_add(res.steps);
+                    if res.collided {
+                        world.perf_stats.raycast_collisions =
+                            world.perf_stats.raycast_collisions.saturating_add(1);
                     }
-                    // Ensure each particle is integrated at most once per step.
-                    if world.grid.is_updated(x, y) {
-                        continue;
-                    }
-                    world.grid.set_updated(x, y, true);
-                    let res = update_particle_physics(
-                        &world.content,
-                        &mut world.grid,
-                        x,
-                        y,
-                        gravity_x,
-                        gravity_y,
-                    );
-                    if sample_chunk {
-                        chunk_calls = chunk_calls.saturating_add(1);
-                        chunk_steps = chunk_steps.saturating_add(res.steps);
-                    }
-                    if world.perf_enabled {
-                        world.perf_stats.physics_calls = world.perf_stats.physics_calls.saturating_add(1);
-                        world.perf_stats.raycast_steps_total =
-                            world.perf_stats.raycast_steps_total.saturating_add(res.steps);
-                        if res.collided {
-                            world.perf_stats.raycast_collisions =
-                                world.perf_stats.raycast_collisions.saturating_add(1);
-                        }
-                        if res.speed > world.perf_stats_last_speed_max {
-                            world.perf_stats_last_speed_max = res.speed;
-                        }
+                    if res.speed > world.perf_stats_last_speed_max {
+                        world.perf_stats_last_speed_max = res.speed;
                     }
                 }
             }

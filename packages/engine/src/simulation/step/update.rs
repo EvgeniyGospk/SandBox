@@ -33,14 +33,6 @@ pub(super) fn update_particle_chunked(world: &mut WorldCore, x: u32, y: u32) -> 
             return false;
         }
 
-        // Cadence: skip this cell if not in this frame's phase
-        if world.behavior_cadence_mask > 0 {
-            let frame_u32 = world.frame as u32;
-            if (x ^ y ^ frame_u32) & world.behavior_cadence_mask != 0 {
-                return false;
-            }
-        }
-
         let idx = world.grid.index_unchecked(x, y);
 
         if world.grid.is_updated_unchecked(idx) {
