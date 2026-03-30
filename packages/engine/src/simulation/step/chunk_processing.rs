@@ -15,6 +15,11 @@ pub(super) fn process_chunk_row(world: &mut WorldCore, cy: u32, chunks_x: u32, g
 }
 
 pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: bool) {
+    // O(1) skip for completely empty chunks
+    if world.grid.chunk_is_empty(cx, cy) {
+        return;
+    }
+
     // Calculate pixel bounds for this chunk
     let start_x = cx * CHUNK_SIZE;
     let start_y = cy * CHUNK_SIZE;
@@ -24,6 +29,7 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
     const SAMPLE_MASK: u32 = 63;
     let split_on = world.perf_enabled && (world.perf_split || world.perf_detailed);
     let frame_u32 = world.frame as u32;
+    let behavior_cadence_mask = world.behavior_cadence_mask;
     let sample_chunk = split_on
         && (((cx.wrapping_mul(73856093) ^ cy.wrapping_mul(19349663) ^ frame_u32.wrapping_mul(83492791)) & SAMPLE_MASK)
             == 0);
@@ -36,6 +42,10 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
         for y in (start_y..end_y).rev() {
             if go_right {
                 for x in start_x..end_x {
+                    // Cadence first: pure arithmetic, no memory access
+                    if behavior_cadence_mask > 0 && (x ^ y ^ frame_u32) & behavior_cadence_mask != 0 {
+                        continue;
+                    }
                     if sample_chunk {
                         let element = unsafe { world.grid.get_type_unchecked(x, y) };
                         if element == crate::elements::EL_EMPTY {
@@ -54,6 +64,9 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
                 }
             } else {
                 for x in (start_x..end_x).rev() {
+                    if behavior_cadence_mask > 0 && (x ^ y ^ frame_u32) & behavior_cadence_mask != 0 {
+                        continue;
+                    }
                     if sample_chunk {
                         let element = unsafe { world.grid.get_type_unchecked(x, y) };
                         if element == crate::elements::EL_EMPTY {
@@ -76,6 +89,9 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
         for y in start_y..end_y {
             if go_right {
                 for x in start_x..end_x {
+                    if behavior_cadence_mask > 0 && (x ^ y ^ frame_u32) & behavior_cadence_mask != 0 {
+                        continue;
+                    }
                     if sample_chunk {
                         let element = unsafe { world.grid.get_type_unchecked(x, y) };
                         if element == crate::elements::EL_EMPTY {
@@ -94,6 +110,9 @@ pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: b
                 }
             } else {
                 for x in (start_x..end_x).rev() {
+                    if behavior_cadence_mask > 0 && (x ^ y ^ frame_u32) & behavior_cadence_mask != 0 {
+                        continue;
+                    }
                     if sample_chunk {
                         let element = unsafe { world.grid.get_type_unchecked(x, y) };
                         if element == crate::elements::EL_EMPTY {

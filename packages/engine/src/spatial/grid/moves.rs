@@ -6,6 +6,25 @@ impl Grid {
         let idx1 = self.index(x1, y1);
         let idx2 = self.index(x2, y2);
 
+        // Maintain chunk counters before swapping.
+        // Only cross-chunk swaps where exactly one side is empty change counts.
+        let ci1 = self.chunk_index(x1, y1);
+        let ci2 = self.chunk_index(x2, y2);
+        if ci1 != ci2 {
+            let t1_empty = self.types[idx1] == EL_EMPTY;
+            let t2_empty = self.types[idx2] == EL_EMPTY;
+            if t1_empty && !t2_empty {
+                // A particle moves from chunk2 into chunk1
+                self.chunk_non_empty_counts[ci1] = self.chunk_non_empty_counts[ci1].saturating_add(1);
+                self.chunk_non_empty_counts[ci2] = self.chunk_non_empty_counts[ci2].saturating_sub(1);
+            } else if !t1_empty && t2_empty {
+                // A particle moves from chunk1 into chunk2
+                self.chunk_non_empty_counts[ci1] = self.chunk_non_empty_counts[ci1].saturating_sub(1);
+                self.chunk_non_empty_counts[ci2] = self.chunk_non_empty_counts[ci2].saturating_add(1);
+            }
+            // If both empty or both non-empty, counts are unchanged.
+        }
+
         self.swap_idx(idx1, idx2);
     }
 
@@ -35,6 +54,23 @@ impl Grid {
             idx2,
             self.size
         );
+
+        // Maintain chunk counters before swapping.
+        // Only cross-chunk swaps where exactly one side is empty change counts.
+        let ci1 = self.chunk_index(x1, y1);
+        let ci2 = self.chunk_index(x2, y2);
+        if ci1 != ci2 {
+            let t1_empty = *self.types.get_unchecked(idx1) == EL_EMPTY;
+            let t2_empty = *self.types.get_unchecked(idx2) == EL_EMPTY;
+            if t1_empty && !t2_empty {
+                self.chunk_non_empty_counts[ci1] = self.chunk_non_empty_counts[ci1].saturating_add(1);
+                self.chunk_non_empty_counts[ci2] = self.chunk_non_empty_counts[ci2].saturating_sub(1);
+            } else if !t1_empty && t2_empty {
+                self.chunk_non_empty_counts[ci1] = self.chunk_non_empty_counts[ci1].saturating_sub(1);
+                self.chunk_non_empty_counts[ci2] = self.chunk_non_empty_counts[ci2].saturating_add(1);
+            }
+        }
+
         // Raw pointer swap - no bounds checks!
         let ptr_types = self.types.as_mut_ptr();
         let ptr_colors = self.colors.as_mut_ptr();

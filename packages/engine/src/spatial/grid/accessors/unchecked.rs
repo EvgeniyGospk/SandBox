@@ -40,6 +40,11 @@ impl Grid {
     #[inline(always)]
     pub unsafe fn set_particle_unchecked(&mut self, x: u32, y: u32, element: ElementId, color: u32, life: u16, temp: f32) {
         let idx = self.index_unchecked(x, y);
+        // Maintain chunk counter: empty→non-empty increments the chunk count
+        if *self.types.get_unchecked(idx) == EL_EMPTY {
+            let ci = self.chunk_index(x, y);
+            self.chunk_non_empty_counts[ci] = self.chunk_non_empty_counts[ci].saturating_add(1);
+        }
         *self.types.get_unchecked_mut(idx) = element;
         *self.colors.get_unchecked_mut(idx) = color;
         *self.life.get_unchecked_mut(idx) = life;
@@ -51,6 +56,11 @@ impl Grid {
     #[inline(always)]
     pub unsafe fn clear_cell_unchecked(&mut self, x: u32, y: u32) {
         let idx = self.index_unchecked(x, y);
+        // Maintain chunk counter: non-empty→empty decrements the chunk count
+        if *self.types.get_unchecked(idx) != EL_EMPTY {
+            let ci = self.chunk_index(x, y);
+            self.chunk_non_empty_counts[ci] = self.chunk_non_empty_counts[ci].saturating_sub(1);
+        }
         *self.types.get_unchecked_mut(idx) = EL_EMPTY;
         *self.colors.get_unchecked_mut(idx) = BG_COLOR;
         *self.life.get_unchecked_mut(idx) = 0;

@@ -29,6 +29,23 @@ pub fn update_particle_physics(
         return PhysicsResult::no_move(x, y);
     }
 
+    // Fast-path: particle at rest with blocked path in gravity direction → skip physics entirely.
+    // Behavior pass handles cellular-automaton falling independently.
+    if grid.vx[idx] == 0.0 && grid.vy[idx] == 0.0 {
+        let blocked = if gravity_y > 0.0 {
+            // Downward gravity: check cell below
+            y + 1 >= grid.height() || unsafe { grid.get_type_unchecked(x, y + 1) } != EL_EMPTY
+        } else if gravity_y < 0.0 {
+            // Upward gravity: check cell above
+            y == 0 || unsafe { grid.get_type_unchecked(x, y - 1) } != EL_EMPTY
+        } else {
+            false
+        };
+        if blocked {
+            return PhysicsResult::no_move(x, y);
+        }
+    }
+
     let Some(props) = content.props(element) else {
         return PhysicsResult::no_move(x, y);
     };

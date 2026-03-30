@@ -16,6 +16,7 @@ pub fn process_temperature_grid_chunked(
     frame: u64,
     rng: &mut u32,
     perf_detailed: bool,
+    cadence_mask: u32,
 ) -> (u32, u32, f64, f64) {
     let cx_count = (grid.width() + CHUNK_SIZE - 1) / CHUNK_SIZE;
     let cy_count = (grid.height() + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -36,6 +37,11 @@ pub fn process_temperature_grid_chunked(
 
     for cy in 0..cy_count {
         for cx in 0..cx_count {
+            // Skip entirely empty chunks — all air at ambient, nothing to diffuse
+            if grid.chunk_is_empty(cx as u32, cy as u32) {
+                continue;
+            }
+
             // LEGACY MODE: Per-pixel processing for smoother thermodynamics
             // Each air cell is processed individually with random neighbor sampling
 
@@ -56,7 +62,11 @@ pub fn process_temperature_grid_chunked(
 
             for y in start_y..end_y {
                 for x in start_x..end_x {
-                    let element = grid.get_type(x as i32, y as i32);
+                    // Cadence: skip this cell if not in this frame's phase
+                    if cadence_mask > 0 && (x ^ y ^ frame_u32) & cadence_mask != 0 {
+                        continue;
+                    }
+                    let element = unsafe { grid.get_type_unchecked(x, y) };
                     if element == EL_EMPTY {
                         // Air cell: lerp towards ambient + random neighbor diffusion
                         update_air_temperature_legacy(grid, x, y, ambient_temp, rng);
