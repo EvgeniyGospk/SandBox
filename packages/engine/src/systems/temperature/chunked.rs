@@ -36,6 +36,11 @@ pub fn process_temperature_grid_chunked(
 
     for cy in 0..cy_count {
         for cx in 0..cx_count {
+            // Skip entirely empty chunks — all air at ambient, nothing to diffuse
+            if grid.chunk_is_empty(cx as u32, cy as u32) {
+                continue;
+            }
+
             // LEGACY MODE: Per-pixel processing for smoother thermodynamics
             // Each air cell is processed individually with random neighbor sampling
 
