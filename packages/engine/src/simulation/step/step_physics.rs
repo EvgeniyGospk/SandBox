@@ -35,6 +35,11 @@ pub(super) fn process_physics_chunk(
     gravity_y: f32,
     top_to_bottom: bool,
 ) {
+    // O(1) skip for completely empty chunks
+    if world.grid.chunk_is_empty(cx, cy) {
+        return;
+    }
+
     let start_x = cx * CHUNK_SIZE;
     let start_y = cy * CHUNK_SIZE;
     let end_x = (start_x + CHUNK_SIZE).min(world.grid.width());

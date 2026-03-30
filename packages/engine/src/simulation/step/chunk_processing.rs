@@ -15,6 +15,11 @@ pub(super) fn process_chunk_row(world: &mut WorldCore, cy: u32, chunks_x: u32, g
 }
 
 pub(super) fn process_chunk(world: &mut WorldCore, cx: u32, cy: u32, go_right: bool) {
+    // O(1) skip for completely empty chunks
+    if world.grid.chunk_is_empty(cx, cy) {
+        return;
+    }
+
     // Calculate pixel bounds for this chunk
     let start_x = cx * CHUNK_SIZE;
     let start_y = cy * CHUNK_SIZE;

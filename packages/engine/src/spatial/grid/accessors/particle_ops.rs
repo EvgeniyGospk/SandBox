@@ -5,6 +5,11 @@ impl Grid {
     // Match TypeScript: new particles are NOT updated, so they can move this frame
     pub fn set_particle(&mut self, x: u32, y: u32, element: ElementId, color: u32, life: u16, temp: f32) {
         let idx = self.index(x, y);
+        // Maintain chunk counter: empty→non-empty increments the chunk count
+        if self.types[idx] == EL_EMPTY {
+            let ci = self.chunk_index(x, y);
+            self.chunk_non_empty_counts[ci] = self.chunk_non_empty_counts[ci].saturating_add(1);
+        }
         self.types[idx] = element;
         self.colors[idx] = color;
         self.life[idx] = life;
@@ -18,6 +23,11 @@ impl Grid {
     // === Clear single cell ===
     pub fn clear_cell(&mut self, x: u32, y: u32) {
         let idx = self.index(x, y);
+        // Maintain chunk counter: non-empty→empty decrements the chunk count
+        if self.types[idx] != EL_EMPTY {
+            let ci = self.chunk_index(x, y);
+            self.chunk_non_empty_counts[ci] = self.chunk_non_empty_counts[ci].saturating_sub(1);
+        }
         self.types[idx] = EL_EMPTY;
         self.colors[idx] = BG_COLOR;
         self.life[idx] = 0;
@@ -37,5 +47,7 @@ impl Grid {
         // Phase 2: Clear velocity
         self.vx.fill(0.0);
         self.vy.fill(0.0);
+        // Reset all chunk counters — grid is now empty
+        self.chunk_non_empty_counts.fill(0);
     }
 }
