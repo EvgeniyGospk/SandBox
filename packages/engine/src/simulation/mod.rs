@@ -87,6 +87,7 @@ pub struct WorldCore {
     particle_count: u32,
     frame: u64,
     rng_state: u32,
+    temperature_needs_processing: bool,
 
     // Perf metrics
     perf_enabled: bool,

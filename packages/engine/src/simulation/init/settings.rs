@@ -23,6 +23,9 @@ pub(super) fn set_gravity(world: &mut WorldCore, x: f32, y: f32) {
 }
 
 pub(super) fn set_ambient_temperature(world: &mut WorldCore, temp: f32) {
+    if (temp - world.ambient_temperature).abs() > 1.0 {
+        world.temperature_needs_processing = true;
+    }
     world.ambient_temperature = temp;
 }
 

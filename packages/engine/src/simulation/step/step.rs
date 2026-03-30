@@ -155,31 +155,39 @@ pub(super) fn step(world: &mut WorldCore) {
         }
     }
 
-    // Temperature pass - run every frame
-    if perf_on {
-        let t0 = PerfTimer::start();
-        let (temp_processed, air_processed, air_ms_est, particle_ms_est) = process_temperature_grid_chunked(
-            &world.content,
-            &mut world.grid,
-            world.ambient_temperature,
-            world.frame,
-            &mut world.rng_state,
-            world.perf_split || world.perf_detailed,
-        );
-        world.perf_stats.temperature_ms = t0.elapsed_ms();
-        world.perf_stats.temp_cells = temp_processed;
-        world.perf_stats.simd_air_cells = air_processed;
-        world.perf_stats.temperature_air_ms = air_ms_est;
-        world.perf_stats.temperature_particle_ms = particle_ms_est;
-    } else {
-        process_temperature_grid_chunked(
-            &world.content,
-            &mut world.grid,
-            world.ambient_temperature,
-            world.frame,
-            &mut world.rng_state,
-            false,
-        );
+    // Temperature pass - skipped entirely when no thermal activity is present
+    if world.temperature_needs_processing {
+        if perf_on {
+            let t0 = PerfTimer::start();
+            let (temp_processed, air_processed, air_ms_est, particle_ms_est) = process_temperature_grid_chunked(
+                &world.content,
+                &mut world.grid,
+                world.ambient_temperature,
+                world.frame,
+                &mut world.rng_state,
+                world.perf_split || world.perf_detailed,
+            );
+            world.perf_stats.temperature_ms = t0.elapsed_ms();
+            world.perf_stats.temp_cells = temp_processed;
+            world.perf_stats.simd_air_cells = air_processed;
+            world.perf_stats.temperature_air_ms = air_ms_est;
+            world.perf_stats.temperature_particle_ms = particle_ms_est;
+        } else {
+            process_temperature_grid_chunked(
+                &world.content,
+                &mut world.grid,
+                world.ambient_temperature,
+                world.frame,
+                &mut world.rng_state,
+                false,
+            );
+        }
+    } else if perf_on {
+        world.perf_stats.temperature_ms = 0.0;
+        world.perf_stats.temp_cells = 0;
+        world.perf_stats.simd_air_cells = 0;
+        world.perf_stats.temperature_air_ms = 0.0;
+        world.perf_stats.temperature_particle_ms = 0.0;
     }
 
     if perf_on {

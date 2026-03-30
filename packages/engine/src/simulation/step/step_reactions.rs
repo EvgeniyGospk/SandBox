@@ -56,6 +56,9 @@ pub(super) fn apply_reaction(
         world.perf_stats.reactions_applied = world.perf_stats.reactions_applied.saturating_add(1);
     }
 
+    // Reactions can produce hot/cold elements (e.g., lava, fire, steam). Enable thermal processing.
+    world.temperature_needs_processing = true;
+
     // A. Transform the TARGET (victim)
     if reaction.target_becomes == EL_EMPTY {
         world.remove_particle(target_x, target_y);

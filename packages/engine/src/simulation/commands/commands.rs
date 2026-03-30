@@ -27,6 +27,11 @@ pub(super) fn add_particle(world: &mut WorldCore, x: u32, y: u32, element: u8) -
         .color_with_variation(element, seed)
         .unwrap_or(props.color);
 
+    // If this element has a non-ambient default temperature, thermal processing is needed.
+    if (props.default_temp - world.ambient_temperature).abs() > 1.0 {
+        world.temperature_needs_processing = true;
+    }
+
     world.grid.set_particle(
         x,
         y,
@@ -91,4 +96,5 @@ pub(super) fn clear(world: &mut WorldCore) {
     world.rigid_bodies = super::RigidBodySystem::new();
     world.particle_count = 0;
     world.frame = 0;
+    world.temperature_needs_processing = false;
 }

@@ -22,6 +22,7 @@ pub(super) fn create_world_core(width: u32, height: u32) -> WorldCore {
         particle_count: 0,
         frame: 0,
         rng_state: 12345,
+        temperature_needs_processing: false,
         perf_enabled: false,
         perf_detailed: false,
         perf_split: false,
