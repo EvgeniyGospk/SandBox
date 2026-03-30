@@ -83,6 +83,10 @@ pub struct WorldCore {
     gravity_y: f32,
     ambient_temperature: f32,
     
+    // Cadence settings (0 = process every cell every frame)
+    physics_cadence_mask: u32,
+    behavior_cadence_mask: u32,
+
     // State
     particle_count: u32,
     frame: u64,

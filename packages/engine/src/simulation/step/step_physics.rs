@@ -55,12 +55,20 @@ pub(super) fn process_physics_chunk(
     let mut chunk_calls: u32 = 0;
     let mut chunk_steps: u32 = 0;
 
+    let physics_cadence_mask = world.physics_cadence_mask;
+
     if top_to_bottom {
         // For negative gravity: process top-to-bottom
         for y in start_y..end_y {
             for x in start_x..end_x {
                 let element = world.grid.get_type(x as i32, y as i32);
                 if element != EL_EMPTY {
+                    // Cadence: skip this cell if not in this frame's phase
+                    if physics_cadence_mask > 0 {
+                        if (x ^ y ^ frame_u32) & physics_cadence_mask != 0 {
+                            continue;
+                        }
+                    }
                     // Ensure each particle is integrated at most once per step.
                     if world.grid.is_updated(x, y) {
                         continue;
@@ -99,6 +107,12 @@ pub(super) fn process_physics_chunk(
             for x in start_x..end_x {
                 let element = world.grid.get_type(x as i32, y as i32);
                 if element != EL_EMPTY {
+                    // Cadence: skip this cell if not in this frame's phase
+                    if physics_cadence_mask > 0 {
+                        if (x ^ y ^ frame_u32) & physics_cadence_mask != 0 {
+                            continue;
+                        }
+                    }
                     // Ensure each particle is integrated at most once per step.
                     if world.grid.is_updated(x, y) {
                         continue;
